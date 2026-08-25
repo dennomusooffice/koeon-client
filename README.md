@@ -1,28 +1,50 @@
 # KOEON Client — pre-publication staging
 
-This clean local tree contains the native iOS and Android clients plus a small, client-safe protocol subset. It was exported from a private source repository with an explicit path allowlist; it contains no server implementation, Web client, Event site/assets, signing pipeline, deployment material, or private Git history.
+KOEON Client is a native iOS and Android push-to-talk client with a small, client-safe TypeScript protocol package. This clean-root repository is being prepared for Human and legal review; it is not yet approved for public release.
 
-This repository is currently private staging. Public release remains subject to legal, dependency, trademark, and security review.
+## Scope and boundaries
 
-## Safety status
+Included:
 
-- Publication is **not authorized**.
-- MPL-2.0 is the preferred license candidate, subject to legal review before A7 publication.
-- The included API and invite defaults use `https://example.invalid`; the tree cannot reach a real service without an explicit local configuration change.
-- Signing, TestFlight, store upload and Production deployment are outside this repository.
-- External core pull requests are closed initially. See `CONTRIBUTING.md`.
+- native iOS client and XCTest suite
+- native Android client and unit/lint/debug validation
+- client-safe protocol constants, codecs, typecheck and tests
+- public-candidate security, dependency, SBOM and governance documents
+
+Not included:
+
+- KOEON private server/backend, token signing or membership services
+- Web client
+- deployment, database, billing or administration infrastructure
+- release signing, TestFlight, App Store or Play publishing pipelines
+- event sites/assets, private operational material or private repository history
+
+Safe defaults use reserved `example.invalid` hostnames. The client cannot reach an operational KOEON service without a separately authorized configuration.
+
+## Release-readiness status
+
+```text
+PRE_PUBLICATION_STAGING = YES
+PUBLICATION_AUTHORIZED = NO
+LICENSE_CANDIDATE = MPL-2.0 / LEGAL REVIEW REQUIRED
+EXTERNAL_CORE_PRS = CLOSED_INITIAL
+CLA_STATUS = LEGAL_REVIEW_REQUIRED
+```
+
+The dependency inventory is available as an [SPDX 2.3 SBOM](sbom/koeon-client.spdx.json), with technical notice evidence in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Unknown license metadata is explicitly recorded as `NOASSERTION`.
 
 ## Layout
 
-- `ios/`: SwiftUI native client and XCTest suite
-- `android/`: Kotlin/Compose native client and tests
-- `protocol/`: safe TypeScript protocol constants, codecs and tests
-- `docs/`: public-safe architecture and protocol notes
-- `.github/workflows/public-ci.yml`: untrusted build/test-only CI candidate
+- `ios/` — SwiftUI client and XCTest
+- `android/` — Kotlin/Compose client and tests
+- `protocol/` — TypeScript protocol package and tests
+- `docs/` — public-release review evidence and architecture notes
+- `scripts/` — publication and public-CI safety assertions
+- `sbom/` — SPDX and exact dependency evidence
 
-## Local validation
+## Validation
 
-Protocol (Node.js 22+):
+Protocol (Node.js 22+ and pnpm 10.15.0):
 
 ```sh
 pnpm --dir protocol install --frozen-lockfile
@@ -36,26 +58,23 @@ Android (JDK 17 and Android SDK 36):
 ./android/gradlew -p android testDebugUnitTest lintDebug assembleDebug --no-daemon
 ```
 
-iOS requires macOS/Xcode 26 and an available iOS simulator. Use `CODE_SIGNING_ALLOWED=NO` for both build and XCTest. No Apple signing identity is required.
+iOS requires Xcode 26.6 and an ARM64 iOS Simulator. CI resolves the exact Swift packages and runs unsigned build/XCTest with signing disabled.
 
-Publication-safety assertion (Git Bash/Linux/macOS):
+Safety assertions:
 
 ```sh
+bash scripts/ci-public-safety.sh
 bash scripts/publication-safety.sh
 ```
 
-## Manual test procedure
+## Project policies
 
-1. Confirm the app launches as an unsigned simulator/debug build and presents enrollment UI.
-2. Confirm a synthetic invite URL under `example.invalid` is parsed but no Production service is contacted.
-3. With a separately authorized development backend configuration, verify Join keeps one room session, TX occurs only after Floor control, and RX remains active while TX is off.
-4. Confirm logs and exported field diagnostics contain no access token, invite value, credential or private key.
-5. Confirm leaving a channel clears ephemeral runtime credentials without recording audio.
+- [Security policy](SECURITY.md)
+- [Contribution policy](CONTRIBUTING.md)
+- [Trademark policy draft](TRADEMARKS.md)
+- [Public CI threat model](docs/PUBLIC_CI_SECURITY.md)
+- [Dependency/license review](docs/DEPENDENCY_LICENSE_REVIEW.md)
+- [Google dependency/privacy review](docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md)
 
-## Known limitations
+No CI in this repository signs, archives, uploads or deploys software.
 
-- No server is included, so end-to-end enrollment/Floor/LiveKit operation is unavailable from the safe defaults.
-- iOS PushToTalk/APNs behavior requires private signing/capability infrastructure and is not exercised by public CI.
-- Android OEM background-kill behavior requires physical-device testing.
-- Current RX_READY maximum waits remain 4000 ms; older 1200/600 ms documents are known protocol documentation drift, not a change request in this export.
-- P0 startup-latency and control/media RX divergence work is intentionally not implemented here.

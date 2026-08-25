@@ -1,41 +1,45 @@
-# Preliminary dependency and NOTICE evidence
+# Dependency and SBOM evidence
 
-Status: technical evidence only; no legal compatibility decision.
+Status: technical inventory complete; legal conclusions are not made.
 
 ```text
-SBOM_STATUS = PARTIAL
-NOTICE_STATUS = PARTIAL
-MPL_2_0 = PREFERRED / REVIEW
-LEGAL_PRIVACY_REVIEW_REQUIRED = YES
-A7_LEGAL_GATE = BLOCKED
+SBOM_STATUS = COMPLETE_TECHNICAL
+SBOM_FORMAT = SPDX 2.3 JSON
+SBOM_COMPONENTS = 421
+SBOM_PRODUCT_SOURCE_CHANGE = NO
+DEPENDENCY_SEMANTIC_CHANGE = NO
+LICENSE_CONCLUSIONS = NOASSERTION
 ```
 
-## Evidence captured for A5
+## Resolved inventory
 
-| Ecosystem | Evidence | Result |
-|---|---|---|
-| Protocol/TypeScript | `protocol/pnpm-lock.yaml` | 103 resolved package entries; SHA-256 `5301B76582D1610A02B795356F0EC202DC7E20C8D9B44B5356DD99A05E342D35` |
-| Android runtime | Gradle `debugRuntimeClasspath` resolution | 158 unique resolved coordinates |
-| Android direct declarations | Gradle build files and existing inventory | exact direct versions retained |
-| iOS | Xcode project exact SPM pin | LiveKit Swift 2.16.0; full resolved graph awaits the authorized macOS CI run |
-| Project license candidate | official unmodified MPL-2.0 text | SHA-256 `3F3D9E0024B1921B067D6F7F88DEB4A60CBE7A78E76C64E3F1D7FC3B779B9D04` |
+| Ecosystem/scope | Components | Source evidence |
+|---|---:|---|
+| Protocol/npm lock | 103 | `protocol/pnpm-lock.yaml` |
+| Android debug runtime | 158 | Gradle `debugRuntimeClasspath` |
+| Android debug unit test | 163 | Gradle `debugUnitTestRuntimeClasspath` |
+| Android build classpath | 152 | Gradle `buildEnvironment` |
+| Android union represented in SBOM | 314 | `sbom/evidence/android-*.txt` |
+| iOS SwiftPM | 4 | Xcode 26.6 resolution from main CI run `32814279959` |
+| Total unique component records | 421 | `sbom/koeon-client.spdx.json` |
 
-Notable resolved Android runtime coordinates include:
+iOS exact packages:
 
-- `io.livekit:livekit-android:2.28.0`
-- `io.github.webrtc-sdk:android-prefixed:144.7559.09`
-- `com.github.davidliu:audioswitch:039a35aefab7747c557242fa216c9ea11743b604`
-- `com.google.android.gms:play-services-code-scanner:16.1.0`
-- `com.squareup.okhttp3:okhttp:4.12.0`
-- `androidx.compose.material3:material3-android:1.4.0`
-- `androidx.compose.ui:ui-android:1.11.3`
+- LiveKit 2.16.0
+- LiveKitWebRTC 144.7559.11
+- LiveKitUniFFI 0.0.6
+- SwiftProtobuf 1.38.1
 
-## Outstanding A6–A7 work
+Android direct Google scanner dependency is `com.google.android.gms:play-services-code-scanner:16.1.0`; runtime and privacy behavior are reviewed separately in `docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md`.
 
-1. Generate a machine-readable CycloneDX/SPDX document covering Android, Swift and protocol artifacts.
-2. Collect license and NOTICE text from the exact resolved artifacts, including native WebRTC/LiveKit components.
-3. Review Google Code Scanner API terms and privacy/disclosure obligations.
-4. Review JUnit EPL-1.0 and all bundled/transitive notices.
-5. Have assigned counsel decide MPL-2.0 compatibility, Commercial OEM/dual-license structure, CLA and trademark policy.
+## Reproduction
 
-No dependency row is marked legally compatible by this evidence. `LEGAL_BUSINESS_OWNER` and `COUNSEL` remain `HUMAN_TBD`.
+```sh
+node scripts/collect-dependency-evidence.mjs
+node scripts/collect-license-evidence.mjs
+node scripts/generate-sbom.mjs
+node scripts/generate-third-party-notices.mjs
+```
+
+The license collector uses exact npm registry metadata, exact Maven POM metadata and exact Swift repository tags. Missing or ambiguous declarations remain `NOASSERTION`. The SPDX document conservatively links the candidate root to every resolved component; exact transitive topology remains in the pnpm lock and Gradle evidence.
+
