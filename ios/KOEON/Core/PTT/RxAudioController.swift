@@ -84,7 +84,7 @@ struct RxDivergenceSignal: Equatable, Sendable {
 
 struct RxDivergenceEvaluation: Equatable, Sendable {
     var signals: [RxDivergenceSignal] = []
-    var staleMediaSessionId: String?
+    var verifiedInactiveMediaSessionId: String?
     var recoverySessionId: String?
     var recoveryGeneration = 0
 }
@@ -170,7 +170,11 @@ struct RxConsistencyGuard: Sendable {
         return recovered ? .recovered : .observed
     }
 
-    mutating func evaluate(at: Date, thresholdMilliseconds: Int = rxDivergenceWatchdogMilliseconds) -> RxDivergenceEvaluation {
+    mutating func evaluate(
+        at: Date,
+        thresholdMilliseconds: Int = rxDivergenceWatchdogMilliseconds,
+        remoteParticipantIsSpeaking: Bool? = nil
+    ) -> RxDivergenceEvaluation {
         var evaluation = RxDivergenceEvaluation()
 
         if snapshot.validatedRemoteRxActive,
@@ -196,7 +200,6 @@ struct RxConsistencyGuard: Sendable {
         if snapshot.remoteMediaSpeakerActive, let evidenceAt = mediaEvidenceAt {
             let elapsed = milliseconds(from: evidenceAt, to: at)
             if elapsed >= thresholdMilliseconds {
-                let staleSessionId = snapshot.remoteMediaSpeakerSessionId
                 if !snapshot.validatedRemoteRxActive, !mediaDivergenceEmitted {
                     mediaDivergenceEmitted = true
                     evaluation.signals.append(RxDivergenceSignal(
@@ -205,15 +208,23 @@ struct RxConsistencyGuard: Sendable {
                         snapshot: snapshot
                     ))
                 }
-                snapshot.remoteMediaSpeakerActive = false
-                snapshot.remoteMediaSpeakerSessionId = nil
-                mediaEvidenceAt = nil
-                evaluation.staleMediaSessionId = staleSessionId
-                evaluation.signals.append(RxDivergenceSignal(
-                    event: "rx_divergence_cleared",
-                    elapsedMilliseconds: elapsed,
-                    snapshot: snapshot
-                ))
+                if remoteParticipantIsSpeaking == false {
+                    evaluation.verifiedInactiveMediaSessionId = snapshot.remoteMediaSpeakerSessionId
+                    snapshot.remoteMediaSpeakerActive = false
+                    snapshot.remoteMediaSpeakerSessionId = nil
+                    mediaEvidenceAt = nil
+                    evaluation.signals.append(RxDivergenceSignal(
+                        event: "rx_divergence_cleared",
+                        elapsedMilliseconds: elapsed,
+                        snapshot: snapshot
+                    ))
+                } else {
+                    // The 250 ms threshold detects divergence; it is not a
+                    // speaker TTL. Re-check SDK state later while keeping PTT
+                    // blocked whenever LiveKit still reports speaking (or the
+                    // participant state is temporarily unavailable).
+                    mediaEvidenceAt = at
+                }
             }
         }
         return evaluation
