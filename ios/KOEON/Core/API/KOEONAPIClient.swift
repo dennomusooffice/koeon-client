@@ -29,7 +29,36 @@ protocol KOEONAPIClientProtocol: Sendable {
 }
 
 final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
-    static let productionBaseURL = URL(string: "https://example.invalid")!
+    static let publicSafeBaseURL = URL(string: "https://example.invalid")!
+    static let bundleConfigurationKey = "KOEONAPIBaseURL"
+
+    static func configuredBaseURL(bundle: Bundle = .main) -> URL {
+        resolveBaseURL(configuredValue: bundle.object(
+            forInfoDictionaryKey: bundleConfigurationKey
+        ) as? String)
+    }
+
+    static func resolveBaseURL(configuredValue: String?) -> URL {
+        guard let value = configuredValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              var components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https",
+              let host = components.host,
+              !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              let url = components.url else {
+            return publicSafeBaseURL
+        }
+        components.scheme = "https"
+        return components.url ?? url
+    }
+
+    static func requestURL(baseURL: URL, path: String) -> URL {
+        baseURL.appending(path: path)
+    }
 
     private let baseURL: URL
     private let session: URLSession
@@ -38,7 +67,7 @@ final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
     private let credentialStore: any DeviceCredentialStoring
 
     init(
-        baseURL: URL = productionBaseURL,
+        baseURL: URL = KOEONAPIClient.configuredBaseURL(),
         session: URLSession = .shared,
         credentialStore: any DeviceCredentialStoring = KeychainDeviceCredentialStore()
     ) {
@@ -114,7 +143,7 @@ final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
 
     func floorStatus(sessionId: String) async throws -> FloorResponse {
         var components = URLComponents(
-            url: baseURL.appending(path: "/api/floor/status"),
+            url: Self.requestURL(baseURL: baseURL, path: "/api/floor/status"),
             resolvingAgainstBaseURL: false
         )!
         components.queryItems = [URLQueryItem(name: "sessionId", value: sessionId)]
@@ -155,7 +184,12 @@ final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
         body: Data?,
         authenticated: Bool = true
     ) async throws -> Response {
-        try await send(url: baseURL.appending(path: path), method: method, body: body, authenticated: authenticated)
+        try await send(
+            url: Self.requestURL(baseURL: baseURL, path: path),
+            method: method,
+            body: body,
+            authenticated: authenticated
+        )
     }
 
     private func send<Response: Decodable>(

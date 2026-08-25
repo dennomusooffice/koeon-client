@@ -20,6 +20,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>KOEONAPIBaseURL</key>
+	<string>$(KOEON_API_BASE_URL)</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>KOEON uses the microphone only while you hold Push-to-Talk.</string>
 	<key>NSCameraUsageDescription</key>

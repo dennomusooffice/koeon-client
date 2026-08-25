@@ -5,6 +5,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+private fun String.asBuildConfigString(): String = "\"" +
+    replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n") +
+    "\""
+
+val koeonApiBaseUrl = providers.gradleProperty("KOEON_API_BASE_URL")
+    .orElse("https://example.invalid")
+
 android {
     namespace = "com.dennomuso.koeon"
     compileSdk = 36
@@ -17,7 +27,7 @@ android {
         versionName = "0.1.0-task002"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "KOEON_BACKEND_URL", "\"https://example.invalid\"")
+        buildConfigField("String", "KOEON_API_BASE_URL", koeonApiBaseUrl.get().asBuildConfigString())
     }
 
     buildTypes {

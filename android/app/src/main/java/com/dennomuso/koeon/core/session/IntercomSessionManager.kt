@@ -5,6 +5,7 @@ import android.media.AudioManager
 import android.view.KeyEvent
 import com.dennomuso.koeon.BuildConfig
 import com.dennomuso.koeon.core.api.HttpKoeonApi
+import com.dennomuso.koeon.core.api.KoeonApiBaseUrlConfiguration
 import com.dennomuso.koeon.core.api.KoeonApi
 import com.dennomuso.koeon.core.api.KoeonApiException
 import com.dennomuso.koeon.core.enrollment.EnrollmentCredential
@@ -213,7 +214,7 @@ class IntercomSessionManager(
     private val credentialStore = credentialStoreOverride ?: AndroidKeystoreDeviceCredentialStore(appContext)
     private val deviceDisplayName = AndroidDeviceDisplayNameStore(appContext).getOrCreate()
     private val api: KoeonApi = apiOverride ?: HttpKoeonApi(
-        BuildConfig.KOEON_BACKEND_URL,
+        KoeonApiBaseUrlConfiguration.resolve(BuildConfig.KOEON_API_BASE_URL),
         credentialProvider = { credentialStore.read() },
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

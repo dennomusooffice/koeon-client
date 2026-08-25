@@ -2,6 +2,38 @@ import XCTest
 @testable import KOEON
 
 final class BackendContractTests: XCTestCase {
+    func testAPIBaseURLDefaultsForMissingOrUnresolvedConfiguration() {
+        XCTAssertEqual(KOEONAPIClient.resolveBaseURL(configuredValue: nil), KOEONAPIClient.publicSafeBaseURL)
+        XCTAssertEqual(
+            KOEONAPIClient.resolveBaseURL(configuredValue: "$(KOEON_API_BASE_URL)"),
+            KOEONAPIClient.publicSafeBaseURL
+        )
+    }
+
+    func testAPIBaseURLAcceptsValidHTTPSOverride() {
+        XCTAssertEqual(
+            KOEONAPIClient.resolveBaseURL(configuredValue: "  https://api.example.test  ").absoluteString,
+            "https://api.example.test"
+        )
+    }
+
+    func testAPIBaseURLRejectsBlankMalformedOrUnsafeOverrides() {
+        for value in ["", "not a URL", "http://api.example.test", "https://user:pass@api.example.test"] {
+            XCTAssertEqual(
+                KOEONAPIClient.resolveBaseURL(configuredValue: value),
+                KOEONAPIClient.publicSafeBaseURL
+            )
+        }
+    }
+
+    func testAPIRequestPathConstructionKeepsConfiguredOrigin() {
+        let baseURL = KOEONAPIClient.resolveBaseURL(configuredValue: "https://api.example.test")
+        XCTAssertEqual(
+            KOEONAPIClient.requestURL(baseURL: baseURL, path: "/api/join").absoluteString,
+            "https://api.example.test/api/join"
+        )
+    }
+
     func testFieldDiagnosticSchemaIsCrossPlatformV2() {
         XCTAssertEqual(fieldDiagnosticSchema, "koeon.field-diagnostic.v2")
     }
