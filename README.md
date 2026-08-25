@@ -2,6 +2,8 @@
 
 This clean local tree contains the native iOS and Android clients plus a small, client-safe protocol subset. It was exported from a private source repository with an explicit path allowlist; it contains no server implementation, Web client, Event site/assets, signing pipeline, deployment material, or private Git history.
 
+This repository is currently private staging. Public release remains subject to legal, dependency, trademark, and security review.
+
 ## Safety status
 
 - Publication is **not authorized**.
