@@ -1,24 +1,24 @@
-KOEON Client pre-publication staging notice
-==========================================
+KOEON Client ソース通知
+=========================
 
-PUBLICATION IS NOT AUTHORIZED. This clean-root candidate remains subject to
-Human, legal, privacy, trademark and security review before publication.
+KOEON rights holderが権利を管理するKOEON Clientのsource codeは、Mozilla
+Public License 2.0 (MPL-2.0)の下で公開します。LICENSE fileには適用される
+MPL-2.0の本文を収録しています。source-code licenseは、trademarkやbrandの
+利用許可を与えるものではありません。
 
-Preferred project license candidate: Mozilla Public License 2.0 (MPL-2.0).
-The LICENSE file remains the unmodified candidate license text. Its presence
-does not establish legal approval or trademark permission.
-
-The exact direct/transitive dependency inventory is recorded in:
+direct / transitive dependencyの正確なinventoryは、次のfileに記録しています:
 
 - sbom/koeon-client.spdx.json (SPDX 2.3 JSON)
 - sbom/evidence/license-evidence.json
 - THIRD_PARTY_NOTICES.md
 - docs/DEPENDENCY_LICENSE_REVIEW.md
 
-Upstream component licenses, copyright notices, Google SDK/service terms and
-binary redistribution requirements continue to apply. Unknown or ambiguous
-license metadata is recorded as NOASSERTION and requires Human/counsel review.
+third-party dependencyには、それぞれのlicense、copyright notice、termsが
+引き続き適用されます。upstream component license、Google SDK/service terms、
+binary redistribution requirementも維持されます。不明または曖昧なlicense
+metadataはNOASSERTIONとして記録します。この技術記録は、third-partyとの法的
+compatibilityやformal counsel approvalを主張するものではありません。
 
-No logo/AppIcon, release-signing credential, private server implementation,
-event asset or Production deployment material is included.
+logo / AppIcon、release-signing credential、private server implementation、
+event asset、Production deployment materialは含まれません。
 

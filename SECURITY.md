@@ -1,28 +1,28 @@
-# Security policy — pre-publication draft
+# Security policy（セキュリティ報告方針）
 
-## Reporting a vulnerability
+## 脆弱性の報告
 
-Do not disclose a vulnerability, credential, invite value or exploit in a public issue or pull request.
+脆弱性、credential、invite value、exploitをpublic Issueやpull requestへ記載しないでください。
 
-Before publication, the repository owner must enable and validate GitHub private vulnerability reporting so that the repository Security tab exposes **Report a vulnerability**, or designate another approved public security contact. The current PRIVATE-plan API did not expose an authoritative setting during A6, so the external intake route remains a Human publication decision.
+repositoryの**Security** tabからGitHub Private Vulnerability Reportingを開き、**Report a vulnerability**を選択してください。初期activation中にこの機能が一時的に利用できない場合も、機微な内容をpublicな場所へ投稿しないでください。repository ownerはpublic visibilityへの変更直後にこのrouteを有効化して確認します。repositoryがprivateの間に、すでに有効であるとは主張しません。
 
 ```text
-SECURITY_POLICY_STATUS = PARTIAL
-PUBLIC_SECURITY_CONTACT = HUMAN_TBD
-PRIVATE_VULNERABILITY_REPORTING = VERIFY_BEFORE_PUBLICATION
+SECURITY_REPORTING_PRIMARY = GITHUB_PRIVATE_VULNERABILITY_REPORTING
+PRIVATE_VULNERABILITY_REPORTING = ENABLE_AND_VERIFY_IMMEDIATELY_AFTER_PUBLIC
+PERSONAL_EMAIL_FALLBACK_PUBLISHED = NO
 ```
 
-## Supported scope
+## 報告対象
 
-Security reports may cover the iOS client, Android client, safe protocol package, public CI policy and dependency/supply-chain risks. The private KOEON server and release-signing systems are not hosted here.
+security reportの対象には、iOS client、Android client、safe protocol package、public CI policy、dependency / supply-chain riskを含みます。private KOEON serverとrelease-signing systemはこのrepositoryに含まれません。
 
-## Security invariants
+## Security上の不変条件
 
-- LiveKit API secrets and token signing remain server-side only.
-- Clients use short-lived room tokens issued only after membership validation.
-- Access tokens, invite values, credentials and private keys must not be logged.
-- Pull-request CI receives no signing or Production secrets and performs no deploy.
-- Audio content is not stored or recorded.
+- LiveKit API secretとtoken signingはserver-sideだけに保持します。
+- clientが使用する短命room tokenは、membership validation後にのみ発行します。
+- access token、invite value、credential、private keyをlogへ出力してはいけません。
+- pull-request CIにはsigning secretやProduction secretを渡さず、deployも行いません。
+- audio contentを保存・録音しません。
 
-If a credential is accidentally disclosed, preserve evidence privately and contact an authorized operator. This document does not authorize revocation, rotation or any Production mutation.
+credentialを誤って開示した場合は、evidenceをprivateに保全し、authorized operatorへ連絡してください。この文書はrevoke、rotation、その他のProduction mutationを許可するものではありません。
 

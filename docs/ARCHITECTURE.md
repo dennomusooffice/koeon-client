@@ -1,6 +1,6 @@
-# Client architecture
+# Client architecture（クライアント構成）
 
-This staging tree contains two native clients and a narrow protocol reference. The backend is an external, private trust boundary and is not implemented here.
+このtreeには2つのnative clientと、範囲を限定したprotocol referenceが含まれます。backendは外部のprivate trust boundaryであり、このrepositoryには実装しません。
 
 ```text
 iOS client ─┐
@@ -10,6 +10,6 @@ Android ────┘                └───────── short-live
 iOS/Android ── LiveKit room ── control data + realtime audio
 ```
 
-The UI lifecycle is separate from the intercom-session lifecycle. A view disappearing must not disconnect the room. The room is not reconnected for every PTT gesture; Floor control is acquired before TX; RX remains available when TX is off; reconnect favors automatic recovery; audio is not recorded.
+UI lifecycleとintercom-session lifecycleは分離します。viewが非表示になっただけでRoomを切断してはいけません。PTT操作ごとにRoomを再接続せず、TX前にFloor controlを取得します。TXがoffでもRXは利用可能な状態を維持し、reconnectでは自動復旧を優先します。audioは録音しません。
 
-The repository boundary deliberately excludes membership/auth implementation, Floor arbitration, token signing, APNs provider, persistent-listening backend, database, deployment and signed release workflows.
+repository boundaryからは、membership / auth implementation、Floor arbitration、token signing、APNs provider、persistent-listening backend、database、deployment、signed release workflowを意図的に除外しています。

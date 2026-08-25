@@ -1,50 +1,51 @@
-# KOEON Client — pre-publication staging
+# KOEON Client
 
-KOEON Client is a native iOS and Android push-to-talk client with a small, client-safe TypeScript protocol package. This clean-root repository is being prepared for Human and legal review; it is not yet approved for public release.
+KOEON Clientは、iOS / Android向けのネイティブPush-to-Talk（PTT）クライアントと、クライアントで安全に利用できる小さなTypeScript protocol packageです。このclean-root repositoryに含まれるのは、公開対象として承認されたclient boundaryだけです。private serviceの実装やprivate repositoryの履歴は含まれません。
 
-## Scope and boundaries
+## Repositoryの対象範囲
 
-Included:
+含まれるもの:
 
-- native iOS client and XCTest suite
-- native Android client and unit/lint/debug validation
-- client-safe protocol constants, codecs, typecheck and tests
-- public-candidate security, dependency, SBOM and governance documents
+- ネイティブiOS clientとXCTest suite
+- ネイティブAndroid clientとunit / lint / debug validation
+- client-safeなprotocol constants、codec、typecheck、test
+- 公開候補のsecurity、dependency、SBOM、governance文書
 
-Not included:
+含まれないもの:
 
-- KOEON private server/backend, token signing or membership services
+- KOEONのprivate server/backend、token signing、membership service
 - Web client
-- deployment, database, billing or administration infrastructure
-- release signing, TestFlight, App Store or Play publishing pipelines
-- event sites/assets, private operational material or private repository history
+- deployment、database、billing、administration infrastructure
+- release signing、TestFlight、App Store、Google Play向けの公開pipeline
+- event site/assets、privateな運用資料、private repositoryの履歴
 
-Safe defaults use reserved `example.invalid` hostnames. The client cannot reach an operational KOEON service without a separately authorized configuration.
+安全な初期値には予約済みhostname `example.invalid`を使用しています。別途承認された設定がない限り、このclientから稼働中のKOEON serviceへ接続することはできません。
 
-## Release-readiness status
+## ソース公開の状態
 
 ```text
-PRE_PUBLICATION_STAGING = YES
-PUBLICATION_AUTHORIZED = NO
-LICENSE_CANDIDATE = MPL-2.0 / LEGAL REVIEW REQUIRED
+PUBLIC_SOURCE_LICENSE = MPL-2.0
+A7_SOURCE_HUMAN_GATE = PASS
+FORMAL_COUNSEL_REVIEW = NOT_PERFORMED
+COMMERCIAL_ANDROID_IOS_DISTRIBUTION = SEPARATE_GATE_REQUIRED
 EXTERNAL_CORE_PRS = CLOSED_INITIAL
-CLA_STATUS = LEGAL_REVIEW_REQUIRED
+CLA_REQUIRED_BEFORE_EXTERNAL_CODE = YES
 ```
 
-The dependency inventory is available as an [SPDX 2.3 SBOM](sbom/koeon-client.spdx.json), with technical notice evidence in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Unknown license metadata is explicitly recorded as `NOASSERTION`.
+KOEON rights holderが権利を管理するsource codeには、[Mozilla Public License 2.0](LICENSE)を適用します。third-party dependencyには、それぞれのlicenseとtermsが引き続き適用されます。dependency inventoryは[SPDX 2.3 SBOM](sbom/koeon-client.spdx.json)として公開し、技術的なnotice evidenceは[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)に記録しています。不明なlicense metadataは`NOASSERTION`として明示します。
 
-## Layout
+## 構成
 
-- `ios/` — SwiftUI client and XCTest
-- `android/` — Kotlin/Compose client and tests
-- `protocol/` — TypeScript protocol package and tests
-- `docs/` — public-release review evidence and architecture notes
-- `scripts/` — publication and public-CI safety assertions
-- `sbom/` — SPDX and exact dependency evidence
+- `ios/` — SwiftUI clientとXCTest
+- `android/` — Kotlin / Compose clientとtest
+- `protocol/` — TypeScript protocol packageとtest
+- `docs/` — 公開review evidenceとarchitecture文書
+- `scripts/` — publication / public CIのsafety assertion
+- `sbom/` — SPDXと正確なdependency evidence
 
-## Validation
+## BuildとTest
 
-Protocol (Node.js 22+ and pnpm 10.15.0):
+Protocol（Node.js 22以上、pnpm 10.15.0）:
 
 ```sh
 pnpm --dir protocol install --frozen-lockfile
@@ -52,29 +53,30 @@ pnpm --dir protocol lint
 pnpm --dir protocol test
 ```
 
-Android (JDK 17 and Android SDK 36):
+Android（JDK 17、Android SDK 36）:
 
 ```sh
 ./android/gradlew -p android testDebugUnitTest lintDebug assembleDebug --no-daemon
 ```
 
-iOS requires Xcode 26.6 and an ARM64 iOS Simulator. CI resolves the exact Swift packages and runs unsigned build/XCTest with signing disabled.
+iOSにはXcode 26.6とARM64 iOS Simulatorが必要です。CIではSwift packageを正確にresolveし、signingを無効にしたunsigned buildとXCTestを実行します。
 
-Safety assertions:
+Safety assertion:
 
 ```sh
 bash scripts/ci-public-safety.sh
 bash scripts/publication-safety.sh
 ```
 
-## Project policies
+## Project policy
 
 - [Security policy](SECURITY.md)
 - [Contribution policy](CONTRIBUTING.md)
-- [Trademark policy draft](TRADEMARKS.md)
+- [Trademark policy](TRADEMARKS.md)
 - [Public CI threat model](docs/PUBLIC_CI_SECURITY.md)
-- [Dependency/license review](docs/DEPENDENCY_LICENSE_REVIEW.md)
-- [Google dependency/privacy review](docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md)
+- [Dependency / license review](docs/DEPENDENCY_LICENSE_REVIEW.md)
+- [Google dependency / privacy review](docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md)
+- [日本語用語集](docs/JAPANESE_TERMINOLOGY.md)
 
-No CI in this repository signs, archives, uploads or deploys software.
+このrepositoryのCIは、softwareのsigning、archive、upload、deployを行いません。
 
