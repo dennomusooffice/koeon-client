@@ -1,0 +1,59 @@
+name: Public client checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-client-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: corepack enable && corepack prepare pnpm@10.15.0 --activate
+      - run: pnpm --dir protocol install --frozen-lockfile
+      - run: pnpm --dir protocol lint
+      - run: pnpm --dir protocol test
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify runner JDK
+        run: java -version
+      - name: Unit, lint, unsigned debug build
+        run: ./android/gradlew -p android testDebugUnitTest lintDebug assembleDebug --no-daemon
+
+  publication-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: bash scripts/publication-safety.sh
+
+  ios-simulator:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Resolve packages
+        run: xcodebuild -resolvePackageDependencies -project ios/KOEON.xcodeproj -scheme KOEON -clonedSourcePackagesDirPath "$RUNNER_TEMP/packages"
+      - name: Select simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          udid="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d, reverse=True) if ".iOS-" in k for x in d[k] if x.get("isAvailable") and x.get("name", "").startswith("iPhone")))')"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+      - name: Simulator build
+        run: xcodebuild -project ios/KOEON.xcodeproj -scheme KOEON -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -derivedDataPath "$RUNNER_TEMP/derived" -clonedSourcePackagesDirPath "$RUNNER_TEMP/packages" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: XCTest
+        run: xcodebuild -project ios/KOEON.xcodeproj -scheme KOEON -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -derivedDataPath "$RUNNER_TEMP/derived" -clonedSourcePackagesDirPath "$RUNNER_TEMP/packages" -only-testing:KOEONTests CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test

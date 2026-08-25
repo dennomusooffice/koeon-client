@@ -1,0 +1,20 @@
+KOEON Client pre-publication staging notice
+==========================================
+
+PUBLICATION IS NOT AUTHORIZED. This local clean-root candidate remains subject
+to legal, business, trademark, dependency and asset review before A7.
+
+Preferred project license candidate: Mozilla Public License 2.0 (MPL-2.0).
+The LICENSE file is the unmodified official license text and is not itself a
+record that the A7 legal gate has passed.
+
+Third-party components include LiveKit client SDKs, AndroidX/Jetpack, Kotlin,
+OkHttp, kotlinx.coroutines, kotlinx.serialization, Google Play services Code
+Scanner, JUnit, Gradle, TypeScript and Vitest. Their own licenses and notices
+continue to apply. This draft is not a complete binary-distribution NOTICE or
+SBOM. Exact resolved/transitive notices, including LiveKit WebRTC/native
+artifacts, Google service terms, JUnit EPL-1.0 material and bundled Vitest
+dependencies, must be reviewed and assembled before publication.
+
+No Event/MOTY asset, KOEON logo/AppIcon, signing credential or Production
+deployment material is included in this staging tree.
