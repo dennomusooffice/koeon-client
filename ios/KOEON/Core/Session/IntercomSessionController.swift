@@ -1851,7 +1851,14 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func evaluateRxDivergenceWatchdog() {
-        let evaluation = rxConsistencyGuard.evaluate(at: Date())
+        let mediaSessionId = rxConsistencyGuard.snapshot.remoteMediaSpeakerSessionId
+        let currentSpeaking = mediaSessionId.flatMap {
+            room.remoteParticipantIsSpeaking(sessionId: $0)
+        }
+        let evaluation = rxConsistencyGuard.evaluate(
+            at: Date(),
+            remoteParticipantIsSpeaking: currentSpeaking
+        )
         rxConsistencySnapshot = rxConsistencyGuard.snapshot
         for signal in evaluation.signals {
             appendRxDivergenceDiagnostic(
@@ -1860,8 +1867,8 @@ final class IntercomSessionController: ObservableObject {
                 state: signal.snapshot
             )
         }
-        if let sessionId = evaluation.staleMediaSessionId {
-            room.clearStaleRemoteMediaActivity(sessionId: sessionId)
+        if let sessionId = evaluation.verifiedInactiveMediaSessionId {
+            room.clearVerifiedInactiveRemoteMediaActivity(sessionId: sessionId)
         }
         if let sessionId = evaluation.recoverySessionId, evaluation.recoveryGeneration > 0 {
             _ = remoteReceive?.handleParticipantAvailable(sessionId: sessionId)

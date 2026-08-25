@@ -263,9 +263,16 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         remoteAudioSubscriptionGate.isActive(sessionId: sessionId, generation: generation)
     }
 
-    /// Clears only the currently-matching media hint. It does not touch the
+    func remoteParticipantIsSpeaking(sessionId: String) -> Bool? {
+        room?.remoteParticipants.values.first(where: {
+            $0.identity?.stringValue == sessionId
+        })?.isSpeaking
+    }
+
+    /// Clears only the currently-matching media hint after the caller has
+    /// verified authoritative SDK state is inactive. It does not touch the
     /// validated RX coordinator or create/replace a receive generation.
-    func clearStaleRemoteMediaActivity(sessionId: String?) {
+    func clearVerifiedInactiveRemoteMediaActivity(sessionId: String?) {
         guard remoteMediaSpeakerActive,
               sessionId == nil || currentSpeakerSessionId == sessionId else { return }
         clearRemoteMediaActivity(notify: true)
