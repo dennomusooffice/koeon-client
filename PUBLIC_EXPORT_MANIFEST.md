@@ -22,7 +22,7 @@ public status = NOT AUTHORIZED
 - Web application and deferred Web client
 - server/API implementation, auth/membership/Floor backend, token signing, APNs provider and persistent-listening backend
 - database/migrations, Admin/Billing and Production deployment/operations
-- Event landing page, MOTY documents, raw assets and sanitized screenshot derivatives
+- legacy event landing pages/documents, raw assets and sanitized screenshot derivatives
 - private task/audit evidence, private access codes, signing material and build/cache outputs
 - all private Git history
 
@@ -36,13 +36,15 @@ Safe defaults use `example.invalid` and `livekit.example.invalid`. No real endpo
 
 - `A7_LEGAL_GATE = BLOCKED`; legal owner and counsel are `HUMAN_TBD`.
 - MPL-2.0 is preferred, not finally approved for publication.
-- Complete transitive dependency SBOM/NOTICE and Google Code Scanner terms review are required.
-- KOEON brand asset provenance/trademark policy is unresolved; 19 existing icon paths were excluded.
-- iOS simulator/XCTest requires macOS CI validation.
+- SPDX/NOTICE technical evidence is prepared; 52 `NOASSERTION` rows and 13 explicit legal-review rows require Human/counsel decision.
+- Google Code Scanner 16.1.0 requires privacy/Data Safety disclosure review because auto-zoom is enabled.
+- KOEON brand assets remain excluded; the trademark policy is a draft for legal review.
+- The final A6 PR must pass its single authorized macOS Simulator/XCTest validation.
 - invite authoritative Production review remains a separate required security follow-up.
 
 ```text
 PUBLICATION_AUTHORIZED = NO
 REMOTE_CONFIGURATION_AUTHORIZED = NO
-PUSH_AUTHORIZED = NO
+A6_BRANCH_PR_AUTHORIZED = YES
+MAIN_MERGE_AUTHORIZED = NO
 ```

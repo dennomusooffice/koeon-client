@@ -1,37 +1,54 @@
-# Public-style CI security model
+# Public CI security model
 
-Status: private staging. Public release is not authorized.
+Status: PRIVATE pre-publication staging. Public release is not authorized.
 
-The CI configuration treats pull-request code as untrusted. It is limited to compilation, lint, unit tests, simulator tests and publication-safety assertions.
+## Trust boundary
 
-## Trust boundaries
-
-- Fork or pull-request code receives no signing, Production or deployment credential.
-- Workflows use the ordinary pull-request event, never a privileged base-context PR trigger.
-- The workflow token has `contents: read` only.
-- Hosted runners have no private network route or persistent signing state.
-- Release signing, TestFlight, App Store, Play upload and Production deployment remain in separate PRIVATE/PROTECTED infrastructure.
-
-## Workflow jobs
-
-| Job | Runner | Allowed work | Secrets |
-|---|---|---|---|
-| protocol | Linux | dependency install, strict typecheck, tests | none |
-| android | Linux | unit, lint, unsigned debug assemble | none |
-| publication-safety | Linux | path, endpoint, filename and high-confidence secret assertions | none |
-| ios-simulator | macOS | Swift resolution, unsigned simulator build, XCTest | none |
-
-## Required invariants
+Pull-request content is treated as untrusted. The workflow executes untrusted build/test code only on ephemeral GitHub-hosted runners with `contents: read`, no repository secrets, no private network, no signing state and no deploy authority.
 
 ```text
 PULL_REQUEST_TARGET = 0
-SIGNING_SECRET_CONSUMPTION = 0
-PRODUCTION_SECRET_CONSUMPTION = 0
-DEPLOY_JOBS = 0
+WORKFLOW_RUN_TRUSTED_PR_EXECUTION = 0
+PR_SECRET_REFERENCES = 0
 WORKFLOW_WRITE_PERMISSIONS = 0
-FORK_PR_SECRETS = NONE
+SIGNING_DEPLOY_JOBS = 0
+UNPINNED_ACTIONS = 0
 ```
 
-Residual risks include arbitrary build-script execution, dependency-registry compromise, runner resource abuse and malicious test output. These are contained by ephemeral hosted runners, read-only token permissions, absence of protected credentials and immutable pinning of external Actions where used.
+## Workflow jobs
 
-Any future signing, release, cache, artifact-publication, self-hosted runner, OIDC or write-permission change requires a separate security review. A failing macOS job must not be retried without Human approval during TASK004F.
+| Job | Runner | Allowed work | Credentials |
+|---|---|---|---|
+| protocol | Linux | frozen install, typecheck, tests | read-only token only |
+| android | Linux | unit, lint, unsigned debug build | read-only token only |
+| publication-safety | Linux | full clean-root tree/history scan | read-only token only |
+| ci-public-safety | Linux | machine-test workflow policy | read-only token only |
+| ios-simulator | macOS | exact Swift resolution, unsigned ARM64 Simulator build, XCTest | read-only token only |
+
+Every external Action is pinned to an immutable 40-hex commit. Checkout credentials are not persisted. No cache or artifact transfer channel is enabled for initial public CI.
+
+## Threat review
+
+| Threat | Control | Residual status |
+|---|---|---|
+| privileged PR trigger / pwn-request | privileged and chained PR triggers prohibited | none found |
+| shell injection | no PR metadata interpolation; `eval` prohibited | none found |
+| cache poisoning | no shared cache Action | none |
+| artifact poisoning | no upload/download artifact Action | none |
+| unpinned Action supply chain | immutable full SHA plus version comment | none found |
+| writable checkout credentials | `persist-credentials: false` everywhere | none found |
+| signing/deploy abuse | no credentials or jobs; signing disabled in xcodebuild | none found |
+| dependency registry compromise | frozen lock/exact package resolution where supported | residual ecosystem risk |
+| malicious test/build execution | ephemeral hosted runners, timeouts, read-only token | residual compute/log risk |
+
+`scripts/ci-public-safety.sh` fails on future privileged triggers, secret references, write permissions, PR metadata interpolation, shared cache/artifact Actions, signing/deploy semantics, mutable Action references or persisted checkout credentials.
+
+## Fork test
+
+```text
+ACTUAL_FORK_PR_TEST = NOT_SUPPORTED_WHILE_PRIVATE
+A8_POST_PUBLIC_FORK_PR_SMOKE_TEST = REQUIRED
+```
+
+After publication, a non-member fork must open a harmless documentation-only PR to confirm no secrets, write permissions, signing/deploy behavior, private network access or duplicate macOS execution is exposed.
+

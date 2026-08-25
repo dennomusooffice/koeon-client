@@ -1,0 +1,38 @@
+[
+  {
+    "ecosystem": "swift",
+    "name": "LiveKit",
+    "version": "2.16.0",
+    "sourceUrl": "https://github.com/livekit/client-sdk-swift/tree/2.16.0",
+    "licenseDeclared": "Apache-2.0",
+    "licenseEvidenceUrl": "https://github.com/livekit/client-sdk-swift/blob/2.16.0/LICENSE",
+    "evidenceStatus": "OFFICIAL_REPOSITORY_EXACT_TAG"
+  },
+  {
+    "ecosystem": "swift",
+    "name": "LiveKitWebRTC",
+    "version": "144.7559.11",
+    "sourceUrl": "https://github.com/livekit/webrtc-xcframework/tree/144.7559.11",
+    "licenseDeclared": "MIT",
+    "licenseEvidenceUrl": "https://github.com/livekit/webrtc-xcframework/blob/144.7559.11/LICENSE",
+    "evidenceStatus": "OFFICIAL_REPOSITORY_EXACT_TAG"
+  },
+  {
+    "ecosystem": "swift",
+    "name": "LiveKitUniFFI",
+    "version": "0.0.6",
+    "sourceUrl": "https://github.com/livekit/livekit-uniffi-xcframework/tree/0.0.6",
+    "licenseDeclared": "Apache-2.0",
+    "licenseEvidenceUrl": "https://github.com/livekit/livekit-uniffi-xcframework/blob/0.0.6/LICENSE",
+    "evidenceStatus": "OFFICIAL_REPOSITORY_EXACT_TAG"
+  },
+  {
+    "ecosystem": "swift",
+    "name": "SwiftProtobuf",
+    "version": "1.38.1",
+    "sourceUrl": "https://github.com/apple/swift-protobuf/tree/1.38.1",
+    "licenseDeclared": "Apache-2.0",
+    "licenseEvidenceUrl": "https://github.com/apple/swift-protobuf/blob/1.38.1/LICENSE.txt",
+    "evidenceStatus": "OFFICIAL_REPOSITORY_EXACT_TAG"
+  }
+]
