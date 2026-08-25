@@ -174,15 +174,124 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertEqual(snapshot.staleIgnored, 1)
     }
 
-    func testVoiceBeforeControlSkipsStartCue() {
+    func testSpeakingBeforeControlDoesNotFabricateFirstPcm() {
         let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue()) { _ in }
         controller.handleRemoteAudioActivity(senderSessionId: "session-a", active: true)
         controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
         let snapshot = controller.currentSnapshot()
-        XCTAssertEqual(snapshot.state, .active)
+        XCTAssertEqual(snapshot.state, .arming)
+        XCTAssertNil(snapshot.rxFirstPcmAt)
+        XCTAssertNil(snapshot.rxLastAudioAt)
         guard case .skipped = snapshot.startCueResult else {
             return XCTFail("Expected voice-priority cue skip")
         }
+    }
+
+    func testHealthyRemoteRxKeepsMediaAuthorizationAndPcmDistinct() {
+        let started = Date(timeIntervalSince1970: 1_000)
+        var guardState = RxConsistencyGuard()
+        guardState.handleMediaActivity(sessionId: "session-a", active: true, at: started)
+        guardState.updateValidatedRx(
+            active: true,
+            sessionId: "session-a",
+            generation: 7,
+            participantResolved: true,
+            trackSubscribed: true,
+            at: started
+        )
+        XCTAssertEqual(
+            guardState.handleRemotePcm(
+                sessionId: "session-a",
+                generation: 7,
+                at: started.addingTimeInterval(0.02)
+            ),
+            .observed
+        )
+        XCTAssertTrue(guardState.snapshot.remoteMediaSpeakerActive)
+        XCTAssertTrue(guardState.snapshot.validatedRemoteRxActive)
+        XCTAssertTrue(guardState.snapshot.remotePcmObserved)
+        XCTAssertTrue(guardState.snapshot.remoteBusyBlocksLocalPtt)
+
+        guardState.handleMediaActivity(sessionId: "session-a", active: false, at: started.addingTimeInterval(0.1))
+        guardState.updateValidatedRx(
+            active: false, sessionId: nil, generation: 0, participantResolved: false, trackSubscribed: false,
+            at: started.addingTimeInterval(0.1)
+        )
+        XCTAssertFalse(guardState.snapshot.remoteBusyBlocksLocalPtt)
+    }
+
+    func testMediaOnlyFieldDivergenceBlocksPttUntilBoundedStaleClear() {
+        let started = Date(timeIntervalSince1970: 1_000)
+        var guardState = RxConsistencyGuard()
+        guardState.handleMediaActivity(sessionId: "session-a", active: true, at: started)
+        XCTAssertTrue(guardState.snapshot.remoteBusyBlocksLocalPtt)
+        XCTAssertFalse(guardState.snapshot.validatedRemoteRxActive)
+
+        let evaluation = guardState.evaluate(
+            at: started.addingTimeInterval(0.25),
+            thresholdMilliseconds: 250
+        )
+        XCTAssertEqual(evaluation.signals.map(\.event), ["rx_divergence_detected", "rx_divergence_cleared"])
+        XCTAssertEqual(evaluation.staleMediaSessionId, "session-a")
+        XCTAssertFalse(guardState.snapshot.remoteBusyBlocksLocalPtt)
+    }
+
+    func testSpeakingInactiveDeterministicallyClearsMediaBusyBeforeWatchdog() {
+        let started = Date(timeIntervalSince1970: 1_000)
+        var guardState = RxConsistencyGuard()
+        guardState.handleMediaActivity(sessionId: "session-a", active: true, at: started)
+        guardState.handleMediaActivity(sessionId: "session-a", active: false, at: started.addingTimeInterval(0.04))
+
+        XCTAssertFalse(guardState.snapshot.remoteMediaSpeakerActive)
+        XCTAssertFalse(guardState.snapshot.remoteBusyBlocksLocalPtt)
+        XCTAssertTrue(guardState.evaluate(at: started.addingTimeInterval(1)).signals.isEmpty)
+    }
+
+    func testValidatedRxWithoutPcmDiagnosesAndAttemptsRecoveryOnlyOnce() {
+        let started = Date(timeIntervalSince1970: 1_000)
+        var guardState = RxConsistencyGuard()
+        guardState.updateValidatedRx(
+            active: true,
+            sessionId: "session-a",
+            generation: 9,
+            participantResolved: true,
+            trackSubscribed: false,
+            at: started
+        )
+
+        let first = guardState.evaluate(at: started.addingTimeInterval(0.25), thresholdMilliseconds: 250)
+        XCTAssertEqual(first.signals.map(\.event), ["rx_pcm_timeout"])
+        XCTAssertEqual(first.recoverySessionId, "session-a")
+        XCTAssertEqual(first.recoveryGeneration, 9)
+        XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
+
+        let second = guardState.evaluate(at: started.addingTimeInterval(1), thresholdMilliseconds: 250)
+        XCTAssertTrue(second.signals.isEmpty)
+        XCTAssertNil(second.recoverySessionId)
+        XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
+    }
+
+    func testOldGenerationPcmCannotSatisfyCurrentRxFence() {
+        let started = Date(timeIntervalSince1970: 1_000)
+        var guardState = RxConsistencyGuard()
+        guardState.updateValidatedRx(
+            active: true,
+            sessionId: "session-b",
+            generation: 12,
+            participantResolved: true,
+            trackSubscribed: true,
+            at: started
+        )
+        XCTAssertEqual(
+            guardState.handleRemotePcm(sessionId: "session-a", generation: 11, at: started),
+            .rejected
+        )
+        XCTAssertFalse(guardState.snapshot.remotePcmObserved)
+        XCTAssertEqual(
+            guardState.handleRemotePcm(sessionId: "session-b", generation: 12, at: started),
+            .observed
+        )
+        XCTAssertTrue(guardState.snapshot.remotePcmObserved)
     }
 
     func testValidatedRemoteStartRequestsAppleParticipantAndDidActivateIsRecorded() {
