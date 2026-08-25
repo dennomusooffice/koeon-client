@@ -1,6 +1,6 @@
-# A7 source-publication decision and technical evidence
+# A7 ソース公開判断とtechnical evidence
 
-This packet records the Human source-publication decision and preserves the technical evidence boundary. Formal counsel review was not performed, and commercial Android/iOS binary distribution remains a separate blocked gate.
+このpacketはHumanによるソース公開判断を記録し、technical evidenceのboundaryを維持します。formal counsel reviewは実施していません。商用Android / iOS binary distributionは独立したblocked gateのままです。
 
 ```text
 A6_BASE_MAIN_SHA = 8b34628bc2a3f0094b23cfa826359d7f55355d9d
@@ -27,7 +27,7 @@ PUBLIC_RULESET_PLAN = APPROVED / APPLY_IMMEDIATELY_AFTER_PUBLIC
 PUBLICATION_SAFETY_STATUS = PASS_REQUIRED_ON_FINAL_PR
 ```
 
-## Evidence index
+## Evidence index（証跡一覧）
 
 - `sbom/koeon-client.spdx.json`
 - `THIRD_PARTY_NOTICES.md`
@@ -40,14 +40,14 @@ PUBLICATION_SAFETY_STATUS = PASS_REQUIRED_ON_FINAL_PR
 - `docs/PUBLIC_REPOSITORY_RULESET_PLAN.md`
 - `SECURITY.md`, `CONTRIBUTING.md`, `TRADEMARKS.md`
 
-## Separate commercial and post-public gates
+## 独立したcommercial gateと公開後のgate
 
-1. Keep commercial Android/iOS binary distribution blocked pending JAIN SIP and third-party binary-obligation review.
-2. Complete Google Code Scanner privacy policy and Play Data Safety review before commercial distribution.
-3. Enable and verify GitHub Private Vulnerability Reporting immediately after public activation.
-4. Apply the approved public Ruleset and run the required non-member fork PR smoke test.
-5. Complete a CLA or equivalent contribution rights-chain process before accepting external code.
-6. Keep historical invite/Production review outside this public client repository.
+1. JAIN SIPとthird-party binary obligationのreviewが完了するまで、商用Android / iOS binary distributionをblockedに維持する。
+2. commercial distribution前にGoogle Code Scanner privacy policyとGoogle Play Data Safety reviewを完了する。
+3. public activation直後にGitHub Private Vulnerability Reportingを有効化して確認する。
+4. 承認済みpublic Rulesetを適用し、必要なnon-member fork PR smoke testを実行する。
+5. 外部codeを受け入れる前に、CLAまたは同等のcontribution rights-chain processを完成させる。
+6. historical invite / Production reviewは、このpublic client repositoryの対象外として維持する。
 
 ```text
 KOEON_ORIGINAL_CODE_RIGHTS = CONFIRMED_BY_HUMAN

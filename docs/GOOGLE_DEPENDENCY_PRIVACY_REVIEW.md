@@ -1,6 +1,6 @@
-# Google dependency and privacy review
+# Google dependency / privacy review
 
-Status: technical/privacy evidence only; no legal approval.
+状態: technical / privacy evidenceのみです。legal approvalではありません。
 
 ## Exact component
 
@@ -13,28 +13,28 @@ GOOGLE_COMPONENT_STATUS = PRIVACY_DISCLOSURE_REQUIRED
 LEGAL_REVIEW_REQUIRED = YES
 ```
 
-The Android UI builds `GmsBarcodeScannerOptions`, restricts scanning to QR codes, enables auto-zoom, obtains `GmsBarcodeScanning.getClient(...)`, calls `startScan()`, and passes only `Barcode.rawValue` to enrollment handling.
+Android UIは`GmsBarcodeScannerOptions`をbuildし、scan対象をQR codeへ限定してauto-zoomを有効化します。`GmsBarcodeScanning.getClient(...)`を取得し、`startScan()`を呼び出し、`Barcode.rawValue`だけをenrollment handlingへ渡します。
 
-## Runtime behavior from official Google documentation
+## Google公式documentationに基づくruntime behavior
 
-- The implementation is delivered by Google Play services; the app itself does not request camera permission for this scanner.
-- Image processing occurs on-device. Google states it does not store image data or scan results.
-- The scanner module is unbundled and may be downloaded by Google Play services when first used if it is not already installed.
-- Version 16.1.0 is the documented dependency and the first version supporting the enabled auto-zoom option.
+- implementationはGoogle Play servicesから提供されます。このscannerのためにapp自身がcamera permissionをrequestすることはありません。
+- image processingはon-deviceで行われます。Googleはimage dataやscan resultを保存しないと説明しています。
+- scanner moduleはunbundledです。未installの場合、初回使用時にGoogle Play servicesがdownloadすることがあります。
+- version 16.1.0はdocumented dependencyであり、有効化しているauto-zoom optionをsupportする最初のversionです。
 
-Primary source: [Google Code Scanner for Android](https://developers.google.com/ml-kit/vision/barcode-scanning/code-scanner).
+一次情報: [Google Code Scanner for Android](https://developers.google.com/ml-kit/vision/barcode-scanning/code-scanner)
 
 ## Data Safety evidence
 
-Google's ML Kit Android disclosure guidance says developers remain responsible for their Google Play Data safety answers. For ML Kit features it documents diagnostic/usage collection including device/app information, identifiers, performance metrics, API configuration, input/output size, feature version, event type and error codes. It states collected data is encrypted in transit and not transferred to third parties.
+GoogleのML Kit Android disclosure guidanceでは、Google Play Data Safetyの回答に対する責任はdeveloperにあるとしています。ML Kit featureによるdiagnostic / usage collectionとして、device / app information、identifier、performance metrics、API configuration、input / output size、feature version、event type、error codeを記載しています。収集dataはtransit時にencryptedで、third partyへtransferしないと説明しています。
 
-For `play-services-code-scanner` with auto-zoom enabled, Google additionally lists a dynamically generated scan-session identifier, zoom-level changes and predicted barcode bounding-box coordinates.
+auto-zoomを有効化した`play-services-code-scanner`について、Googleはさらに、動的に生成されるscan-session identifier、zoom-level change、予測したbarcode bounding-box coordinateを挙げています。
 
-Primary source: [ML Kit Android data disclosure guidance](https://developers.google.com/ml-kit/android-data-disclosure).
+一次情報: [ML Kit Android data disclosure guidance](https://developers.google.com/ml-kit/android-data-disclosure)
 
-## Terms/privacy classification
+## Terms / privacy classification
 
-Google API Terms require an accurate privacy policy describing user information collection/use/sharing and compliance with applicable privacy law. Primary source: [Google APIs Terms of Service](https://developers.google.com/terms).
+Google API Termsは、user informationのcollection / use / sharingを正確に説明するprivacy policyと、applicable privacy lawへのcomplianceを求めています。一次情報: [Google APIs Terms of Service](https://developers.google.com/terms)
 
 ```text
 IMAGE_OR_RESULT_TRANSMISSION_TO_GOOGLE = NOT_INDICATED_BY_OFFICIAL_SCANNER_DOCS
@@ -45,5 +45,5 @@ PRIVACY_DISCLOSURE = REQUIRED
 LEGAL_APPROVAL = NO
 ```
 
-A7 must approve the app privacy policy and Google Play Data safety classification before publication/distribution. This audit does not decide whether any item is personal data under a particular jurisdiction.
+A7では、publication / distribution前にapp privacy policyとGoogle Play Data Safety classificationを承認する必要があります。このauditは、各itemが特定jurisdictionでpersonal dataに該当するかを判断しません。
 

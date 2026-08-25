@@ -1,8 +1,8 @@
-# TASK004G CI Remediation Evidence
+# TASK004G CI remediation evidence
 
-Status: PRIVATE staging evidence. This document is not publication approval.
+状態: PRIVATE staging evidence。この文書はpublication approvalではありません。
 
-## Baseline
+## Baseline（基準状態）
 
 - Repository: `dennomusooffice/koeon-client` (PRIVATE)
 - Base main: `8b8dc36182a7b071d1d448d166bc79887b025c12`
@@ -19,7 +19,7 @@ Status: PRIVATE staging evidence. This document is not publication approval.
 - Line endings: `251 LF`, `0 CRLF`
 - Gradle distribution: `gradle-8.13-bin.zip`
 
-The authorized Android correction is Git executable mode only. Script bytes, line endings, wrapper properties, and Gradle version must remain unchanged.
+承認されたAndroid修正はGit executable modeだけです。script bytes、line ending、wrapper properties、Gradle versionは変更しません。
 
 ## macOS failure evidence
 
@@ -41,13 +41,13 @@ The authorized Android correction is Git executable mode only. Script bytes, lin
 - Peeled commit revision: `79fb2beee98e45556bffebefa50b5d05c3382af1`
 - Resolved transitive evidence: LiveKitWebRTC `144.7559.11`, LiveKitUniFFI `0.0.6`, SwiftProtobuf `1.38.1`
 
-The hosted runner and both `$RUNNER_TEMP` paths were fresh, and no `actions/cache` step existed. Package resolution completed successfully. The build then matched one Simulator UDID as both `arm64` and `x86_64`, compiled the LiveKit package for `arm64`, and attempted the KOEON target for both architectures. The `x86_64` compile attempted to consume:
+hosted runnerと2つの`$RUNNER_TEMP` pathはfreshで、`actions/cache` stepは存在しませんでした。package resolutionは正常に完了しました。その後、buildは1つのSimulator UDIDを`arm64`と`x86_64`の両方にmatchさせ、LiveKit packageを`arm64`向けにcompileした一方、KOEON targetを両architecture向けにcompileしようとしました。`x86_64` compileは次のmoduleを使用しようとしました:
 
 `/Users/runner/work/_temp/derived/Build/Products/Debug-iphonesimulator/LiveKit.swiftmodule/arm64-apple-ios-simulator.swiftmodule`
 
-The compiler reported that module as built for an incompatible target and could not resolve `LiveKit` from `AudioSessionController.swift:4`.
+compilerは、そのmoduleが互換性のないtarget向けにbuildされていると報告し、`AudioSessionController.swift:4`から`LiveKit`をresolveできませんでした。
 
-## Root cause and Decision Gate
+## Root causeとDecision Gate
 
 - `MACOS_ROOT_CAUSE_CLASS = SIMULATOR_ARCH_DESTINATION_MISMATCH`
 - Secondary classification: `CI_WORKFLOW_CONFIGURATION`
@@ -55,25 +55,25 @@ The compiler reported that module as built for an incompatible target and could 
 - `DEPENDENCY_VERSION_CHANGE_REQUIRED = NO`
 - `SAFE_CI_ONLY_REMEDIATION_AVAILABLE = YES`
 
-The remediation keeps Xcode 26.6 and every dependency requirement unchanged. It uses fresh per-run SourcePackages and DerivedData paths and constrains the hosted ARM64 Simulator destination to `arch=arm64` with `ONLY_ACTIVE_ARCH=YES`. This is an invocation-only setting and does not change project architecture support.
+remediationでは、Xcode 26.6とすべてのdependency requirementを変更しません。runごとにfreshなSourcePackages / DerivedData pathを使用し、hosted ARM64 Simulator destinationを`arch=arm64`と`ONLY_ACTIVE_ARCH=YES`で制約します。これはinvocationだけの設定であり、projectのarchitecture supportは変更しません。
 
-The retry records `xcodebuild -version`, `swift --version`, selected developer directory, runner architecture, generated `Package.resolved` evidence, destination, and exact resolution in the GitHub Actions log.
+retryでは、`xcodebuild -version`、`swift --version`、selected developer directory、runner architecture、生成された`Package.resolved` evidence、destination、exact resolutionをGitHub Actions logへ記録します。
 
 ## Trigger budget
 
-Workflow triggers before remote mutation:
+remote mutation前のworkflow trigger:
 
 - `push`: `main` only
 - `pull_request`: enabled
 - `workflow_dispatch`: absent
 - `PULL_REQUEST_TARGET`: absent
 
-The remediation branch is pushed once without opening a workflow run. A single PR `opened` event is then used for the one authorized macOS validation job. No additional commit, synchronize event, workflow dispatch, rerun, or merge is allowed in TASK004G.
+remediation branchはworkflow runを開始せず1回だけpushします。その後、1回のPR `opened` eventを使用して、承認されたmacOS validation jobを1回だけ実行します。TASK004Gでは、追加commit、synchronize event、workflow dispatch、rerun、mergeを許可しません。
 
 - `ADDITIONAL_MACOS_ATTEMPTS = 1`
 - `CI_TRIGGER_BUDGET_UNSAFE = NO`
 
-## Unchanged security and product constraints
+## 変更しないsecurity / Product constraint
 
 - Product Swift/Kotlin changes: `0`
 - Dependency semantic/revision changes: `0`

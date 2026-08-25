@@ -1,19 +1,19 @@
-# Privacy disclosure input — Human/legal draft
+# Privacy disclosure input — Human / legal draft
 
-This document is technical input for a future privacy policy and store disclosures. It is not an approved privacy policy.
+この文書は、将来のprivacy policyとstore disclosureを作成するためのtechnical inputです。承認済みprivacy policyではありません。
 
 ## Google Code Scanner
 
-- Component: `com.google.android.gms:play-services-code-scanner:16.1.0`.
-- Purpose: scan a QR invite and return its decoded value to the app.
-- Camera/image handling: Google documents on-device processing and states it does not store images or scan results.
-- Module delivery: Google Play services may download the unbundled scanner module.
-- General ML Kit diagnostics/analytics: device/app information, identifiers, performance/configuration/size/version/event/error metadata are documented by Google.
-- Auto-zoom: enabled by KOEON; Google documents scan-session ID, zoom changes and predicted barcode bounding-box coordinates as additional collected data.
+- Component: `com.google.android.gms:play-services-code-scanner:16.1.0`
+- Purpose: QR inviteをscanし、decodeしたvalueをappへ返す。
+- Camera / image handling: Googleはon-device processingを説明し、imageやscan resultを保存しないとしています。
+- Module delivery: Google Play servicesがunbundled scanner moduleをdownloadする場合があります。
+- General ML Kit diagnostics / analytics: device / app information、identifier、performance / configuration / size / version / event / error metadataがGoogle documentationに記載されています。
+- Auto-zoom: KOEONで有効化しています。Googleは追加収集dataとして、scan-session ID、zoom change、予測したbarcode bounding-box coordinateを記載しています。
 
-The decoded invite value is handled by KOEON enrollment logic. It must not be logged or placed in public diagnostics.
+decodeしたinvite valueはKOEON enrollment logicで処理します。logやpublic diagnosticsへ出力してはいけません。
 
-## Human/legal fields required before publication
+## publication前に必要なHuman / legal field
 
 ```text
 DATA_CONTROLLER = HUMAN_TBD
@@ -25,5 +25,5 @@ APPLE_PRIVACY_DISCLOSURE = HUMAN_TBD
 PRIVACY_POLICY_APPROVED = NO
 ```
 
-Primary technical sources are linked in `docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md`.
+technicalな一次情報へのlinkは`docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md`に記載しています。
 

@@ -1,6 +1,6 @@
-# Dependency and SBOM evidence
+# Dependency / SBOM evidence（依存関係証跡）
 
-Status: technical inventory complete; legal conclusions are not made.
+状態: technical inventoryはcompleteです。法的結論は示しません。
 
 ```text
 SBOM_STATUS = COMPLETE_TECHNICAL
@@ -11,9 +11,9 @@ DEPENDENCY_SEMANTIC_CHANGE = NO
 LICENSE_CONCLUSIONS = NOASSERTION
 ```
 
-## Resolved inventory
+## Resolve済みinventory
 
-| Ecosystem/scope | Components | Source evidence |
+| Ecosystem / scope | Component数 | Source evidence |
 |---|---:|---|
 | Protocol/npm lock | 103 | `protocol/pnpm-lock.yaml` |
 | Android debug runtime | 158 | Gradle `debugRuntimeClasspath` |
@@ -23,16 +23,16 @@ LICENSE_CONCLUSIONS = NOASSERTION
 | iOS SwiftPM | 4 | Xcode 26.6 resolution from main CI run `32814279959` |
 | Total unique component records | 421 | `sbom/koeon-client.spdx.json` |
 
-iOS exact packages:
+iOS exact package:
 
 - LiveKit 2.16.0
 - LiveKitWebRTC 144.7559.11
 - LiveKitUniFFI 0.0.6
 - SwiftProtobuf 1.38.1
 
-Android direct Google scanner dependency is `com.google.android.gms:play-services-code-scanner:16.1.0`; runtime and privacy behavior are reviewed separately in `docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md`.
+Androidのdirect Google scanner dependencyは`com.google.android.gms:play-services-code-scanner:16.1.0`です。runtimeとprivacy behaviorは`docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md`で別途reviewしています。
 
-## Reproduction
+## 再生成
 
 ```sh
 node scripts/collect-dependency-evidence.mjs
@@ -41,5 +41,5 @@ node scripts/generate-sbom.mjs
 node scripts/generate-third-party-notices.mjs
 ```
 
-The license collector uses exact npm registry metadata, exact Maven POM metadata and exact Swift repository tags. Missing or ambiguous declarations remain `NOASSERTION`. The SPDX document conservatively links the candidate root to every resolved component; exact transitive topology remains in the pnpm lock and Gradle evidence.
+license collectorは、正確なnpm registry metadata、Maven POM metadata、Swift repository tagを使用します。宣言が存在しない、または曖昧な場合は`NOASSERTION`のままです。SPDX documentではcandidate rootをすべてのresolved componentへ保守的にlinkし、正確なtransitive topologyはpnpm lockとGradle evidenceに保持します。
 

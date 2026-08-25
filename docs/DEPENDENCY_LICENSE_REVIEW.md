@@ -1,10 +1,10 @@
 # Dependency license review — technical evidence
 
-This is a technical classification for Human/counsel review, not legal advice or a final compatibility decision.
+これはHuman / counsel reviewのためのtechnical classificationです。legal adviceや最終的なcompatibility decisionではありません。
 
 ## Inventory result
 
-| Declared metadata | Components |
+| Declared metadata | Component数 |
 |---|---:|
 | Apache-2.0 | 252 |
 | MIT | 103 |
@@ -26,15 +26,15 @@ UNKNOWN = 44
 BLOCK_PUBLICATION = 0 (no clear technical blocker found; not legal approval)
 ```
 
-The 13 legal-review rows include reciprocal-license metadata and Google/Android proprietary SDK terms. The 44 `UNKNOWN` rows have no unambiguous SPDX declaration in the exact POM metadata. All rows and evidence URLs are in `THIRD_PARTY_NOTICES.md` and `sbom/evidence/license-evidence.json`.
+legal-review 13行には、reciprocal-license metadataとGoogle / Android proprietary SDK termsが含まれます。`UNKNOWN` 44行には、exact POM metadata内に一意なSPDX declarationがありません。全行とevidence URLは`THIRD_PARTY_NOTICES.md`と`sbom/evidence/license-evidence.json`に記録しています。
 
-## Required Human/counsel decisions
+## 残るHuman / counsel review
 
-1. Confirm MPL-2.0 compatibility and file-level obligations for the intended source release.
-2. Review EPL/EDL/MPL-1.1/LGPL metadata and whether each build/test/runtime artifact is distributed.
-3. Review exact Google ML Kit and Android SDK terms independently of open-source license metadata.
-4. Determine which copyright/license texts must accompany source, Android binaries and future signed distributions.
-5. Approve the Commercial OEM/dual-license rights chain and CLA policy before accepting material external code.
+1. 意図するsource releaseについて、MPL-2.0 compatibilityとfile-level obligationを確認する。
+2. EPL / EDL / MPL-1.1 / LGPL metadataと、各build / test / runtime artifactが配布物へ含まれるかをreviewする。
+3. open-source license metadataとは独立して、正確なGoogle ML Kit / Android SDK termsをreviewする。
+4. source、Android binary、将来のsigned distributionに同梱すべきcopyright / license textを判断する。
+5. 実質的な外部codeを受け入れる前に、Commercial OEM / dual-license rights chainとCLA policyを承認する。
 
-`MPL-2.0 = PREFERRED / LEGAL REVIEW REQUIRED` remains unchanged.
+`MPL-2.0 = PREFERRED / LEGAL REVIEW REQUIRED`は変更されていません。
 

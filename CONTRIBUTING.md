@@ -1,4 +1,4 @@
-# Contributing — initial public policy
+# Contribution policy — 初期公開方針
 
 ```text
 EXTERNAL_CORE_PRS = CLOSED_INITIAL
@@ -6,19 +6,19 @@ CLA_REQUIRED_BEFORE_EXTERNAL_CODE = YES
 CLA_FINALIZATION_BEFORE_INITIAL_PUBLICATION = DEFERRED
 ```
 
-At initial launch, KOEON Client does not accept external changes to core iOS, Android, protocol, audio, PTT, networking or build behavior. Please do not open a core-code pull request until maintainers explicitly change this policy.
+初期公開段階では、iOS、Android、protocol、audio、PTT、networking、build behaviorのcore部分に対する外部変更を受け付けません。maintainerがこの方針を明示的に変更するまで、core codeのpull requestは作成しないでください。
 
-Issues and reproducible bug reports may be accepted after publication. Documentation corrections may be considered case by case, but opening an issue first is preferred.
+Issueと再現可能なbug reportは受け付けます。文書修正は個別に検討しますが、先にIssueで相談してください。
 
-Material external code cannot be accepted until the Human owner and counsel approve a rights-chain policy and any CLA/DCO process needed for the planned Commercial OEM/dual-license architecture. This document is not a CLA and creates no additional license grant.
+計画中のCommercial OEM / dual-license architectureに必要なrights-chain policyとCLA / DCO processをHuman ownerとcounselが承認するまで、実質的な外部codeは受け入れません。この文書はCLAではなく、新たなlicense grantを与えるものでもありません。
 
-Never submit credentials, invite values, access tokens, private endpoints, recordings, user/channel/device identifiers, signing material, event assets or private operational details.
+credential、invite value、access token、private endpoint、recording、user / channel / device identifier、signing material、event asset、privateな運用情報を提出しないでください。
 
-Security vulnerabilities must follow [SECURITY.md](SECURITY.md), not a public issue or pull request.
+security vulnerabilityはpublic Issueやpull requestへ記載せず、[SECURITY.md](SECURITY.md)に従って報告してください。
 
-## Code of Conduct status
+## Code of Conductの状態
 
 `CODE_OF_CONDUCT_STATUS = DEFERRED_HUMAN_CONTACT`
 
-An authoritative Code of Conduct has not been added because no public enforcement contact has been approved. Human approval of the enforcement route and standard text/version is required before adding one.
+公開可能なenforcement contactが承認されていないため、正式なCode of Conductはまだ追加していません。追加前に、enforcement routeと採用する標準文面/versionについてHuman approvalが必要です。
 
