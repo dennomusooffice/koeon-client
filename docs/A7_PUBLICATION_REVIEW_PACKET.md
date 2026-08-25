@@ -1,25 +1,29 @@
-# A7 publication review packet — technical evidence
+# A7 source-publication decision and technical evidence
 
-This packet supports Human/legal review. It is not publication or legal approval.
+This packet records the Human source-publication decision and preserves the technical evidence boundary. Formal counsel review was not performed, and commercial Android/iOS binary distribution remains a separate blocked gate.
 
 ```text
-SOURCE_MAIN_SHA = 8b34628bc2a3f0094b23cfa826359d7f55355d9d
-A6_BRANCH = codex/task004i-a6-public-readiness
-A6_BRANCH_HEAD = authoritative PR head recorded at Human Gate I1
-LICENSE_CANDIDATE = MPL-2.0 / LEGAL REVIEW REQUIRED
+A6_BASE_MAIN_SHA = 8b34628bc2a3f0094b23cfa826359d7f55355d9d
+A6_MERGED_MAIN_SHA = 5ccc438fd0818ecca33db5ff83f24cea03050333
+PUBLIC_SOURCE_LICENSE = MPL-2.0
+A7_SOURCE_HUMAN_GATE = PASS
+FORMAL_COUNSEL_REVIEW = NOT_PERFORMED
+A7_COMMERCIAL_BINARY_GATE = BLOCKED
+JAIN_SIP_COMMERCIAL_BINARY_GATE = REVIEW_REQUIRED
+GOOGLE_COMMERCIAL_PRIVACY_GATE = REVIEW_REQUIRED
 SBOM_STATUS = COMPLETE_TECHNICAL / SPDX 2.3 / 421 components
-NOTICE_STATUS = PARTIAL_LEGAL_REVIEW
-DEPENDENCY_REVIEW_STATUS = 52 NOASSERTION / 13 LEGAL_REVIEW_REQUIRED / 44 UNKNOWN
-GOOGLE_COMPONENT_STATUS = PRIVACY_DISCLOSURE_REQUIRED
+NOTICE_STATUS = COMPLETE_TECHNICAL / FORMAL_COUNSEL_REVIEW_NOT_PERFORMED
+DEPENDENCY_A6_BASELINE = 52 NOASSERTION / 13 LEGAL_REVIEW_REQUIRED / 44 UNKNOWN
+GOOGLE_COMPONENT_STATUS = COMMERCIAL_PRIVACY_REVIEW_REQUIRED
 ASSET_PROVENANCE_STATUS = READY_WITH_BRAND_ASSETS_DEFERRED
-TRADEMARK_POLICY_STATUS = DRAFT_FOR_LEGAL_REVIEW
+TRADEMARK_POLICY_STATUS = APPROVED_FOR_INITIAL_PUBLIC_SOURCE
 EXTERNAL_CORE_PRS = CLOSED_INITIAL
-CLA_STATUS = LEGAL_REVIEW_REQUIRED
-SECURITY_POLICY_STATUS = PARTIAL
+CLA_STATUS = REQUIRED_BEFORE_EXTERNAL_CODE / INITIAL_FINALIZATION_DEFERRED
+SECURITY_REPORTING_PRIMARY = GITHUB_PRIVATE_VULNERABILITY_REPORTING
 CI_THREAT_STATUS = STATIC_CONTROLS_READY
 ACTUAL_FORK_PR_TEST = NOT_SUPPORTED_WHILE_PRIVATE
 A8_POST_PUBLIC_FORK_PR_SMOKE_TEST = REQUIRED
-PUBLIC_RULESET_PLAN = READY
+PUBLIC_RULESET_PLAN = APPROVED / APPLY_IMMEDIATELY_AFTER_PUBLIC
 PUBLICATION_SAFETY_STATUS = PASS_REQUIRED_ON_FINAL_PR
 ```
 
@@ -36,20 +40,19 @@ PUBLICATION_SAFETY_STATUS = PASS_REQUIRED_ON_FINAL_PR
 - `docs/PUBLIC_REPOSITORY_RULESET_PLAN.md`
 - `SECURITY.md`, `CONTRIBUTING.md`, `TRADEMARKS.md`
 
-## Remaining Human/legal decisions
+## Separate commercial and post-public gates
 
-1. Assign `LEGAL_BUSINESS_OWNER` and `COUNSEL` and approve/reject MPL-2.0 compatibility and notices.
-2. Resolve the 52 `NOASSERTION` component records and the 13 explicit legal-review classifications.
-3. Approve Google Code Scanner privacy-policy and Google Play Data safety disclosures.
-4. Enable/validate GitHub private vulnerability reporting or approve a public security contact.
-5. Approve trademark ownership/usage policy and the future brand-asset strategy.
-6. Approve a CLA/DCO/rights-chain policy before accepting material external code.
-7. Re-evaluate/apply public Rulesets and run the required post-public fork smoke test.
-8. Keep historical invite authoritative review in the private security backlog; do not connect to Production from this repository.
+1. Keep commercial Android/iOS binary distribution blocked pending JAIN SIP and third-party binary-obligation review.
+2. Complete Google Code Scanner privacy policy and Play Data Safety review before commercial distribution.
+3. Enable and verify GitHub Private Vulnerability Reporting immediately after public activation.
+4. Apply the approved public Ruleset and run the required non-member fork PR smoke test.
+5. Complete a CLA or equivalent contribution rights-chain process before accepting external code.
+6. Keep historical invite/Production review outside this public client repository.
 
 ```text
-LEGAL_BUSINESS_OWNER = HUMAN_TBD
-COUNSEL = HUMAN_TBD
-A7_LEGAL_GATE = BLOCKED
-PUBLICATION_AUTHORIZED = NO
+KOEON_ORIGINAL_CODE_RIGHTS = CONFIRMED_BY_HUMAN
+KOEON_RIGHTS_OWNER_DISPLAY = 電脳夢創企画（個人事業）
+KOEON_MARK_OWNER_DISPLAY = 電脳夢創企画（個人事業）
+COUNSEL = NOT_ASSIGNED
+FORMAL_COUNSEL_REVIEW = NOT_PERFORMED
 ```

@@ -1,15 +1,15 @@
-# Security policy — pre-publication draft
+# Security policy
 
 ## Reporting a vulnerability
 
 Do not disclose a vulnerability, credential, invite value or exploit in a public issue or pull request.
 
-Before publication, the repository owner must enable and validate GitHub private vulnerability reporting so that the repository Security tab exposes **Report a vulnerability**, or designate another approved public security contact. The current PRIVATE-plan API did not expose an authoritative setting during A6, so the external intake route remains a Human publication decision.
+Use GitHub Private Vulnerability Reporting through the repository **Security** tab and select **Report a vulnerability**. Do not publish sensitive details if that control is temporarily unavailable during initial repository activation. The repository owner will enable and verify this route immediately after public visibility is activated; this document does not claim that the control is already enabled while the repository remains private.
 
 ```text
-SECURITY_POLICY_STATUS = PARTIAL
-PUBLIC_SECURITY_CONTACT = HUMAN_TBD
-PRIVATE_VULNERABILITY_REPORTING = VERIFY_BEFORE_PUBLICATION
+SECURITY_REPORTING_PRIMARY = GITHUB_PRIVATE_VULNERABILITY_REPORTING
+PRIVATE_VULNERABILITY_REPORTING = ENABLE_AND_VERIFY_IMMEDIATELY_AFTER_PUBLIC
+PERSONAL_EMAIL_FALLBACK_PUBLISHED = NO
 ```
 
 ## Supported scope

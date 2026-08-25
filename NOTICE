@@ -1,12 +1,10 @@
-KOEON Client pre-publication staging notice
-==========================================
+KOEON Client source notice
+==========================
 
-PUBLICATION IS NOT AUTHORIZED. This clean-root candidate remains subject to
-Human, legal, privacy, trademark and security review before publication.
-
-Preferred project license candidate: Mozilla Public License 2.0 (MPL-2.0).
-The LICENSE file remains the unmodified candidate license text. Its presence
-does not establish legal approval or trademark permission.
+KOEON Client source code controlled by the KOEON rights holder is released
+under the Mozilla Public License 2.0 (MPL-2.0). The LICENSE file contains the
+applicable MPL-2.0 text. The source-code license does not grant trademark or
+brand permission.
 
 The exact direct/transitive dependency inventory is recorded in:
 
@@ -15,9 +13,11 @@ The exact direct/transitive dependency inventory is recorded in:
 - THIRD_PARTY_NOTICES.md
 - docs/DEPENDENCY_LICENSE_REVIEW.md
 
-Upstream component licenses, copyright notices, Google SDK/service terms and
-binary redistribution requirements continue to apply. Unknown or ambiguous
-license metadata is recorded as NOASSERTION and requires Human/counsel review.
+Third-party dependencies retain their own licenses, copyright notices and
+terms. Upstream component licenses, Google SDK/service terms and binary
+redistribution requirements continue to apply. Unknown or ambiguous license
+metadata is recorded as NOASSERTION; this technical record does not assert
+third-party legal compatibility or formal counsel approval.
 
 No logo/AppIcon, release-signing credential, private server implementation,
 event asset or Production deployment material is included.

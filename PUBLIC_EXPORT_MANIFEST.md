@@ -7,7 +7,7 @@ source main SHA = 2158c6fbb18a0004eade7650162ebbc9a512d666
 export timestamp = 2026-08-25T12:45:31+09:00
 export method = ALLOWLIST-BASED CLEAN-ROOT
 source Git history copied = NO
-public status = NOT AUTHORIZED
+public status at export timestamp = NOT AUTHORIZED
 ```
 
 ## Included roots
@@ -32,19 +32,21 @@ public status = NOT AUTHORIZED
 
 Safe defaults use `example.invalid` and `livekit.example.invalid`. No real endpoint credential is present.
 
-## Review blockers
+## Current source decision and separate commercial gates
 
-- `A7_LEGAL_GATE = BLOCKED`; legal owner and counsel are `HUMAN_TBD`.
-- MPL-2.0 is preferred, not finally approved for publication.
-- SPDX/NOTICE technical evidence is prepared; 52 `NOASSERTION` rows and 13 explicit legal-review rows require Human/counsel decision.
-- Google Code Scanner 16.1.0 requires privacy/Data Safety disclosure review because auto-zoom is enabled.
-- KOEON brand assets remain excluded; the trademark policy is a draft for legal review.
-- The final A6 PR must pass its single authorized macOS Simulator/XCTest validation.
-- invite authoritative Production review remains a separate required security follow-up.
+- `A7_SOURCE_HUMAN_GATE = PASS` by Human risk decision; formal counsel review was not performed.
+- `PUBLIC_SOURCE_LICENSE = MPL-2.0` for source code controlled by the KOEON rights holder.
+- `KOEON_RIGHTS_OWNER_DISPLAY = 電脳夢創企画（個人事業）`.
+- Third-party dependencies retain their own licenses and terms; technical evidence does not assert legal compatibility.
+- `EXTERNAL_CORE_PRS = CLOSED_INITIAL`; a CLA or equivalent rights-chain process is required before accepting external code.
+- `A7_COMMERCIAL_BINARY_GATE = BLOCKED`.
+- `JAIN_SIP_COMMERCIAL_BINARY_GATE = REVIEW_REQUIRED`.
+- `GOOGLE_COMMERCIAL_PRIVACY_GATE = REVIEW_REQUIRED`.
+- KOEON logo/AppIcon and other official brand assets remain excluded and deferred.
+- Historical invite/Production review remains outside this public client repository.
 
 ```text
-PUBLICATION_AUTHORIZED = NO
 REMOTE_CONFIGURATION_AUTHORIZED = NO
-A6_BRANCH_PR_AUTHORIZED = YES
-MAIN_MERGE_AUTHORIZED = NO
+FORMAL_COUNSEL_REVIEW = NOT_PERFORMED
+COMMERCIAL_ANDROID_IOS_DISTRIBUTION = SEPARATE_GATE_REQUIRED
 ```

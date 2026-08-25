@@ -1,6 +1,6 @@
-# KOEON Client — pre-publication staging
+# KOEON Client
 
-KOEON Client is a native iOS and Android push-to-talk client with a small, client-safe TypeScript protocol package. This clean-root repository is being prepared for Human and legal review; it is not yet approved for public release.
+KOEON Client is a native iOS and Android push-to-talk client with a small, client-safe TypeScript protocol package. This clean-root source repository contains only the approved public-client boundary; private service implementations and private repository history are not included.
 
 ## Scope and boundaries
 
@@ -21,17 +21,18 @@ Not included:
 
 Safe defaults use reserved `example.invalid` hostnames. The client cannot reach an operational KOEON service without a separately authorized configuration.
 
-## Release-readiness status
+## Source release status
 
 ```text
-PRE_PUBLICATION_STAGING = YES
-PUBLICATION_AUTHORIZED = NO
-LICENSE_CANDIDATE = MPL-2.0 / LEGAL REVIEW REQUIRED
+PUBLIC_SOURCE_LICENSE = MPL-2.0
+A7_SOURCE_HUMAN_GATE = PASS
+FORMAL_COUNSEL_REVIEW = NOT_PERFORMED
+COMMERCIAL_ANDROID_IOS_DISTRIBUTION = SEPARATE_GATE_REQUIRED
 EXTERNAL_CORE_PRS = CLOSED_INITIAL
-CLA_STATUS = LEGAL_REVIEW_REQUIRED
+CLA_REQUIRED_BEFORE_EXTERNAL_CODE = YES
 ```
 
-The dependency inventory is available as an [SPDX 2.3 SBOM](sbom/koeon-client.spdx.json), with technical notice evidence in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Unknown license metadata is explicitly recorded as `NOASSERTION`.
+Source code controlled by the KOEON rights holder is licensed under the [Mozilla Public License 2.0](LICENSE). Third-party dependencies remain under their own licenses and terms. The dependency inventory is available as an [SPDX 2.3 SBOM](sbom/koeon-client.spdx.json), with technical notice evidence in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Unknown license metadata is explicitly recorded as `NOASSERTION`.
 
 ## Layout
 
@@ -71,7 +72,7 @@ bash scripts/publication-safety.sh
 
 - [Security policy](SECURITY.md)
 - [Contribution policy](CONTRIBUTING.md)
-- [Trademark policy draft](TRADEMARKS.md)
+- [Trademark policy](TRADEMARKS.md)
 - [Public CI threat model](docs/PUBLIC_CI_SECURITY.md)
 - [Dependency/license review](docs/DEPENDENCY_LICENSE_REVIEW.md)
 - [Google dependency/privacy review](docs/GOOGLE_DEPENDENCY_PRIVACY_REVIEW.md)

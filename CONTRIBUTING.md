@@ -1,8 +1,9 @@
-# Contributing — initial public policy draft
+# Contributing — initial public policy
 
 ```text
 EXTERNAL_CORE_PRS = CLOSED_INITIAL
-CLA_STATUS = LEGAL_REVIEW_REQUIRED
+CLA_REQUIRED_BEFORE_EXTERNAL_CODE = YES
+CLA_FINALIZATION_BEFORE_INITIAL_PUBLICATION = DEFERRED
 ```
 
 At initial launch, KOEON Client does not accept external changes to core iOS, Android, protocol, audio, PTT, networking or build behavior. Please do not open a core-code pull request until maintainers explicitly change this policy.

@@ -1,6 +1,6 @@
 # Public CI security model
 
-Status: PRIVATE pre-publication staging. Public release is not authorized.
+Status: public-client CI security policy. Public activation and the first non-member fork test remain separate operational gates.
 
 ## Trust boundary
 
