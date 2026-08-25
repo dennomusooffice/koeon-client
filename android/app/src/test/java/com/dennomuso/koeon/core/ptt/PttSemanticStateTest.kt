@@ -1,6 +1,8 @@
 package com.dennomuso.koeon.core.ptt
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PttSemanticStateTest {
@@ -17,5 +19,10 @@ class PttSemanticStateTest {
         assertEquals(PttSemanticState.TALKING, pttSemanticState(true, true, false, false, PttState.TRANSMITTING))
         assertEquals(PttSemanticState.PREPARING, pttSemanticState(true, true, false, false, PttState.REQUESTING_FLOOR))
         assertEquals(PttSemanticState.BUSY_REMOTE, pttSemanticState(true, true, false, false, PttState.BUSY))
+    }
+
+    @Test fun `remote speaker blocks touch headset and hardware eligibility`() {
+        assertFalse(localPttEligible(true, true, true, true, remoteTalking = true))
+        assertTrue(localPttEligible(true, true, true, true, remoteTalking = false))
     }
 }

@@ -441,6 +441,13 @@ private struct DiagnosticsView: View {
                 }
                 Section("RX lifecycle") {
                     row("rx_state", session.rxSnapshot.state.rawValue)
+                    row("remote_media_speaker_active", session.rxConsistencySnapshot.remoteMediaSpeakerActive ? "Yes" : "No")
+                    row("validated_remote_rx_active", session.rxConsistencySnapshot.validatedRemoteRxActive ? "Yes" : "No")
+                    row("remote_pcm_observed", session.rxConsistencySnapshot.remotePcmObserved ? "Yes" : "No")
+                    row("remote_track_subscribed", session.rxConsistencySnapshot.trackSubscribed ? "Yes" : "No")
+                    row("rx_divergence_watchdog_ms", "\(rxDivergenceWatchdogMilliseconds)")
+                    row("rx_divergence_last_event", session.rxDivergenceDiagnostics.last?.event ?? "None")
+                    row("rx_divergence_recovery_attempts", "\(session.rxConsistencySnapshot.recoveryAttempts)")
                     row("remote_speaker_session_id", session.remoteReceiveSnapshot.remoteSpeakerSessionId ?? "Unavailable")
                     row("remote_speaker_name", session.remoteReceiveSnapshot.remoteSpeakerName ?? "Unavailable")
                     row("ptt_remote_participant_state", session.remoteReceiveSnapshot.remoteParticipantState)
