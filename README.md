@@ -16,7 +16,7 @@ KOEON Clientは、iOS / Android向けのネイティブPush-to-Talk（PTT）ク�
 - KOEONのprivate server/backend、token signing、membership service
 - Web client
 - deployment、database、billing、administration infrastructure
-- release signing、TestFlight、App Store、Google Play向けの公開pipeline
+- Production deployment、App Store / Google Playでの一般公開設定
 - event site/assets、privateな運用資料、private repositoryの履歴
 
 安全な初期値には予約済みhostname `example.invalid`を使用しています。別途承認された設定がない限り、このclientから稼働中のKOEON serviceへ接続することはできません。

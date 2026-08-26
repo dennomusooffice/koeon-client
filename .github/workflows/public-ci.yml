@@ -63,6 +63,8 @@ jobs:
           scripts/ios-app-store-connect-preflight.test.mjs
       - name: Test secret-safe signed candidate diagnostics
         run: python3 scripts/ios-signed-candidate-validation.test.py
+      - name: Validate official iOS AppIcon source contract
+        run: python3 scripts/ios-appicon-contract.py --source .
 
   ios-simulator:
     runs-on: macos-26
@@ -102,5 +104,7 @@ jobs:
           echo "SIMULATOR_DESTINATION=platform=iOS Simulator,arch=arm64,id=$udid" >> "$GITHUB_ENV"
       - name: Simulator build
         run: xcodebuild -project ios/KOEON.xcodeproj -scheme KOEON -configuration Debug -destination "$SIMULATOR_DESTINATION" -derivedDataPath "$DERIVED_DATA_PATH" -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Validate compiled AppIcon
+        run: python3 scripts/ios-appicon-contract.py --app "$DERIVED_DATA_PATH/Build/Products/Debug-iphonesimulator/KOEON.app"
       - name: XCTest
         run: xcodebuild -project ios/KOEON.xcodeproj -scheme KOEON -configuration Debug -destination "$SIMULATOR_DESTINATION" -derivedDataPath "$DERIVED_DATA_PATH" -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" -only-testing:KOEONTests ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test

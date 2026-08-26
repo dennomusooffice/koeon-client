@@ -42,7 +42,7 @@ public status at export timestamp = NOT AUTHORIZED
 - `A7_COMMERCIAL_BINARY_GATE = BLOCKED`です。
 - `JAIN_SIP_COMMERCIAL_BINARY_GATE = REVIEW_REQUIRED`です。
 - `GOOGLE_COMMERCIAL_PRIVACY_GATE = REVIEW_REQUIRED`です。
-- KOEON logo / AppIconとその他のofficial brand assetは除外し、公開をdeferredとします。
+- iOS AppIconは、Humanが公開を承認した必要最小限のbrand assetとして、由来とblobを固定して含めます。公式logo packとその他のbrand assetの公開はdeferredです。
 - historical invite / Production reviewは、このpublic client repositoryの対象外です。
 
 ```text
