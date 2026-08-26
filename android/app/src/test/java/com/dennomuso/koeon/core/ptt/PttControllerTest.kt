@@ -25,6 +25,9 @@ class PttControllerTest {
         assertEquals(PttState.TRANSMITTING, harness.controller.current().state)
         assertEquals(listOf("acquire", "control-start", "start-cue", "mic-on"), harness.events.take(4))
         assertTrue(harness.controller.current().timing.cueEndAt!! <= harness.controller.current().timing.trackEnabledAt!!)
+        val timing = harness.controller.current().timing
+        assertTrue(timing.localUiFeedbackAt != null)
+        assertTrue(timing.localUiFeedbackLatencyMs!! <= 100L)
     }
 
     @Test

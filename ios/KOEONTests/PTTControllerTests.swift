@@ -128,6 +128,11 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertGreaterThan(transmittingSnapshot.attemptGeneration, 0)
         XCTAssertNotNil(transmittingSnapshot.floorRequestAt)
         XCTAssertNotNil(transmittingSnapshot.floorGrantedAt)
+        XCTAssertNotNil(transmittingSnapshot.localUiFeedbackAt)
+        XCTAssertLessThanOrEqual(
+            transmittingSnapshot.localUiFeedbackAt!.timeIntervalSince(transmittingSnapshot.pttDownAt!),
+            0.1
+        )
         XCTAssertNotNil(transmittingSnapshot.readyBarrierStartedAt)
         XCTAssertNotNil(transmittingSnapshot.readyBarrierCompletedAt)
         XCTAssertNotNil(transmittingSnapshot.talkingAt)
@@ -138,6 +143,52 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertNotNil(releasedSnapshot.controlEndPublishedAt)
         XCTAssertNotNil(releasedSnapshot.floorReleaseRequestedAt)
         XCTAssertNotNil(releasedSnapshot.floorReleaseCompletedAt)
+    }
+
+    func testFloorGrantMayStartAppleActivationWhileReadyBarrierStillBlocksMicrophone() async {
+        let events = EventLog()
+        let control = BlockingReadyControl(events: events)
+        let controller = PTTController(
+            role: .staff,
+            floor: FloorMock(events: events, expectedSessions: ["receiver-a"]),
+            microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events),
+            control: control,
+            clock: ControlledClock(),
+            onUpdate: { _ in }
+        )
+        let floorGranted = EventLog()
+        let prearm = Task {
+            await controller.preArmForAppleActivation(onFloorGranted: {
+                await floorGranted.append("apple:begin-requested")
+            })
+        }
+        await waitUntil { control.isWaiting }
+        let floorEvents = await floorGranted.values()
+        let transmissionEvents = await events.values()
+        XCTAssertEqual(floorEvents, ["apple:begin-requested"])
+        XCTAssertFalse(transmissionEvents.contains("mic:on"))
+        await controller.pttUp(playEndCue: false)
+        _ = await prearm.value
+    }
+
+    func testAppleBeginAfterFloorGrantIsGenerationAndReleaseFenced() {
+        XCTAssertTrue(shouldRequestAppleBeginAfterFloorGrant(
+            attempt: 4, currentAttempt: 4, gateState: .beginRequested,
+            releaseRequestedBeforeBegin: false, alreadyIssued: false
+        ))
+        XCTAssertFalse(shouldRequestAppleBeginAfterFloorGrant(
+            attempt: 3, currentAttempt: 4, gateState: .beginRequested,
+            releaseRequestedBeforeBegin: false, alreadyIssued: false
+        ))
+        XCTAssertFalse(shouldRequestAppleBeginAfterFloorGrant(
+            attempt: 4, currentAttempt: 4, gateState: .beginRequested,
+            releaseRequestedBeforeBegin: true, alreadyIssued: false
+        ))
+        XCTAssertFalse(shouldRequestAppleBeginAfterFloorGrant(
+            attempt: 4, currentAttempt: 4, gateState: .beginRequested,
+            releaseRequestedBeforeBegin: false, alreadyIssued: true
+        ))
     }
 
     func testAppReleaseDuringPreArmNeverEnablesMicrophoneAndReleasesFloor() async {

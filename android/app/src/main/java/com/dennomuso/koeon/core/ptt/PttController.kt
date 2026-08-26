@@ -28,6 +28,7 @@ enum class PttState {
 
 data class PttTiming(
     val pttDownAt: Instant? = null,
+    val localUiFeedbackAt: Instant? = null,
     val floorGrantedAt: Instant? = null,
     val cueStartAt: Instant? = null,
     val cueEndAt: Instant? = null,
@@ -40,7 +41,11 @@ data class PttTiming(
     val floorLatencyMs: Long? = null,
     val localEnableLatencyMs: Long? = null,
     val readyWaitMs: Long? = null,
-)
+) {
+    val localUiFeedbackLatencyMs: Long?
+        get() = if (pttDownAt == null || localUiFeedbackAt == null) null
+        else (localUiFeedbackAt.toEpochMilli() - pttDownAt.toEpochMilli()).coerceAtLeast(0L)
+}
 
 data class PttSnapshot(
     val state: PttState = PttState.IDLE,
@@ -147,7 +152,7 @@ class PttController(
                     state = PttState.REQUESTING_FLOOR,
                     leaseId = null,
                     lastError = null,
-                    timing = PttTiming(pttDownAt = downAt),
+                    timing = PttTiming(pttDownAt = downAt, localUiFeedbackAt = clock.now()),
                 ),
             )
             val acquired = runCatching { floor.acquire() }.getOrElse { error ->
