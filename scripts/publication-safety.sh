@@ -81,7 +81,7 @@ done
 invite_candidates="$(grep -IhEo '(^|[^0-9A-Z])[0-9ABCDEFGHJKMNPQRSTVWXYZ]{10}([^0-9A-Z]|$)' "${invite_scan[@]}" \
   | grep -Eo '[0-9ABCDEFGHJKMNPQRSTVWXYZ]{10}' \
   | sort -u \
-  | grep -Ev '^(ABCDE23456|1234567890|2147483647|DEPENDENCY|REFERENCES|TASK003G6B|TRADEMARKS)$' || true)"
+  | grep -Ev '^(ABCDE23456|1234567890|2147483647|DEPENDENCY|PREFERENCE|REFERENCES|TASK003G6B|TRADEMARKS)$' || true)"
 if [[ -n "$invite_candidates" ]]; then
   echo "Non-synthetic invite-shaped value found" >&2
   printf '%s\n' "$invite_candidates" >&2
