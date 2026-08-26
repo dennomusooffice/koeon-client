@@ -8,7 +8,7 @@
 	<true/>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>applinks:example.invalid</string>
+		<string>applinks:koeon.muso-apps.net</string>
 	</array>
 </dict>
 </plist>
