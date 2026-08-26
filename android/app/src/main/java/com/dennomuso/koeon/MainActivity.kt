@@ -86,6 +86,7 @@ import com.dennomuso.koeon.core.session.fieldDiagnosticJson
 import com.dennomuso.koeon.service.HeadsetPttMode
 import com.dennomuso.koeon.core.ptt.HardwareVolumePttMode
 import com.dennomuso.koeon.core.audio.InputGainMode
+import com.dennomuso.koeon.core.audio.AudioBitratePreset
 import com.dennomuso.koeon.core.livekit.AudioCaptureProfile
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -284,6 +285,7 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
                 modifier = Modifier.fillMaxWidth().height(54.dp),
             ) { Text(if (state.loading) "CONNECTING…" else "POWER ON · START") }
             HeadsetPttSettings(state, manager)
+            AudioBitrateSettings(state, manager)
             Button(
                 onClick = manager::resetDeviceAssignment,
                 enabled = !state.loading,
@@ -445,6 +447,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     }
     Button(onClick = manager::leaveAsync, enabled = !inputPressed && state.operationalState == OperationalState.ACTIVE, modifier = Modifier.fillMaxWidth()) { Text("POWER OFF", color = KoeonRed) }
     HeadsetPttSettings(state, manager)
+    AudioBitrateSettings(state, manager)
     HardwareAndGainSettings(state, manager)
     Button(
         onClick = manager::resetDeviceAssignment,
@@ -476,6 +479,35 @@ private fun HeadsetPttSettings(state: IntercomUiState, manager: IntercomSessionM
             modifier = Modifier.weight(1f),
         ) { Text("MOMENTARY") }
     }
+}
+
+@Composable
+private fun AudioBitrateSettings(state: IntercomUiState, manager: IntercomSessionManager) {
+    val diagnostics = state.diagnostics
+    Text("音声品質", fontWeight = FontWeight.Bold)
+    AudioBitratePreset.entries.forEach { preset ->
+        val label = when (preset) {
+            AudioBitratePreset.LOW -> "低帯域 12 kbps"
+            AudioBitratePreset.STANDARD -> "標準 24 kbps"
+            AudioBitratePreset.HIGH -> "高音質 48 kbps"
+        }
+        Button(
+            onClick = { manager.setAudioBitratePreset(preset) },
+            enabled = diagnostics.audioBitratePreset != preset,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (diagnostics.audioBitratePreset == preset) "✓ $label" else label)
+        }
+    }
+    Text(
+        if (state.joined) {
+            "選択値は次のPOWER ONまたはChannel再接続から適用されます"
+        } else {
+            "次のPOWER ONから送信音声へ適用されます"
+        },
+        color = Color(0xFF82909A),
+        fontSize = 10.sp,
+    )
 }
 
 @Composable
@@ -591,6 +623,9 @@ private fun Diagnostics(state: IntercomUiState) {
             DiagnosticRow("Hardware Volume short/long/toggle", "${state.diagnostics.hardwareVolumeShortPressCount}/${state.diagnostics.hardwareVolumeLongPressCount}/${state.diagnostics.hardwareVolumePttToggleCount}")
             DiagnosticRow("Input gain mode", state.diagnostics.inputGain.mode.name)
             DiagnosticRow("Audio capture profile", state.diagnostics.audioCaptureProfile.name)
+            DiagnosticRow("Audio bitrate preset", state.diagnostics.audioBitratePreset.name)
+            DiagnosticRow("Requested audio bitrate", "${state.diagnostics.requestedAudioBitrateKbps} kbps")
+            DiagnosticRow("Effective audio bitrate", state.diagnostics.effectiveAudioBitrateKbps?.let { "$it kbps" } ?: "Unavailable")
             DiagnosticRow("Input gain effective", "${state.diagnostics.inputGain.effectiveGainDb} dB")
             DiagnosticRow("Pre-KOEON RMS/peak", "${state.diagnostics.inputGain.inputRmsDbfs ?: "Unavailable"}/${state.diagnostics.inputGain.inputPeakDbfs ?: "Unavailable"}")
             DiagnosticRow("Post-KOEON RMS/peak", "${state.diagnostics.inputGain.postKoeonRmsDbfs ?: "Unavailable"}/${state.diagnostics.inputGain.postKoeonPeakDbfs ?: "Unavailable"}")

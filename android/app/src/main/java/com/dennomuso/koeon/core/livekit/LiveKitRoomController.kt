@@ -7,6 +7,7 @@ import com.dennomuso.koeon.core.ptt.MicrophoneGateway
 import com.dennomuso.koeon.core.audio.TonePttCuePlayer
 import com.dennomuso.koeon.core.audio.CueRole
 import com.dennomuso.koeon.core.audio.InputGainProcessor
+import com.dennomuso.koeon.core.audio.AudioBitratePreset
 import com.dennomuso.koeon.core.ptt.PTT_CONTROL_TOPIC
 import com.dennomuso.koeon.core.ptt.PTT_CONTROL_FAST_START_TOPIC
 import com.dennomuso.koeon.core.ptt.PttControlEvent
@@ -31,6 +32,7 @@ import io.livekit.android.room.Room
 import io.livekit.android.room.track.RemoteAudioTrack
 import io.livekit.android.room.track.LocalAudioTrackOptions
 import io.livekit.android.room.track.DataPublishReliability
+import io.livekit.android.room.participant.AudioTrackPublishDefaults
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -91,6 +93,7 @@ data class LiveKitSnapshot(
     val lastError: String? = null,
     val deployment: String = "UNKNOWN",
     val endpointHost: String? = null,
+    val effectiveAudioBitrateKbps: Int? = null,
 )
 
 internal data class AudioCaptureProcessingPolicy(
@@ -123,6 +126,9 @@ enum class AudioCaptureProfile(
 }
 
 internal val productionAudioCaptureProfile = AudioCaptureProfile.D_WEBRTC_OWNER
+
+internal fun audioTrackPublishDefaults(preset: AudioBitratePreset) =
+    AudioTrackPublishDefaults(audioBitrate = preset.bitsPerSecond)
 
 internal data class LiveKitEndpointDiagnostic(val deployment: String, val host: String?)
 
@@ -213,6 +219,7 @@ class LiveKitRoomController(
         userId: String,
         sessionId: String,
         deviceId: String?,
+        audioBitratePreset: AudioBitratePreset,
     ) {
         disconnect()
         this.channelId = channelId
@@ -231,6 +238,7 @@ class LiveKitRoomController(
             overrides = LiveKitOverrides(audioOptions = AudioOptions(audioHandler = audioHandler)),
         )
         nextRoom.localParticipant.audioTrackCaptureDefaults = audioCaptureProfile.capturePolicy.toTrackOptions()
+        nextRoom.localParticipant.audioTrackPublishDefaults = audioTrackPublishDefaults(audioBitratePreset)
         inputGainProcessor?.let {
             nextRoom.audioProcessingController.capturePostProcessor = it
             nextRoom.audioProcessingController.bypassCapturePostProcessing = false
@@ -242,6 +250,8 @@ class LiveKitRoomController(
             roomName = roomName,
             deployment = endpoint.deployment,
             endpointHost = endpoint.host,
+            effectiveAudioBitrateKbps =
+                nextRoom.localParticipant.audioTrackPublishDefaults.audioBitrate?.div(1_000),
         )
         eventJob = scope.launch {
             nextRoom.events.collect { event -> handleEvent(event) }

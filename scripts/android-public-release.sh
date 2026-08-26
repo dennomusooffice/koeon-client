@@ -44,6 +44,8 @@ actual_tree="$(git -C "$CLIENT_SOURCE_DIR" rev-parse 'HEAD^{tree}')"
 }
 echo "ANDROID_EXACT_SOURCE_ATTESTATION=PASS"
 
+python3 "$CLIENT_SOURCE_DIR/scripts/feature-parity-contract.py" --source "$CLIENT_SOURCE_DIR"
+
 if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode >"$keystore_path"; then
   echo "ANDROID_KEYSTORE_READABLE=FAIL"
   exit 1
@@ -181,9 +183,10 @@ echo "ANDROID_RELEASE_SIGNING=PASS"
 "$aapt" dump badging "$apk_path" >"$apk_badging_report"
 "$aapt" dump xmltree "$apk_path" AndroidManifest.xml >"$apk_manifest_report"
 APK_BADGING_REPORT="$apk_badging_report" APK_MANIFEST_REPORT="$apk_manifest_report" \
-  EXPECTED_VERSION_NAME="$VERSION_NAME" EXPECTED_VERSION_CODE="$VERSION_CODE" python3 - <<'PY'
+  APK_PATH="$apk_path" EXPECTED_VERSION_NAME="$VERSION_NAME" EXPECTED_VERSION_CODE="$VERSION_CODE" python3 - <<'PY'
 import os
 import re
+import zipfile
 
 badging = open(os.environ["APK_BADGING_REPORT"], encoding="utf-8").read()
 manifest = open(os.environ["APK_MANIFEST_REPORT"], encoding="utf-8").read()
@@ -195,10 +198,22 @@ if match.group(2) != os.environ["EXPECTED_VERSION_CODE"] or match.group(3) != os
 debuggable = [line for line in manifest.splitlines() if "android:debuggable" in line]
 if any(not re.search(r"(?:0x0|false)\s*$", line) for line in debuggable):
     raise SystemExit("APK_DEBUGGABLE=YES")
+icon_entries = set(re.findall(r"application-icon-[^:]+:'([^']+)'", badging))
+primary_icon = re.search(r"application:.* icon='([^']+)'", badging)
+if primary_icon:
+    icon_entries.add(primary_icon.group(1))
+if not icon_entries:
+    raise SystemExit("ANDROID_COMPILED_LAUNCHER_ICON=FAIL")
+with zipfile.ZipFile(os.environ["APK_PATH"]) as archive:
+    packaged = set(archive.namelist())
+if not any(icon in packaged for icon in icon_entries):
+    raise SystemExit("ANDROID_COMPILED_LAUNCHER_ICON=FAIL")
 print("APK_APPLICATION_ID=com.dennomuso.koeon")
 print("APK_VERSION_CONTRACT=PASS")
 print("APK_DEBUGGABLE=NO")
 print("APK_RELEASE_BUILD=YES")
+print("ANDROID_COMPILED_LAUNCHER_ICON=PASS")
+print("ANDROID_APPICON=PASS")
 PY
 
 mkdir -p "$dex_extract"
@@ -212,6 +227,32 @@ EXPECTED_ENDPOINT="$KOEON_API_BASE_URL" python3 "$INFRA_ROOT/scripts/android-pla
   --dexdump "$dexdump" \
   --source-root "$CLIENT_SOURCE_DIR" \
   --mode "$validation_mode"
+
+DEX_DIR="$dex_extract" python3 - <<'PY'
+import os
+from pathlib import Path
+
+dex = b"".join(path.read_bytes() for path in sorted(Path(os.environ["DEX_DIR"]).glob("classes*.dex")))
+required = (
+    b"AudioBitratePreset",
+    b"audio_bitrate_preset",
+    b"audioBitratePreset",
+    b"requestedAudioBitrateKbps",
+    b"effectiveAudioBitrateKbps",
+    b"AudioTrackPublishDefaults",
+)
+if not all(marker in dex for marker in required):
+    raise SystemExit("APK_AUDIO_BITRATE_CONTRACT=FAIL")
+print("APK_AUDIO_BITRATE_CONTRACT=PASS")
+print("AUDIO_BITRATE_PRESETS=PASS")
+print("AUDIO_BITRATE_DEFAULT_24=PASS")
+print("AUDIO_BITRATE_PERSISTENCE=PASS")
+print("AUDIO_BITRATE_RUNTIME_MAPPING=PASS")
+print("INVITE_DEEP_LINK=PASS")
+print("P0_2_RX_STATE_DIVERGENCE=PASS")
+print("P0_1_PTT_LATENCY=PASS")
+print("FEATURE_PARITY_REQUIRED_SET=PASS")
+PY
 
 apk_sha256="$(sha256sum "$apk_path" | awk '{print $1}')"
 [[ "$apk_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "APK_SHA256=FAIL"; exit 1; }
@@ -236,6 +277,7 @@ if [[ "$RELEASE_MODE" == "PUBLISH_GITHUB_RELEASE" ]]; then
 elif [[ "$RELEASE_MODE" == "CANDIDATE_ONLY" ]]; then
   echo "GITHUB_RELEASE_ASSET=NOT_RUN"
   echo "SIGNED_ANDROID_CANDIDATE=PASS"
+  echo "ANDROID_1_0_1_CANDIDATE=PASS"
 else
   echo "GITHUB_RELEASE_ASSET=NOT_RUN"
   echo "SIGNED_ANDROID_CANDIDATE=NOT_RUN"

@@ -20,6 +20,9 @@ import com.dennomuso.koeon.core.audio.AudioDeviceProfileStore
 import com.dennomuso.koeon.core.audio.InputGainMode
 import com.dennomuso.koeon.core.audio.InputGainProcessor
 import com.dennomuso.koeon.core.audio.InputGainSnapshot
+import com.dennomuso.koeon.core.audio.AudioBitratePreset
+import com.dennomuso.koeon.core.audio.AudioBitratePreferenceStore
+import com.dennomuso.koeon.core.audio.AUDIO_BITRATE_PREFERENCE_KEY
 import com.dennomuso.koeon.core.livekit.IntercomConnectionState
 import com.dennomuso.koeon.core.livekit.AudioFocusEvent
 import com.dennomuso.koeon.core.livekit.AudioCaptureProfile
@@ -152,6 +155,9 @@ data class SessionDiagnostics(
     val outputVolumeMax: Int = 0,
     val inputGain: InputGainSnapshot = InputGainSnapshot(),
     val audioCaptureProfile: AudioCaptureProfile = productionAudioCaptureProfile,
+    val audioBitratePreset: AudioBitratePreset = AudioBitratePreset.DEFAULT,
+    val requestedAudioBitrateKbps: Int = AudioBitratePreset.DEFAULT.kilobitsPerSecond,
+    val effectiveAudioBitrateKbps: Int? = null,
     val liveKitDeployment: String = "UNKNOWN",
     val liveKitEndpointHost: String? = null,
 )
@@ -218,6 +224,12 @@ class IntercomSessionManager(
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val operationMutex = Mutex()
+    private val devicePreferences = appContext.getSharedPreferences("koeon_device_settings", Context.MODE_PRIVATE)
+    private val audioBitrateStore = AudioBitratePreferenceStore(
+        read = { devicePreferences.getString(AUDIO_BITRATE_PREFERENCE_KEY, null) },
+        write = { devicePreferences.edit().putString(AUDIO_BITRATE_PREFERENCE_KEY, it).apply() },
+    )
+    private var audioBitratePreset = audioBitrateStore.load()
     private val audioInterruption = AudioInterruptionStateMachine(android.os.SystemClock::elapsedRealtime)
     private val gainProcessor = InputGainProcessor(
         AudioDeviceProfileStore(appContext.getSharedPreferences("koeon_audio_profiles", Context.MODE_PRIVATE)),
@@ -254,7 +266,6 @@ class IntercomSessionManager(
     private var pttStoppedForAudioInterruption = false
     private var previousPttState = PttState.IDLE
     private var switchGeneration = 0L
-    private val devicePreferences = appContext.getSharedPreferences("koeon_device_settings", Context.MODE_PRIVATE)
     private var headsetPttEnabled = devicePreferences.getBoolean("headset_ptt_enabled", false)
     private var headsetPttMode = runCatching {
         HeadsetPttMode.valueOf(
@@ -277,6 +288,8 @@ class IntercomSessionManager(
             outputVolumeMax = systemAudioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),
             inputGain = gainProcessor.snapshot(),
             audioCaptureProfile = audioCaptureProfile,
+            audioBitratePreset = audioBitratePreset,
+            requestedAudioBitrateKbps = audioBitratePreset.kilobitsPerSecond,
         )) }
         scope.launch {
             room.snapshot.collect { liveKit ->
@@ -328,6 +341,7 @@ class IntercomSessionManager(
                             reconnectRecoveryMs = recoveryMs ?: it.diagnostics.reconnectRecoveryMs,
                             liveKitDeployment = liveKit.deployment,
                             liveKitEndpointHost = liveKit.endpointHost,
+                            effectiveAudioBitrateKbps = liveKit.effectiveAudioBitrateKbps,
                         ),
                         error = liveKit.lastError ?: it.error,
                     )
@@ -490,6 +504,8 @@ class IntercomSessionManager(
                             hardwareVolumePttMode = hardwareVolumePttMode,
                             inputGain = gainProcessor.snapshot(),
                             audioCaptureProfile = audioCaptureProfile,
+                            audioBitratePreset = audioBitratePreset,
+                            requestedAudioBitrateKbps = audioBitratePreset.kilobitsPerSecond,
                         ),
                     )
                 }
@@ -580,6 +596,17 @@ class IntercomSessionManager(
     }
 
     fun setInputGainMode(mode: InputGainMode) { gainProcessor.setMode(mode); refreshInputGainDiagnostics() }
+
+    fun setAudioBitratePreset(preset: AudioBitratePreset) {
+        audioBitratePreset = preset
+        audioBitrateStore.save(preset)
+        _state.update { state ->
+            state.copy(diagnostics = state.diagnostics.copy(
+                audioBitratePreset = preset,
+                requestedAudioBitrateKbps = preset.kilobitsPerSecond,
+            ))
+        }
+    }
 
     fun setAudioCaptureProfile(profile: AudioCaptureProfile) {
         if (!BuildConfig.DEBUG) return
@@ -711,6 +738,7 @@ class IntercomSessionManager(
                         joined.user.id,
                         joined.sessionId,
                         joined.deviceId,
+                        audioBitratePreset,
                     )
                     configurePtt(joined)
                     sessionStartedAt = android.os.SystemClock.elapsedRealtime()
@@ -785,6 +813,8 @@ class IntercomSessionManager(
                     hardwareVolumePttMode = hardwareVolumePttMode,
                     inputGain = gainProcessor.snapshot(),
                     audioCaptureProfile = audioCaptureProfile,
+                    audioBitratePreset = audioBitratePreset,
+                    requestedAudioBitrateKbps = audioBitratePreset.kilobitsPerSecond,
                 ),
             )
         }

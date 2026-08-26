@@ -60,6 +60,9 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
         })
         put("audio", buildJsonObject {
             put("route", nullable(d.audioRoute)); put("focus", nullable(d.audioFocus))
+            put("audioBitratePreset", JsonPrimitive(d.audioBitratePreset.name))
+            put("requestedAudioBitrateKbps", JsonPrimitive(d.requestedAudioBitrateKbps))
+            put("effectiveAudioBitrateKbps", d.effectiveAudioBitrateKbps?.let(::JsonPrimitive) ?: JsonNull)
             put("processing", buildJsonObject {
                 put("echoCancellation", JsonPrimitive("WEBRTC")); put("noiseSuppression", JsonPrimitive("WEBRTC"))
                 put("profile", JsonPrimitive(d.audioCaptureProfile.name))
