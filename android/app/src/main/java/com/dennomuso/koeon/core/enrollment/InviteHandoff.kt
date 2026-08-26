@@ -1,11 +1,16 @@
 package com.dennomuso.koeon.core.enrollment
 
+import com.dennomuso.koeon.BuildConfig
 import java.net.URI
 
-private const val INVITE_ORIGIN = "https://example.invalid"
 private const val INVITE_PATH = "/join"
 private val TOKEN_PATTERN = Regex("^[A-Za-z0-9_-]{43}$")
 private val CODE_PATTERN = Regex("^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{10}$")
+
+private val configuredInviteOrigin: String by lazy {
+    val uri = URI(BuildConfig.KOEON_BACKEND_URL)
+    "${uri.scheme}://${uri.host}${if (uri.port == -1) "" else ":${uri.port}"}"
+}
 
 sealed interface EnrollmentCredential {
     data class Token(val value: String) : EnrollmentCredential
@@ -21,7 +26,7 @@ object InviteInputParser {
         val origin = "${uri.scheme}://${uri.host}${if (uri.port == -1) "" else ":${uri.port}"}"
         val token = uri.rawFragment.orEmpty()
         if (
-            origin != INVITE_ORIGIN ||
+            origin != configuredInviteOrigin ||
             uri.rawPath != INVITE_PATH ||
             uri.rawQuery != null ||
             uri.rawUserInfo != null ||
