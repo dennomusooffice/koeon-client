@@ -64,6 +64,9 @@ test("locks official identity, release signing seam, version, and fail-closed de
 
 test("verifies official signature, app identity, non-debuggable runtime, and publishes only after validation", () => {
   assert.match(releaseScript, /apksigner.*verify --verbose --print-certs/su);
+  assert.match(releaseScript, /normalize_sha256\(\)/u);
+  assert.match(releaseScript, /tr -cd '0-9a-f'/u);
+  assert.match(releaseScript, /APK_SIGNER_CERT_FORMAT=PASS/u);
   assert.match(releaseScript, /APK_SIGNER_MATCHES_OFFICIAL_KEY=PASS/u);
   assert.match(releaseScript, /APK_APPLICATION_ID=com\.dennomuso\.koeon/u);
   assert.match(releaseScript, /APK_DEBUGGABLE=NO/u);

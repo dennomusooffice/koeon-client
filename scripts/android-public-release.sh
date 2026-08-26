@@ -107,7 +107,15 @@ fi
 jarsigner -verify "$signing_smoke_jar" >/dev/null 2>&1 || { echo "ANDROID_PRIVATE_KEY_ACCESS=FAIL"; exit 1; }
 echo "ANDROID_PRIVATE_KEY_ACCESS=PASS"
 
-certificate_sha256="$(openssl x509 -in "$certificate_path" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')"
+normalize_sha256() {
+  tr 'A-F' 'a-f' | tr -cd '0-9a-f'
+}
+
+certificate_sha256="$(
+  openssl x509 -in "$certificate_path" -noout -fingerprint -sha256 |
+    sed -n 's/^[^=]*=//p' |
+    normalize_sha256
+)"
 [[ "$certificate_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "ANDROID_SIGNING_CERT_SHA256=FAIL"; exit 1; }
 echo "ANDROID_SIGNING_CERT_SHA256=$certificate_sha256"
 
@@ -159,7 +167,13 @@ grep -Fq 'Verifies' "$apk_signing_report" || { echo "APK_SIGNATURE_VALID=FAIL"; 
 grep -Fq 'Number of signers: 1' "$apk_signing_report" || { echo "APK_SIGNATURE_VALID=FAIL"; exit 1; }
 echo "APK_SIGNATURE_VALID=PASS"
 
-apk_certificate_sha256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$apk_signing_report" | head -n 1 | tr 'A-F' 'a-f')"
+apk_certificate_sha256="$(
+  sed -n 's/^[[:space:]]*Signer #1 certificate SHA-256 digest:[[:space:]]*//p' "$apk_signing_report" |
+    head -n 1 |
+    normalize_sha256
+)"
+[[ "$apk_certificate_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "APK_SIGNER_CERT_FORMAT=FAIL"; exit 1; }
+echo "APK_SIGNER_CERT_FORMAT=PASS"
 [[ "$apk_certificate_sha256" == "$certificate_sha256" ]] || { echo "APK_SIGNER_MATCHES_OFFICIAL_KEY=FAIL"; exit 1; }
 echo "APK_SIGNER_MATCHES_OFFICIAL_KEY=PASS"
 echo "ANDROID_RELEASE_SIGNING=PASS"
