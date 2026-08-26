@@ -3,6 +3,7 @@ package com.dennomuso.koeon.core.session
 import com.dennomuso.koeon.core.livekit.IntercomConnectionState
 import com.dennomuso.koeon.core.livekit.AudioCaptureProfile
 import com.dennomuso.koeon.core.audio.InputGainMode
+import com.dennomuso.koeon.core.audio.AudioBitratePreset
 import com.dennomuso.koeon.core.model.JoinResponse
 import com.dennomuso.koeon.core.model.JoinChannel
 import com.dennomuso.koeon.core.model.Role
@@ -72,5 +73,19 @@ class FieldDiagnosticTest {
         assertEquals(InputGainMode.OFF, diagnostics.inputGain.mode)
         assertEquals(0f, diagnostics.inputGain.effectiveGainDb, 0f)
         assertEquals(true, diagnostics.audioCaptureProfile.webRtcAgcEnabled)
+    }
+
+    @Test fun audioBitrateDiagnosticsSeparateSelectedRequestedAndEffectiveValues() {
+        val state = IntercomUiState(diagnostics = SessionDiagnostics(
+            audioBitratePreset = AudioBitratePreset.HIGH,
+            requestedAudioBitrateKbps = 48,
+            effectiveAudioBitrateKbps = 48,
+        ))
+
+        val audio = Json.parseToJsonElement(buildAndroidFieldDiagnostic(state)).jsonObject
+            .getValue("audio").jsonObject
+        assertEquals("HIGH", audio.getValue("audioBitratePreset").jsonPrimitive.content)
+        assertEquals("48", audio.getValue("requestedAudioBitrateKbps").jsonPrimitive.content)
+        assertEquals("48", audio.getValue("effectiveAudioBitrateKbps").jsonPrimitive.content)
     }
 }

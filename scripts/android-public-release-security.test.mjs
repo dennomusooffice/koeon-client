@@ -58,8 +58,8 @@ test("uses exact protected main attestation and disposable signing material", ()
 test("locks official identity, release signing seam, version, and fail-closed debug endpoint", () => {
   assert.match(gradle, /namespace = "com\.dennomuso\.koeon"/u);
   assert.match(gradle, /applicationId = "com\.dennomuso\.koeon"/u);
-  assert.match(gradle, /versionName = "1\.0\.0"/u);
-  assert.match(gradle, /versionCode = 1/u);
+  assert.match(gradle, /versionName = "1\.0\.1"/u);
+  assert.match(gradle, /versionCode = 2/u);
   assert.match(gradle, /create\("release"\)/u);
   assert.match(gradle, /signingConfig = signingConfigs\.getByName\("release"\)/u);
   assert.match(gradle, /https:\/\/example\.invalid/u);
@@ -83,6 +83,11 @@ test("verifies official signature, app identity, non-debuggable runtime, and pub
   assert.match(releaseScript, /APK_APPLICATION_ID=com\.dennomuso\.koeon/u);
   assert.match(releaseScript, /APK_DEBUGGABLE=NO/u);
   assert.match(originSource, /APK_RUNTIME_ENDPOINT_CONFIGURED=PASS/u);
+  assert.match(releaseScript, /FEATURE_PARITY_REQUIRED_SET=PASS/u);
+  assert.match(releaseScript, /ANDROID_COMPILED_LAUNCHER_ICON=PASS/u);
+  assert.match(releaseScript, /ANDROID_1_0_1_CANDIDATE=PASS/u);
+  assert.ok(releaseScript.indexOf("feature-parity-contract.py") < releaseScript.indexOf("gh release create"));
+  assert.ok(releaseScript.indexOf("ANDROID_COMPILED_LAUNCHER_ICON=PASS") < releaseScript.indexOf("gh release create"));
   assert.ok(releaseScript.indexOf("android-placeholder-origin.py") < releaseScript.indexOf("gh release create"));
   assert.doesNotMatch(releaseScript, /upload-artifact|download-artifact/u);
 });
