@@ -52,6 +52,7 @@ import com.dennomuso.koeon.core.ptt.HardwareVolumePttMode
 import com.dennomuso.koeon.core.ptt.HardwareVolumePttEligibility
 import com.dennomuso.koeon.core.ptt.PttSnapshot
 import com.dennomuso.koeon.core.ptt.PttState
+import com.dennomuso.koeon.core.ptt.localPttEligible
 import com.dennomuso.koeon.core.ptt.RxSnapshot
 import com.dennomuso.koeon.core.ptt.SystemPttClock
 import com.dennomuso.koeon.service.IntercomForegroundService
@@ -823,12 +824,22 @@ class IntercomSessionManager(
 
     private fun pttDown(source: PttInputSource) {
         _state.update { it.copy(diagnostics = it.diagnostics.copy(lastPttInputSource = source)) }
-        val canTransmit = _state.value.operationalState == OperationalState.ACTIVE &&
-            _state.value.join?.canPublish == true &&
-            audioInterruption.snapshot.state == AudioAvailabilityState.READY
+        val remoteTalking = _state.value.currentSpeaker != null &&
+            _state.value.ptt.state != PttState.TRANSMITTING
+        val canTransmit = localPttEligible(
+            operationallyActive = _state.value.operationalState == OperationalState.ACTIVE,
+            canPublish = _state.value.join?.canPublish == true,
+            connected = _state.value.connectionState == IntercomConnectionState.CONNECTED,
+            audioReady = audioInterruption.snapshot.state == AudioAvailabilityState.READY,
+            remoteTalking = remoteTalking,
+        )
         if (!canTransmit && _state.value.join?.canPublish == true) {
-            _state.update { it.copy(error = "AUDIO INTERRUPTED: 音声復旧が完了するまでPTTは利用できません") }
-            scope.launch { pttController?.rejectForAudioUnavailable() }
+            if (remoteTalking) {
+                scope.launch { pttController?.rejectForRemoteBusy() }
+            } else {
+                _state.update { it.copy(error = "AUDIO INTERRUPTED: 音声復旧が完了するまでPTTは利用できません") }
+                scope.launch { pttController?.rejectForAudioUnavailable() }
+            }
             return
         }
         pttInputQueue.down(canTransmit)

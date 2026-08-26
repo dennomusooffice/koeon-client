@@ -110,6 +110,10 @@ class PttController(
         playStatusCue("ERROR", cuePlayer.playError())
     }
 
+    suspend fun rejectForRemoteBusy() {
+        playStatusCue("BUSY", cuePlayer.playBusy())
+    }
+
     fun setRxOnly() {
         held = false
         control.cancelRxReady()

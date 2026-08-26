@@ -264,6 +264,8 @@ final class IntercomSessionController: ObservableObject {
     @Published private(set) var lastReleaseSnapshot = PTTSnapshot.initial(role: .staff)
     @Published private(set) var rxSnapshot = RxSnapshot()
     @Published private(set) var remoteReceiveSnapshot = RemoteReceiveActivationSnapshot()
+    @Published private(set) var rxConsistencySnapshot = RxConsistencySnapshot()
+    @Published private(set) var rxDivergenceDiagnostics: [RxDivergenceDiagnostic] = []
     @Published private(set) var hapticSnapshot = HapticSnapshot()
     @Published private(set) var sessionUptimeSeconds = 0
     @Published private(set) var isLoading = false
@@ -348,6 +350,8 @@ final class IntercomSessionController: ObservableObject {
     private var ptt: PTTController?
     private var rx: RxAudioController?
     private var remoteReceive: RemoteReceiveActivationCoordinator?
+    private var rxConsistencyGuard = RxConsistencyGuard()
+    private var rxDivergenceWatchdogTask: Task<Void, Never>?
     private var joinedAt: Date?
     private var appleTransmitAttemptGeneration = 0
     private var reconnectAttemptSequence = 0
@@ -441,6 +445,7 @@ final class IntercomSessionController: ObservableObject {
         room.onUnsafeDisconnect = { [weak self] reason in
             guard let self else { return }
             self.remoteReceive?.reset()
+            self.resetRxConsistency()
             Task { await self.ptt?.stopForSafety(reason: reason) }
         }
         room.onReconnected = { [weak self] in
@@ -465,13 +470,29 @@ final class IntercomSessionController: ObservableObject {
             }
         }
         room.onRemoteAudioActivity = { [weak self] senderSessionId, active in
-            self?.rx?.handleRemoteAudioActivity(senderSessionId: senderSessionId, active: active)
+            self?.handleRemoteMediaActivity(sessionId: senderSessionId, active: active)
         }
         room.onRemotePcm = { [weak self] timestamp in
             guard let self else { return }
             self.rx?.handleRemotePcm(at: timestamp)
             self.remoteReceive?.handleRemotePcm()
-            let generation = self.rx?.currentSnapshot().generation ?? 0
+            let currentRx = self.rx?.currentSnapshot() ?? RxSnapshot()
+            self.applyRxSnapshot(currentRx)
+            let pcmResult = self.rxConsistencyGuard.handleRemotePcm(
+                sessionId: currentRx.sessionId,
+                generation: currentRx.generation,
+                at: timestamp
+            )
+            self.rxConsistencySnapshot = self.rxConsistencyGuard.snapshot
+            if pcmResult == .recovered {
+                self.appendRxDivergenceDiagnostic(
+                    event: "rx_divergence_recovered",
+                    elapsedMilliseconds: rxDivergenceWatchdogMilliseconds,
+                    state: self.rxConsistencySnapshot
+                )
+            }
+            self.scheduleRxDivergenceWatchdogIfNeeded()
+            let generation = currentRx.generation
             if generation > 0, self.firstPcmRxGeneration != generation {
                 self.firstPcmRxGeneration = generation
                 self.firstPcmLifecycleState = self.appLifecycleState
@@ -694,7 +715,8 @@ final class IntercomSessionController: ObservableObject {
     var selectedChannel: Channel? { fixture?.channels.first { $0.id == selectedChannelId } }
     var canPressPTT: Bool {
         operationalState == .active && isJoined && joinedSession?.canPublish == true && room.connectionState == .connected &&
-            audio.interruption.state == .ready && remoteReceiveSnapshot.remoteSpeakerSessionId == nil
+            audio.interruption.state == .ready && !rxConsistencySnapshot.remoteMediaSpeakerActive &&
+            !rxConsistencySnapshot.validatedRemoteRxActive
     }
 
     var pttEligible: Bool { canPressPTT }
@@ -705,7 +727,8 @@ final class IntercomSessionController: ObservableObject {
         if room.connectionState != .connected { return "connection_not_ready" }
         if audio.interruption.state == .recovering { return "recovering" }
         if audio.interruption.state != .ready { return "audio_not_ready" }
-        if remoteReceiveSnapshot.remoteSpeakerSessionId != nil { return "remote_talking" }
+        if rxConsistencySnapshot.remoteMediaSpeakerActive { return "remote_media_active" }
+        if rxConsistencySnapshot.validatedRemoteRxActive { return "remote_rx_active" }
         if pttRequestGate.state != .idle { return "request_gate_busy" }
         if pttSnapshot.state == .error { return "ptt_error" }
         return "none"
@@ -716,7 +739,9 @@ final class IntercomSessionController: ObservableObject {
         if pttSnapshot.state == .error || operationalState == .error { return .error }
         if room.connectionState == .disconnected || !isJoined { return .offline }
         if room.connectionState == .reconnecting || audio.interruption.state == .recovering { return .recovering }
-        if remoteReceiveSnapshot.remoteSpeakerSessionId != nil || pttSnapshot.state == .busy { return .busyRemote }
+        if rxConsistencySnapshot.remoteMediaSpeakerActive || rxConsistencySnapshot.validatedRemoteRxActive || pttSnapshot.state == .busy {
+            return .busyRemote
+        }
         if pttSnapshot.state == .transmitting { return .talking }
         if pttRequestGate.state != .idle || pttSnapshot.state == .requestingFloor { return .preparing }
         return canPressPTT ? .ready : .preparing
@@ -838,11 +863,11 @@ final class IntercomSessionController: ObservableObject {
                     }
                 }
             ) { [weak self] snapshot in
-                Task { @MainActor in self?.remoteReceiveSnapshot = snapshot }
+                Task { @MainActor in self?.applyRemoteReceiveSnapshot(snapshot) }
             }
             self.remoteReceive = remoteReceive
-            room.onParticipantAvailable = { [weak remoteReceive] sessionId in
-                _ = remoteReceive?.handleParticipantAvailable(sessionId: sessionId)
+            room.onParticipantAvailable = { [weak self] sessionId in
+                self?.handleRemoteParticipantAvailable(sessionId: sessionId)
             }
             rx = RxAudioController(
                 channelId: response.channel.id,
@@ -866,7 +891,7 @@ final class IntercomSessionController: ObservableObject {
                 },
                 startCueEnabled: rxStartCueMode == .on
             ) { [weak self] snapshot in
-                Task { @MainActor in self?.rxSnapshot = snapshot }
+                Task { @MainActor in self?.applyRxSnapshot(snapshot) }
             }
             try await room.connect(
                 url: response.livekitUrl,
@@ -933,6 +958,7 @@ final class IntercomSessionController: ObservableObject {
             rx = nil
             remoteReceive?.reset()
             self.remoteReceive = nil
+            resetRxConsistency()
             remoteReceiveSnapshot = RemoteReceiveActivationSnapshot()
             rxSnapshot = RxSnapshot()
             lastError = safeMessage(error)
@@ -954,6 +980,7 @@ final class IntercomSessionController: ObservableObject {
         ptt = nil
         remoteReceive?.reset()
         remoteReceive = nil
+        resetRxConsistency()
         rx?.reset()
         rx = nil
         try? await api.unregisterPttToken(sessionId: session.sessionId)
@@ -1019,7 +1046,7 @@ final class IntercomSessionController: ObservableObject {
             if isJoined, audio.interruption.state != .ready {
                 lastError = "AUDIO INTERRUPTED: 音声復旧が完了するまでPTTは利用できません"
                 playStatusCue(.error)
-            } else if remoteReceiveSnapshot.remoteSpeakerSessionId != nil {
+            } else if rxConsistencySnapshot.remoteMediaSpeakerActive || rxConsistencySnapshot.validatedRemoteRxActive {
                 playStatusCue(.busy)
             }
             return
@@ -1390,6 +1417,7 @@ final class IntercomSessionController: ObservableObject {
         rx = nil
         remoteReceive?.resetPreservingSystemRemoteParticipant()
         remoteReceive = nil
+        resetRxConsistency()
         joinedSession = nil
         await room.disconnect()
         // Keep Apple PushToTalk audio ownership across the stale LiveKit runtime swap.
@@ -1437,11 +1465,11 @@ final class IntercomSessionController: ObservableObject {
                 }
             }
         ) { [weak self] snapshot in
-            Task { @MainActor in self?.remoteReceiveSnapshot = snapshot }
+            Task { @MainActor in self?.applyRemoteReceiveSnapshot(snapshot) }
         }
         remoteReceive = coordinator
-        room.onParticipantAvailable = { [weak coordinator] sessionId in
-            _ = coordinator?.handleParticipantAvailable(sessionId: sessionId)
+        room.onParticipantAvailable = { [weak self] sessionId in
+            self?.handleRemoteParticipantAvailable(sessionId: sessionId)
         }
         rx = RxAudioController(
             channelId: response.channel.id,
@@ -1464,7 +1492,7 @@ final class IntercomSessionController: ObservableObject {
                 try? await room?.publishRxReady(speakerSessionId: speakerSessionId, leaseId: leaseId)
             },
             startCueEnabled: rxStartCueMode == .on
-        ) { [weak self] snapshot in Task { @MainActor in self?.rxSnapshot = snapshot } }
+        ) { [weak self] snapshot in Task { @MainActor in self?.applyRxSnapshot(snapshot) } }
         let connectionAudioPublishProfile = audioPublishProfileForConnection(
             selected: selectedAudioPublishProfile,
             applied: appliedAudioPublishProfile
@@ -1761,6 +1789,137 @@ final class IntercomSessionController: ObservableObject {
         )
     }
 
+    private func handleRemoteMediaActivity(sessionId: String?, active: Bool) {
+        rx?.handleRemoteAudioActivity(senderSessionId: sessionId, active: active)
+        rxConsistencyGuard.handleMediaActivity(sessionId: sessionId, active: active, at: Date())
+        rxConsistencySnapshot = rxConsistencyGuard.snapshot
+        scheduleRxDivergenceWatchdogIfNeeded()
+    }
+
+    private func applyRxSnapshot(_ snapshot: RxSnapshot) {
+        rxSnapshot = snapshot
+        let validated = snapshot.state != .idle && snapshot.sessionId != nil && snapshot.generation > 0
+        let resolved = snapshot.sessionId.map {
+            remoteReceiveSnapshot.remoteSpeakerSessionId == $0 || room.trustedRemoteSpeaker(sessionId: $0) != nil
+        } ?? false
+        let subscribed = snapshot.sessionId.map {
+            room.isRemoteAudioSubscriptionActive(sessionId: $0, generation: snapshot.generation)
+        } ?? false
+        rxConsistencyGuard.updateValidatedRx(
+            active: validated,
+            sessionId: snapshot.sessionId,
+            generation: snapshot.generation,
+            participantResolved: resolved,
+            trackSubscribed: subscribed,
+            at: Date()
+        )
+        rxConsistencySnapshot = rxConsistencyGuard.snapshot
+        scheduleRxDivergenceWatchdogIfNeeded()
+    }
+
+    private func applyRemoteReceiveSnapshot(_ snapshot: RemoteReceiveActivationSnapshot) {
+        remoteReceiveSnapshot = snapshot
+        applyRxSnapshot(rx?.currentSnapshot() ?? rxSnapshot)
+    }
+
+    private func handleRemoteParticipantAvailable(sessionId: String) {
+        let resolved = remoteReceive?.handleParticipantAvailable(sessionId: sessionId) ?? false
+        guard let current = rx?.currentSnapshot(),
+              current.state != .idle,
+              current.sessionId == sessionId,
+              current.generation > 0 else { return }
+        if resolved { applyRemoteReceiveSnapshot(remoteReceive?.currentSnapshot() ?? remoteReceiveSnapshot) }
+        Task { [weak room] in
+            _ = try? await room?.activateRemoteAudioSubscription(
+                sessionId: sessionId,
+                generation: current.generation
+            )
+        }
+    }
+
+    private func scheduleRxDivergenceWatchdogIfNeeded() {
+        guard rxDivergenceWatchdogTask == nil else { return }
+        guard let deadline = rxConsistencyGuard.nextDeadline() else { return }
+        let wait = max(1, Int(deadline.timeIntervalSinceNow * 1_000))
+        rxDivergenceWatchdogTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(wait)) }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.rxDivergenceWatchdogTask = nil
+            self.evaluateRxDivergenceWatchdog()
+        }
+    }
+
+    private func evaluateRxDivergenceWatchdog() {
+        let mediaSessionId = rxConsistencyGuard.snapshot.remoteMediaSpeakerSessionId
+        let currentSpeaking = mediaSessionId.flatMap {
+            room.remoteParticipantIsSpeaking(sessionId: $0)
+        }
+        let evaluation = rxConsistencyGuard.evaluate(
+            at: Date(),
+            remoteParticipantIsSpeaking: currentSpeaking
+        )
+        rxConsistencySnapshot = rxConsistencyGuard.snapshot
+        for signal in evaluation.signals {
+            appendRxDivergenceDiagnostic(
+                event: signal.event,
+                elapsedMilliseconds: signal.elapsedMilliseconds,
+                state: signal.snapshot
+            )
+        }
+        if let sessionId = evaluation.verifiedInactiveMediaSessionId {
+            room.clearVerifiedInactiveRemoteMediaActivity(sessionId: sessionId)
+        }
+        if let sessionId = evaluation.recoverySessionId, evaluation.recoveryGeneration > 0 {
+            _ = remoteReceive?.handleParticipantAvailable(sessionId: sessionId)
+            Task { [weak room] in
+                _ = try? await room?.activateRemoteAudioSubscription(
+                    sessionId: sessionId,
+                    generation: evaluation.recoveryGeneration
+                )
+            }
+        }
+        scheduleRxDivergenceWatchdogIfNeeded()
+    }
+
+    private func appendRxDivergenceDiagnostic(
+        event: String,
+        elapsedMilliseconds: Int,
+        state: RxConsistencySnapshot
+    ) {
+        let baseEligible = operationalState == .active && isJoined && joinedSession?.canPublish == true &&
+            room.connectionState == .connected && audio.interruption.state == .ready
+        let sessionId = state.validatedRxSessionId ?? state.remoteMediaSpeakerSessionId
+        let diagnostic = RxDivergenceDiagnostic(
+            event: event,
+            elapsedMs: elapsedMilliseconds,
+            roomConnectionState: room.connectionState.rawValue,
+            participantResolved: state.participantResolved,
+            trackSubscribed: sessionId.map {
+                room.isRemoteAudioSubscriptionActive(
+                    sessionId: $0,
+                    generation: state.validatedRxGeneration
+                )
+            } ?? false,
+            rxGenerationActive: state.validatedRemoteRxActive,
+            audioSessionState: audio.interruption.state.rawValue,
+            pcmObserved: state.remotePcmObserved,
+            mediaSpeakerActive: state.remoteMediaSpeakerActive,
+            pttEligible: baseEligible && !state.remoteMediaSpeakerActive && !state.validatedRemoteRxActive
+        )
+        rxDivergenceDiagnostics.append(diagnostic)
+        if rxDivergenceDiagnostics.count > 20 {
+            rxDivergenceDiagnostics.removeFirst(rxDivergenceDiagnostics.count - 20)
+        }
+    }
+
+    private func resetRxConsistency() {
+        rxDivergenceWatchdogTask?.cancel()
+        rxDivergenceWatchdogTask = nil
+        rxConsistencyGuard.reset()
+        rxConsistencySnapshot = rxConsistencyGuard.snapshot
+    }
+
     private func startUptimeTimer() {
         uptimeTask?.cancel()
         uptimeTask = Task { [weak self] in
@@ -1803,6 +1962,20 @@ final class IntercomSessionController: ObservableObject {
         }
         let diagnosticPttBlockReason: String? = pttEligible ? nil : pttBlockReason
         let releaseSnapshot = pttSnapshot.pttUpAt == nil ? lastReleaseSnapshot : pttSnapshot
+        let divergenceEvents: [[String: Any]] = rxDivergenceDiagnostics.map { event in
+            [
+                "event": event.event,
+                "elapsedMs": event.elapsedMs,
+                "roomConnectionState": event.roomConnectionState,
+                "participantResolved": event.participantResolved,
+                "trackSubscribed": event.trackSubscribed,
+                "rxGenerationActive": event.rxGenerationActive,
+                "audioSessionState": event.audioSessionState,
+                "pcmObserved": event.pcmObserved,
+                "mediaSpeakerActive": event.mediaSpeakerActive,
+                "pttEligible": event.pttEligible,
+            ]
+        }
         let payload: [String: Any] = [
             "schema": fieldDiagnosticSchema,
             "capturedAt": ISO8601DateFormatter().string(from: Date()),
@@ -2000,6 +2173,17 @@ final class IntercomSessionController: ObservableObject {
                 "firstPcmAppLifecycleState": optional(firstPcmLifecycleState),
                 "rxStaleMediaDropped": remoteReceiveSnapshot.rxStaleMediaDropped,
                 "rxLateCompletionIgnored": remoteReceiveSnapshot.rxLateCompletionIgnored,
+            ],
+            "rxDivergence": [
+                "watchdogThresholdMs": rxDivergenceWatchdogMilliseconds,
+                "episode": rxConsistencySnapshot.episode,
+                "remoteMediaSpeakerActive": rxConsistencySnapshot.remoteMediaSpeakerActive,
+                "validatedRemoteRxActive": rxConsistencySnapshot.validatedRemoteRxActive,
+                "remotePcmObserved": rxConsistencySnapshot.remotePcmObserved,
+                "trackSubscribed": rxConsistencySnapshot.trackSubscribed,
+                "localPttEligible": pttEligible,
+                "recoveryAttempts": rxConsistencySnapshot.recoveryAttempts,
+                "events": divergenceEvents,
             ],
             "liveKit": [
                 "deployment": room.deployment,

@@ -5,6 +5,7 @@ let rxSilenceConfirmationMilliseconds = 60
 let rxDrainHardCapMilliseconds = 350
 let rxFirstAudioGraceAfterActivateMilliseconds = 500
 let rxStartupAbsoluteMaxMilliseconds = 1_500
+let rxDivergenceWatchdogMilliseconds = 250
 
 enum RxFloorReconcileDecision: String, Sendable {
     case keepRemoteOwnerMatch = "KEEP_REMOTE_OWNER_MATCH"
@@ -72,6 +73,195 @@ struct RxPlayoutDrainPolicy: Sendable {
                 route: route
             ) ?? 0
         )
+    }
+}
+
+struct RxDivergenceSignal: Equatable, Sendable {
+    let event: String
+    let elapsedMilliseconds: Int
+    let snapshot: RxConsistencySnapshot
+}
+
+struct RxDivergenceEvaluation: Equatable, Sendable {
+    var signals: [RxDivergenceSignal] = []
+    var verifiedInactiveMediaSessionId: String?
+    var recoverySessionId: String?
+    var recoveryGeneration = 0
+}
+
+enum RxRemotePcmObservation: Equatable, Sendable {
+    case rejected
+    case observed
+    case recovered
+}
+
+/// Keeps LiveKit media hints, validated RX authorization, and observed PCM as
+/// separate dimensions. Speaking activity is only a conservative PTT busy
+/// signal; it can never create or authorize a receive generation.
+struct RxConsistencyGuard: Sendable {
+    private(set) var snapshot = RxConsistencySnapshot()
+    private var mediaEvidenceAt: Date?
+    private var validatedRxStartedAt: Date?
+    private var pcmTimeoutEmitted = false
+    private var mediaDivergenceEmitted = false
+
+    mutating func handleMediaActivity(sessionId: String?, active: Bool, at: Date) {
+        guard active, let sessionId else {
+            if sessionId == nil || snapshot.remoteMediaSpeakerSessionId == sessionId {
+                snapshot.remoteMediaSpeakerActive = false
+                snapshot.remoteMediaSpeakerSessionId = nil
+                mediaEvidenceAt = nil
+            }
+            return
+        }
+        beginEpisodeIfNeeded()
+        if snapshot.remoteMediaSpeakerSessionId != sessionId {
+            snapshot.remoteMediaSpeakerSessionId = sessionId
+            if snapshot.validatedRxSessionId != sessionId {
+                snapshot.remotePcmObserved = false
+            }
+        }
+        snapshot.remoteMediaSpeakerActive = true
+        mediaEvidenceAt = at
+    }
+
+    mutating func updateValidatedRx(
+        active: Bool,
+        sessionId: String?,
+        generation: Int,
+        participantResolved: Bool,
+        trackSubscribed: Bool,
+        at: Date
+    ) {
+        guard active, let sessionId, generation > 0 else {
+            snapshot.validatedRemoteRxActive = false
+            snapshot.validatedRxSessionId = nil
+            snapshot.validatedRxGeneration = 0
+            snapshot.remotePcmObserved = false
+            snapshot.participantResolved = false
+            snapshot.trackSubscribed = false
+            validatedRxStartedAt = nil
+            pcmTimeoutEmitted = false
+            return
+        }
+        beginEpisodeIfNeeded()
+        if snapshot.validatedRxGeneration != generation || snapshot.validatedRxSessionId != sessionId {
+            snapshot.remotePcmObserved = false
+            validatedRxStartedAt = at
+            pcmTimeoutEmitted = false
+        }
+        snapshot.validatedRemoteRxActive = true
+        snapshot.validatedRxSessionId = sessionId
+        snapshot.validatedRxGeneration = generation
+        snapshot.participantResolved = participantResolved
+        snapshot.trackSubscribed = trackSubscribed
+    }
+
+    @discardableResult
+    mutating func handleRemotePcm(sessionId: String?, generation: Int, at: Date) -> RxRemotePcmObservation {
+        guard snapshot.validatedRemoteRxActive,
+              generation == snapshot.validatedRxGeneration,
+              sessionId == snapshot.validatedRxSessionId else { return .rejected }
+        let recovered = pcmTimeoutEmitted && snapshot.recoveryAttempts > 0
+        snapshot.remotePcmObserved = true
+        if snapshot.remoteMediaSpeakerSessionId == sessionId {
+            mediaEvidenceAt = at
+        }
+        return recovered ? .recovered : .observed
+    }
+
+    mutating func evaluate(
+        at: Date,
+        thresholdMilliseconds: Int = rxDivergenceWatchdogMilliseconds,
+        remoteParticipantIsSpeaking: Bool? = nil
+    ) -> RxDivergenceEvaluation {
+        var evaluation = RxDivergenceEvaluation()
+
+        if snapshot.validatedRemoteRxActive,
+           !snapshot.remotePcmObserved,
+           !pcmTimeoutEmitted,
+           let startedAt = validatedRxStartedAt {
+            let elapsed = milliseconds(from: startedAt, to: at)
+            if elapsed >= thresholdMilliseconds {
+                pcmTimeoutEmitted = true
+                if (!snapshot.participantResolved || !snapshot.trackSubscribed), snapshot.recoveryAttempts < 1 {
+                    snapshot.recoveryAttempts += 1
+                    evaluation.recoverySessionId = snapshot.validatedRxSessionId
+                    evaluation.recoveryGeneration = snapshot.validatedRxGeneration
+                }
+                evaluation.signals.append(RxDivergenceSignal(
+                    event: "rx_pcm_timeout",
+                    elapsedMilliseconds: elapsed,
+                    snapshot: snapshot
+                ))
+            }
+        }
+
+        if snapshot.remoteMediaSpeakerActive, let evidenceAt = mediaEvidenceAt {
+            let elapsed = milliseconds(from: evidenceAt, to: at)
+            if elapsed >= thresholdMilliseconds {
+                if !snapshot.validatedRemoteRxActive, !mediaDivergenceEmitted {
+                    mediaDivergenceEmitted = true
+                    evaluation.signals.append(RxDivergenceSignal(
+                        event: "rx_divergence_detected",
+                        elapsedMilliseconds: elapsed,
+                        snapshot: snapshot
+                    ))
+                }
+                if remoteParticipantIsSpeaking == false {
+                    evaluation.verifiedInactiveMediaSessionId = snapshot.remoteMediaSpeakerSessionId
+                    snapshot.remoteMediaSpeakerActive = false
+                    snapshot.remoteMediaSpeakerSessionId = nil
+                    mediaEvidenceAt = nil
+                    evaluation.signals.append(RxDivergenceSignal(
+                        event: "rx_divergence_cleared",
+                        elapsedMilliseconds: elapsed,
+                        snapshot: snapshot
+                    ))
+                } else {
+                    // The 250 ms threshold detects divergence; it is not a
+                    // speaker TTL. Re-check SDK state later while keeping PTT
+                    // blocked whenever LiveKit still reports speaking (or the
+                    // participant state is temporarily unavailable).
+                    mediaEvidenceAt = at
+                }
+            }
+        }
+        return evaluation
+    }
+
+    func nextDeadline(thresholdMilliseconds: Int = rxDivergenceWatchdogMilliseconds) -> Date? {
+        var deadlines: [Date] = []
+        if snapshot.remoteMediaSpeakerActive, let mediaEvidenceAt {
+            deadlines.append(mediaEvidenceAt.addingTimeInterval(Double(thresholdMilliseconds) / 1_000))
+        }
+        if snapshot.validatedRemoteRxActive,
+           !snapshot.remotePcmObserved,
+           !pcmTimeoutEmitted,
+           let validatedRxStartedAt {
+            deadlines.append(validatedRxStartedAt.addingTimeInterval(Double(thresholdMilliseconds) / 1_000))
+        }
+        return deadlines.min()
+    }
+
+    mutating func reset() {
+        snapshot = RxConsistencySnapshot()
+        mediaEvidenceAt = nil
+        validatedRxStartedAt = nil
+        pcmTimeoutEmitted = false
+        mediaDivergenceEmitted = false
+    }
+
+    private mutating func beginEpisodeIfNeeded() {
+        guard !snapshot.remoteMediaSpeakerActive, !snapshot.validatedRemoteRxActive else { return }
+        snapshot.episode += 1
+        snapshot.recoveryAttempts = 0
+        pcmTimeoutEmitted = false
+        mediaDivergenceEmitted = false
+    }
+
+    private func milliseconds(from start: Date, to end: Date) -> Int {
+        max(0, Int(end.timeIntervalSince(start) * 1_000))
     }
 }
 
@@ -688,13 +878,15 @@ final class RxAudioController {
         onValidatedStart(event, rxGeneration)
         cancelTimers()
         audioActive = voiceAlreadyActive
-        firstPcmObserved = voiceAlreadyActive
+        // LiveKit speaking is a media hint, not proof that decoded PCM reached
+        // this generation. Only handleRemotePcm may cross the first-PCM fence.
+        firstPcmObserved = false
         pendingEndReason = nil
         pendingActiveSessionId = nil
         silenceStartedAt = nil
         snapshot = RxSnapshot()
         snapshot.generation = rxGeneration
-        snapshot.state = voiceAlreadyActive ? .active : (appleAudioActive ? .waitingFirstAudio : .arming)
+        snapshot.state = appleAudioActive ? .waitingFirstAudio : .arming
         snapshot.speakerUserId = event.speakerUserId
         snapshot.sessionId = event.sessionId
         snapshot.leaseId = event.leaseId
@@ -717,10 +909,10 @@ final class RxAudioController {
         snapshot.rxRemoteParticipantRequestedAt = clock.now
         snapshot.rxAppleAudioActivatedAt = appleAudioActive ? clock.now : nil
         snapshot.rxLiveKitEngineEnabledAt = appleAudioActive ? clock.now : nil
-        snapshot.rxFirstPcmAt = voiceAlreadyActive ? clock.now : nil
+        snapshot.rxFirstPcmAt = nil
         snapshot.rxControlEndReceivedAt = nil
         snapshot.rxFloorEndObservedAt = nil
-        snapshot.rxLastAudioAt = voiceAlreadyActive ? clock.now : nil
+        snapshot.rxLastAudioAt = nil
         snapshot.rxPlayoutDrainTargetMilliseconds = playoutDrainTargetMilliseconds
         snapshot.rxPlaybackCompletedAt = nil
         snapshot.rxRemoteParticipantClearedAt = nil
