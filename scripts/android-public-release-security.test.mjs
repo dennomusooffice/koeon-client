@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const workflow = await readFile(new URL("../.github/workflows/android-public-release.yml", import.meta.url), "utf8");
 const gradle = await readFile(new URL("../android/app/build.gradle.kts", import.meta.url), "utf8");
+const inviteHandoff = await readFile(new URL("../android/app/src/main/java/com/dennomuso/koeon/core/enrollment/InviteHandoff.kt", import.meta.url), "utf8");
 const releaseScript = await readFile(new URL("./android-public-release.sh", import.meta.url), "utf8");
 const originScript = new URL("./android-placeholder-origin.py", import.meta.url);
 const originSource = await readFile(originScript, "utf8");
@@ -64,6 +65,11 @@ test("locks official identity, release signing seam, version, and fail-closed de
   assert.match(gradle, /https:\/\/example\.invalid/u);
   assert.match(gradle, /KOEON_API_BASE_URL/u);
   assert.doesNotMatch(gradle, /org\.example\.koeon/u);
+});
+
+test("derives the main-source invite origin from the variant runtime configuration", () => {
+  assert.match(inviteHandoff, /BuildConfig\.KOEON_BACKEND_URL/u);
+  assert.doesNotMatch(inviteHandoff, /https:\/\/example\.invalid/u);
 });
 
 test("verifies official signature, app identity, non-debuggable runtime, and publishes only after validation", () => {
