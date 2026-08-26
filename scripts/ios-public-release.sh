@@ -15,7 +15,6 @@ done
 project="$CLIENT_SOURCE_DIR/ios/KOEON.xcodeproj"
 template_entitlements="$INFRA_ROOT/ios/KOEON/KOEON.Release.entitlements"
 generated_entitlements="$RUNNER_TEMP/KOEON.Release.entitlements"
-ephemeral_assets="$CLIENT_SOURCE_DIR/ios/KOEON/Assets.xcassets"
 generated_project_workspace="$CLIENT_SOURCE_DIR/ios/KOEON.xcodeproj/project.xcworkspace"
 project_workspace_preexisting=0
 [[ -e "$generated_project_workspace" ]] && project_workspace_preexisting=1
@@ -27,7 +26,7 @@ derived_data="$RUNNER_TEMP/koeon-public-release-derived"
 
 cleanup() {
   set +e
-  rm -rf "$ephemeral_assets" "$archive_path" "$export_path" "$signed_extract" "$source_packages" "$derived_data"
+  rm -rf "$archive_path" "$export_path" "$signed_extract" "$source_packages" "$derived_data"
   if [[ "$project_workspace_preexisting" -eq 0 ]]; then rm -rf "$generated_project_workspace"; fi
   rm -f "$generated_entitlements" "$RUNNER_TEMP/PublicReleaseExportOptions.plist"
   rm -f "$RUNNER_TEMP/public-release-settings.txt" "$RUNNER_TEMP/public-release-signed-entitlements.plist"
@@ -70,35 +69,7 @@ os.chmod(os.environ["GENERATED_ENTITLEMENTS"], 0o600)
 print("RELEASE_ENTITLEMENTS=PASS")
 PY
 
-[[ ! -e "$ephemeral_assets" ]] || { echo "Exact source unexpectedly contains an AppIcon asset catalog" >&2; exit 1; }
-mkdir -p "$ephemeral_assets/AppIcon.appiconset"
-ICON_PATH="$ephemeral_assets/AppIcon.appiconset/Internal-Test-1024.png" python3 - <<'PY'
-import binascii
-import os
-import struct
-import zlib
-
-width = height = 1024
-pixel = bytes((48, 61, 78))
-raw = b"".join(b"\x00" + pixel * width for _ in range(height))
-def chunk(name, data):
-    return struct.pack(">I", len(data)) + name + data + struct.pack(">I", binascii.crc32(name + data) & 0xFFFFFFFF)
-png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
-with open(os.environ["ICON_PATH"], "wb") as stream:
-    stream.write(png)
-PY
-cat >"$ephemeral_assets/AppIcon.appiconset/Contents.json" <<'JSON'
-{
-  "images": [
-    { "filename": "Internal-Test-1024.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" }
-  ],
-  "info": { "author": "xcode", "version": 1 }
-}
-JSON
-cat >"$ephemeral_assets/Contents.json" <<'JSON'
-{ "info": { "author": "xcode", "version": 1 } }
-JSON
-echo "EPHEMERAL_NEUTRAL_APPICON=PASS"
+python3 "$INFRA_ROOT/scripts/ios-appicon-contract.py" --source "$CLIENT_SOURCE_DIR"
 
 release_overrides=(
   "KOEON_API_BASE_URL=$KOEON_API_BASE_URL"
@@ -130,6 +101,7 @@ xcodebuild archive \
 
 archive_app="$archive_path/Products/Applications/KOEON.app"
 [[ -d "$archive_app" ]] || { echo "Unsigned archive app is missing" >&2; exit 1; }
+python3 "$INFRA_ROOT/scripts/ios-appicon-contract.py" --app "$archive_app"
 codesign --force --sign - --entitlements "$generated_entitlements" "$archive_app"
 codesign --verify --strict --verbose=2 "$archive_app"
 preserved="$RUNNER_TEMP/public-release-preserved-entitlements.plist"
@@ -182,6 +154,7 @@ signed_app="$signed_extract/Payload/KOEON.app"
 signed_entitlements="$RUNNER_TEMP/public-release-signed-entitlements.plist"
 profile="$RUNNER_TEMP/public-release-profile.plist"
 [[ -d "$signed_app" && -f "$signed_app/embedded.mobileprovision" ]] || { echo "Signed app or provisioning profile is missing" >&2; exit 1; }
+python3 "$INFRA_ROOT/scripts/ios-appicon-contract.py" --app "$signed_app"
 "$INFRA_ROOT/scripts/ios-validate-runtime-frameworks.sh" "$signed_app"
 codesign --verify --deep --strict --verbose=2 "$signed_app"
 codesign -d --entitlements :- "$signed_app" >"$signed_entitlements" 2>/dev/null
@@ -211,7 +184,6 @@ else
   echo "TESTFLIGHT_UPLOAD=NO"
 fi
 
-rm -rf "$ephemeral_assets"
 if [[ "$project_workspace_preexisting" -eq 0 ]]; then rm -rf "$generated_project_workspace"; fi
 [[ "$actual_commit" == "$(git -C "$CLIENT_SOURCE_DIR" rev-parse HEAD)" ]] || { echo "Source commit drifted" >&2; exit 1; }
 [[ "$actual_tree" == "$(git -C "$CLIENT_SOURCE_DIR" rev-parse 'HEAD^{tree}')" ]] || { echo "Source tree drifted" >&2; exit 1; }
