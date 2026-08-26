@@ -5,6 +5,7 @@ import android.media.AudioManager
 import android.view.KeyEvent
 import com.dennomuso.koeon.BuildConfig
 import com.dennomuso.koeon.core.api.HttpKoeonApi
+import com.dennomuso.koeon.core.api.KoeonApiBaseUrlConfiguration
 import com.dennomuso.koeon.core.api.KoeonApi
 import com.dennomuso.koeon.core.api.KoeonApiException
 import com.dennomuso.koeon.core.enrollment.EnrollmentCredential
@@ -52,6 +53,7 @@ import com.dennomuso.koeon.core.ptt.HardwareVolumePttMode
 import com.dennomuso.koeon.core.ptt.HardwareVolumePttEligibility
 import com.dennomuso.koeon.core.ptt.PttSnapshot
 import com.dennomuso.koeon.core.ptt.PttState
+import com.dennomuso.koeon.core.ptt.localPttEligible
 import com.dennomuso.koeon.core.ptt.RxSnapshot
 import com.dennomuso.koeon.core.ptt.SystemPttClock
 import com.dennomuso.koeon.service.IntercomForegroundService
@@ -212,7 +214,7 @@ class IntercomSessionManager(
     private val credentialStore = credentialStoreOverride ?: AndroidKeystoreDeviceCredentialStore(appContext)
     private val deviceDisplayName = AndroidDeviceDisplayNameStore(appContext).getOrCreate()
     private val api: KoeonApi = apiOverride ?: HttpKoeonApi(
-        BuildConfig.KOEON_BACKEND_URL,
+        KoeonApiBaseUrlConfiguration.resolve(BuildConfig.KOEON_API_BASE_URL),
         credentialProvider = { credentialStore.read() },
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -823,12 +825,22 @@ class IntercomSessionManager(
 
     private fun pttDown(source: PttInputSource) {
         _state.update { it.copy(diagnostics = it.diagnostics.copy(lastPttInputSource = source)) }
-        val canTransmit = _state.value.operationalState == OperationalState.ACTIVE &&
-            _state.value.join?.canPublish == true &&
-            audioInterruption.snapshot.state == AudioAvailabilityState.READY
+        val remoteTalking = _state.value.currentSpeaker != null &&
+            _state.value.ptt.state != PttState.TRANSMITTING
+        val canTransmit = localPttEligible(
+            operationallyActive = _state.value.operationalState == OperationalState.ACTIVE,
+            canPublish = _state.value.join?.canPublish == true,
+            connected = _state.value.connectionState == IntercomConnectionState.CONNECTED,
+            audioReady = audioInterruption.snapshot.state == AudioAvailabilityState.READY,
+            remoteTalking = remoteTalking,
+        )
         if (!canTransmit && _state.value.join?.canPublish == true) {
-            _state.update { it.copy(error = "AUDIO INTERRUPTED: 音声復旧が完了するまでPTTは利用できません") }
-            scope.launch { pttController?.rejectForAudioUnavailable() }
+            if (remoteTalking) {
+                scope.launch { pttController?.rejectForRemoteBusy() }
+            } else {
+                _state.update { it.copy(error = "AUDIO INTERRUPTED: 音声復旧が完了するまでPTTは利用できません") }
+                scope.launch { pttController?.rejectForAudioUnavailable() }
+            }
             return
         }
         pttInputQueue.down(canTransmit)

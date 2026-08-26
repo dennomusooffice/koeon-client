@@ -355,6 +355,10 @@ struct RemoteAudioSubscriptionGenerationGate: Sendable {
         return true
     }
 
+    func isActive(sessionId: String, generation: Int) -> Bool {
+        activeBySession[sessionId] == generation
+    }
+
     mutating func reset() { activeBySession.removeAll() }
 }
 
@@ -382,6 +386,36 @@ struct RemoteReceiveActivationSnapshot: Equatable, Sendable {
     var rxFirstPcmGeneration = 0
     var rxStaleMediaDropped = 0
     var rxLateCompletionIgnored = 0
+}
+
+struct RxConsistencySnapshot: Equatable, Sendable {
+    var episode = 0
+    var remoteMediaSpeakerActive = false
+    var remoteMediaSpeakerSessionId: String?
+    var validatedRemoteRxActive = false
+    var validatedRxSessionId: String?
+    var validatedRxGeneration = 0
+    var remotePcmObserved = false
+    var participantResolved = false
+    var trackSubscribed = false
+    var recoveryAttempts = 0
+
+    var remoteBusyBlocksLocalPtt: Bool {
+        remoteMediaSpeakerActive || validatedRemoteRxActive
+    }
+}
+
+struct RxDivergenceDiagnostic: Equatable, Sendable {
+    let event: String
+    let elapsedMs: Int
+    let roomConnectionState: String
+    let participantResolved: Bool
+    let trackSubscribed: Bool
+    let rxGenerationActive: Bool
+    let audioSessionState: String
+    let pcmObserved: Bool
+    let mediaSpeakerActive: Bool
+    let pttEligible: Bool
 }
 
 enum CueResult: Equatable, Sendable {

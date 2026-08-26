@@ -4,6 +4,14 @@ enum class PttSemanticState {
     READY, TALKING, BUSY_REMOTE, PREPARING, ERROR, RECOVERING, OFFLINE, RX_ONLY
 }
 
+fun localPttEligible(
+    operationallyActive: Boolean,
+    canPublish: Boolean,
+    connected: Boolean,
+    audioReady: Boolean,
+    remoteTalking: Boolean,
+): Boolean = operationallyActive && canPublish && connected && audioReady && !remoteTalking
+
 fun pttSemanticState(
     canPublish: Boolean,
     connected: Boolean,

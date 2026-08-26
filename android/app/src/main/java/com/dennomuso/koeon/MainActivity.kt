@@ -75,6 +75,7 @@ import com.dennomuso.koeon.core.haptics.PttHapticFeedbackController
 import com.dennomuso.koeon.core.audio.AudioAvailabilityState
 import com.dennomuso.koeon.core.ptt.PttState
 import com.dennomuso.koeon.core.ptt.PttSemanticState
+import com.dennomuso.koeon.core.ptt.localPttEligible
 import com.dennomuso.koeon.core.ptt.pttSemanticState
 import com.dennomuso.koeon.core.permission.JoinPermissionPolicy
 import com.dennomuso.koeon.core.session.IntercomSessionManager
@@ -328,12 +329,19 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         onDispose { hapticController.cancel() }
     }
     val audioReady = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY
-    val canTransmit = joined.canPublish && state.connectionState == IntercomConnectionState.CONNECTED && audioReady
+    val remoteTalking = state.currentSpeaker != null && state.ptt.state != PttState.TRANSMITTING
+    val canTransmit = localPttEligible(
+        operationallyActive = state.operationalState == OperationalState.ACTIVE,
+        canPublish = joined.canPublish,
+        connected = state.connectionState == IntercomConnectionState.CONNECTED,
+        audioReady = audioReady,
+        remoteTalking = remoteTalking,
+    )
     val pttSemantic = pttSemanticState(
         canPublish = joined.canPublish,
         connected = state.connectionState == IntercomConnectionState.CONNECTED,
         recovering = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING,
-        remoteTalking = state.currentSpeaker != null && state.ptt.state != PttState.TRANSMITTING,
+        remoteTalking = remoteTalking,
         pttState = state.ptt.state,
     )
     // Preserve the current gesture until UP, but only READY can start a new one.

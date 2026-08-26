@@ -34,7 +34,7 @@ private enum LiveKitDelegateEvent: Sendable {
     case reconnectStarted(String)
     case reconnectCompleted([String])
     case disconnected(String?)
-    case participantsChanged([String])
+    case participantDisconnected(sessionId: String?, names: [String])
     case participantConnected(sessionId: String?, names: [String])
     case speakingParticipant(name: String?, sessionId: String?)
     case pttControl(PttControlEvent, senderSessionId: String?)
@@ -46,6 +46,8 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     @Published private(set) var connectionState: KOEONConnectionState = .disconnected
     @Published private(set) var participantNames: [String] = []
     @Published private(set) var currentSpeaker: String?
+    @Published private(set) var currentSpeakerSessionId: String?
+    @Published private(set) var remoteMediaSpeakerActive = false
     @Published private(set) var reconnectCount = 0
     @Published private(set) var lastError: String?
     @Published private(set) var deployment = "UNKNOWN"
@@ -145,7 +147,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         room = nil
         connectionState = .disconnected
         participantNames = []
-        currentSpeaker = nil
+        clearRemoteMediaActivity(notify: true)
         canPublish = false
         reconnectInProgress = false
         channelId = nil
@@ -231,9 +233,13 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
 
     /// Uses LiveKit's supported subscription API to keep the current generation
     /// subscribed while Apple owns audible playout.
-    func activateRemoteAudioSubscription(sessionId: String, generation: Int) async throws {
-        remoteAudioSubscriptionGate.activate(sessionId: sessionId, generation: generation)
-        try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: true)
+    @discardableResult
+    func activateRemoteAudioSubscription(sessionId: String, generation: Int) async throws -> Bool {
+        let subscribed = try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: true)
+        if subscribed {
+            remoteAudioSubscriptionGate.activate(sessionId: sessionId, generation: generation)
+        }
+        return subscribed
     }
 
     /// Flushes a completed generation only after Apple confirms that the active
@@ -253,13 +259,36 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         return true
     }
 
-    private func setRemoteAudioSubscribed(sessionId: String, subscribed: Bool) async throws {
+    func isRemoteAudioSubscriptionActive(sessionId: String, generation: Int) -> Bool {
+        remoteAudioSubscriptionGate.isActive(sessionId: sessionId, generation: generation)
+    }
+
+    func remoteParticipantIsSpeaking(sessionId: String) -> Bool? {
+        room?.remoteParticipants.values.first(where: {
+            $0.identity?.stringValue == sessionId
+        })?.isSpeaking
+    }
+
+    /// Clears only the currently-matching media hint after the caller has
+    /// verified authoritative SDK state is inactive. It does not touch the
+    /// validated RX coordinator or create/replace a receive generation.
+    func clearVerifiedInactiveRemoteMediaActivity(sessionId: String?) {
+        guard remoteMediaSpeakerActive,
+              sessionId == nil || currentSpeakerSessionId == sessionId else { return }
+        clearRemoteMediaActivity(notify: true)
+    }
+
+    @discardableResult
+    private func setRemoteAudioSubscribed(sessionId: String, subscribed: Bool) async throws -> Bool {
         guard let participant = room?.remoteParticipants.values.first(where: {
             $0.identity?.stringValue == sessionId
-        }) else { return }
-        for publication in participant.audioTracks.compactMap({ $0 as? RemoteTrackPublication }) {
+        }) else { return false }
+        let publications = participant.audioTracks.compactMap { $0 as? RemoteTrackPublication }
+        guard !publications.isEmpty else { return false }
+        for publication in publications {
             try await publication.set(subscribed: subscribed)
         }
+        return true
     }
 
     private func publishControl(type: String, leaseId: String) async throws {
@@ -382,7 +411,10 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
         enqueueDelegateEvent(
             name: "participantDidDisconnect",
-            event: .participantsChanged(Self.participantNameSnapshot(room))
+            event: .participantDisconnected(
+                sessionId: participant.identity?.stringValue,
+                names: Self.participantNameSnapshot(room)
+            )
         )
     }
 
@@ -391,7 +423,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         enqueueDelegateEvent(
             name: "didUpdateSpeakingParticipants",
             event: .speakingParticipant(
-                name: participants.first.flatMap(Self.displayName),
+                name: remote.flatMap(Self.displayName),
                 sessionId: remote?.identity?.stringValue
             )
         )
@@ -449,14 +481,21 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
             applyReconnectCompleted(participantNames: names)
         case let .disconnected(message):
             applyDisconnected(errorMessage: message)
-        case let .participantsChanged(names):
+        case let .participantDisconnected(sessionId, names):
             participantNames = names
+            if currentSpeakerSessionId == sessionId { clearRemoteMediaActivity(notify: true) }
         case let .participantConnected(sessionId, names):
             participantNames = names
             if let sessionId { onParticipantAvailable?(sessionId) }
         case let .speakingParticipant(name, sessionId):
-            currentSpeaker = name
-            onRemoteAudioActivity?(sessionId, sessionId != nil)
+            if let sessionId {
+                currentSpeaker = name
+                currentSpeakerSessionId = sessionId
+                remoteMediaSpeakerActive = true
+                onRemoteAudioActivity?(sessionId, true)
+            } else {
+                clearRemoteMediaActivity(notify: true)
+            }
         case let .pttControl(event, senderSessionId):
             onPttControl?(event, senderSessionId)
         case let .rxReady(event, participantIdentity, participantDeviceId):
@@ -488,6 +527,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     ) {
         let previousState = connectionState
         connectionState = state
+        if state == .disconnected { clearRemoteMediaActivity(notify: true) }
         onConnectionStateChanged?(state)
         if state == .disconnected,
            disconnectedFromActiveState,
@@ -511,6 +551,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         connectionState = .disconnected
         onConnectionStateChanged?(.disconnected)
         lastError = errorMessage
+        clearRemoteMediaActivity(notify: true)
         if shouldNotifyDisconnect { onUnsafeDisconnect?("LiveKit Room disconnected.") }
     }
 
@@ -537,8 +578,17 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         reconnectCount += 1
         reconnectInProgress = true
         connectionState = .reconnecting
+        clearRemoteMediaActivity(notify: true)
         onConnectionStateChanged?(.reconnecting)
         onUnsafeDisconnect?(reason)
+    }
+
+    private func clearRemoteMediaActivity(notify: Bool) {
+        let previousSessionId = currentSpeakerSessionId
+        currentSpeaker = nil
+        currentSpeakerSessionId = nil
+        remoteMediaSpeakerActive = false
+        if notify { onRemoteAudioActivity?(previousSessionId, false) }
     }
 
     nonisolated private static func participantNameSnapshot(_ room: Room) -> [String] {
