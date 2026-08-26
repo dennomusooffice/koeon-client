@@ -2,6 +2,66 @@ import XCTest
 @testable import KOEON
 
 final class BackendContractTests: XCTestCase {
+    func testRuntimeConfigurationAcceptsValidHTTPSURL() throws {
+        let url = try XCTUnwrap(RuntimeConfiguration.apiBaseURL(from: [
+            RuntimeConfiguration.apiBaseURLInfoKey: "https://api.example.test/v1",
+        ]))
+        XCTAssertEqual(url.absoluteString, "https://api.example.test/v1")
+    }
+
+    func testRuntimeConfigurationFailsClosedWhenValueIsMissing() {
+        XCTAssertNil(RuntimeConfiguration.apiBaseURL(from: [:]))
+    }
+
+    func testRuntimeConfigurationFailsClosedWhenValueIsEmpty() {
+        XCTAssertNil(RuntimeConfiguration.apiBaseURL(from: [
+            RuntimeConfiguration.apiBaseURLInfoKey: "  ",
+        ]))
+    }
+
+    func testRuntimeConfigurationRejectsUnresolvedBuildSetting() {
+        XCTAssertNil(RuntimeConfiguration.apiBaseURL(from: [
+            RuntimeConfiguration.apiBaseURLInfoKey: "$(KOEON_API_BASE_URL)",
+        ]))
+    }
+
+    func testRuntimeConfigurationRejectsPublicPlaceholder() {
+        XCTAssertNil(RuntimeConfiguration.apiBaseURL(from: [
+            RuntimeConfiguration.apiBaseURLInfoKey: "https://example.invalid",
+        ]))
+    }
+
+    func testRuntimeConfigurationRejectsMalformedURL() {
+        XCTAssertNil(RuntimeConfiguration.apiBaseURL(from: [
+            RuntimeConfiguration.apiBaseURLInfoKey: "not a url",
+        ]))
+    }
+
+    func testRuntimeConfigurationRejectsNonHTTPSURL() {
+        XCTAssertNil(RuntimeConfiguration.apiBaseURL(from: [
+            RuntimeConfiguration.apiBaseURLInfoKey: "http://api.example.test",
+        ]))
+    }
+
+    func testRuntimeConfigurationRejectsCredentialQueryAndFragmentData() {
+        for value in [
+            "https://user@example.test",
+            "https://api.example.test?mode=test",
+            "https://api.example.test#section",
+        ] {
+            XCTAssertNil(RuntimeConfiguration.apiBaseURL(from: [
+                RuntimeConfiguration.apiBaseURLInfoKey: value,
+            ]))
+        }
+    }
+
+    func testAPIClientDefaultPathConsumesRuntimeConfiguration() throws {
+        let client = KOEONAPIClient(runtimeInfoDictionary: [
+            RuntimeConfiguration.apiBaseURLInfoKey: "https://api.example.test/v1",
+        ])
+        XCTAssertEqual(client.configuredBaseURL, URL(string: "https://api.example.test/v1"))
+    }
+
     func testFieldDiagnosticSchemaIsCrossPlatformV2() {
         XCTAssertEqual(fieldDiagnosticSchema, "koeon.field-diagnostic.v2")
     }

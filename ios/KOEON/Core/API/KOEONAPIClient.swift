@@ -28,21 +28,51 @@ protocol KOEONAPIClientProtocol: Sendable {
     func logout() async throws
 }
 
+enum RuntimeConfiguration {
+    static let apiBaseURLInfoKey = "KOEONAPIBaseURL"
+
+    static func apiBaseURL(from infoDictionary: [String: Any]) -> URL? {
+        guard let rawValue = infoDictionary[apiBaseURLInfoKey] as? String else { return nil }
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.contains("$(") else { return nil }
+        guard let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https",
+              let host = components.host,
+              !host.isEmpty,
+              host.lowercased() != "example.invalid",
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              let url = components.url else { return nil }
+        return url
+    }
+}
+
 final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
-    static let productionBaseURL = URL(string: "https://example.invalid")!
+    static let failClosedBaseURL = URL(string: "https://example.invalid")!
+
+    static var productionBaseURL: URL {
+        RuntimeConfiguration.apiBaseURL(from: Bundle.main.infoDictionary ?? [:]) ?? failClosedBaseURL
+    }
 
     private let baseURL: URL
+    var configuredBaseURL: URL { baseURL }
     private let session: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let credentialStore: any DeviceCredentialStoring
 
     init(
-        baseURL: URL = productionBaseURL,
+        baseURL: URL? = nil,
+        runtimeInfoDictionary: [String: Any]? = nil,
         session: URLSession = .shared,
         credentialStore: any DeviceCredentialStoring = KeychainDeviceCredentialStore()
     ) {
-        self.baseURL = baseURL
+        let runtimeBaseURL = RuntimeConfiguration.apiBaseURL(
+            from: runtimeInfoDictionary ?? Bundle.main.infoDictionary ?? [:]
+        )
+        self.baseURL = baseURL ?? runtimeBaseURL ?? Self.failClosedBaseURL
         self.session = session
         self.credentialStore = credentialStore
         encoder = JSONEncoder()
