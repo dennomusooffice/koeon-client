@@ -52,6 +52,8 @@ if [[ -f "$android_release_workflow" ]]; then
   node --test scripts/android-apksigner-cert.test.mjs scripts/android-public-release-security.test.mjs scripts/android-release-trust-policy.test.mjs
 fi
 
+python3 scripts/feature-parity-contract.py
+
 while IFS= read -r reference; do
   if [[ "$reference" == ./* ]]; then
     continue

@@ -6,7 +6,7 @@ enum InviteHandoffError: Error, Equatable {
 
 enum InviteInputParser {
     private static let trustedScheme = "https"
-    private static let trustedHost = "example.invalid"
+    private static let trustedHost = "koeon.muso-apps.net"
     private static let trustedPath = "/join"
 
     static func parse(_ value: String) throws -> String {

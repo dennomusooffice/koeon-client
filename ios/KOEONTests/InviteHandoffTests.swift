@@ -7,7 +7,7 @@ final class InviteHandoffTests: XCTestCase {
     func testParserAcceptsRawTokenAndTrustedUniversalLink() throws {
         XCTAssertEqual(try InviteInputParser.parse(token), token)
         XCTAssertEqual(
-            try InviteInputParser.parse("https://example.invalid/join#\(token)"),
+            try InviteInputParser.parse("https://koeon.muso-apps.net/join#\(token)"),
             token
         )
     }
@@ -15,21 +15,21 @@ final class InviteHandoffTests: XCTestCase {
     func testParserRejectsWrongHostPathQueryAndMissingFragment() {
         for value in [
             "https://example.com/join#\(token)",
-            "https://example.invalid/admin#\(token)",
-            "https://example.invalid/join?token=x#\(token)",
-            "https://example.invalid/join",
+            "https://koeon.muso-apps.net/admin#\(token)",
+            "https://koeon.muso-apps.net/join?token=x#\(token)",
+            "https://koeon.muso-apps.net/join",
         ] {
             XCTAssertThrowsError(try InviteInputParser.parse(value))
         }
     }
 
     func testColdAndWarmRoutesAreIndependentAndRetainNoToken() {
-        let first = InviteDeepLinkRouter.route(URL(string: "https://example.invalid/join#\(token)")!)
+        let first = InviteDeepLinkRouter.route(URL(string: "https://koeon.muso-apps.net/join#\(token)")!)
         let secondToken = String(repeating: "B", count: 43)
-        let second = InviteDeepLinkRouter.route(URL(string: "https://example.invalid/join#\(secondToken)")!)
+        let second = InviteDeepLinkRouter.route(URL(string: "https://koeon.muso-apps.net/join#\(secondToken)")!)
         XCTAssertEqual(first, token)
         XCTAssertEqual(second, secondToken)
-        XCTAssertNil(InviteDeepLinkRouter.route(URL(string: "https://example.invalid/join")!))
+        XCTAssertNil(InviteDeepLinkRouter.route(URL(string: "https://koeon.muso-apps.net/join")!))
     }
 
     func testTemporaryCodeNormalizesCaseSpacesAndHyphens() throws {
