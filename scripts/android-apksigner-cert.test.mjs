@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { parseSignerCertificateSha256 } from "./android-apksigner-cert.mjs";
 
-const compact = "0123456789abcdef".repeat(4);
+const compact = "abcdefabcdefabcd".repeat(4);
 const colonSeparated = compact.match(/../gu).join(":").toUpperCase();
 const spaceSeparated = compact.match(/../gu).join(" ");
 
