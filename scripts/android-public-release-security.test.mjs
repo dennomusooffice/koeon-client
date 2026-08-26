@@ -67,9 +67,10 @@ test("locks official identity, release signing seam, version, and fail-closed de
   assert.doesNotMatch(gradle, /org\.example\.koeon/u);
 });
 
-test("derives the main-source invite origin from the variant runtime configuration", () => {
-  assert.match(inviteHandoff, /BuildConfig\.KOEON_BACKEND_URL/u);
+test("locks the public invite origin to the approved historical authority", () => {
+  assert.match(inviteHandoff, /INVITE_ORIGIN = "https:\/\/koeon\.muso-apps\.net"/u);
   assert.doesNotMatch(inviteHandoff, /https:\/\/example\.invalid/u);
+  assert.doesNotMatch(inviteHandoff, /BuildConfig\.KOEON_BACKEND_URL/u);
 });
 
 test("verifies official signature, app identity, non-debuggable runtime, and publishes only after validation", () => {
