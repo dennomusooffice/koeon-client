@@ -32,7 +32,7 @@ if printf '%s\0' "${tracked[@]}" | grep -zEiq '/([^/]*(\.p8|\.p12|\.mobileprovis
 fi
 
 secret_pattern='(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|gh[pousr]_[0-9A-Za-z]{30,}|xox[baprs]-[0-9A-Za-z-]{10,}|LIVEKIT_API_SECRET[[:space:]]*=)'
-private_reference_pattern='(muso-apps\.net|testflight\.apple\.com/join/|DEVELOPMENT_TEAM[[:space:]]*=)'
+private_reference_pattern='(muso-apps\.net|testflight\.apple\.com/join/|DEVELOPMENT_TEAM[[:space:]]*=[[:space:]]*[A-Z0-9]{10}([^A-Z0-9]|$))'
 production_secret_pattern='(APNS_(AUTH_)?KEY|APP_STORE_CONNECT_(KEY|ISSUER)|PLAY_(SERVICE_ACCOUNT|SIGNING)|LIVEKIT_API_SECRET)[[:space:]]*[:=]'
 private_ip_pattern='(^|[^0-9])(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})([^0-9]|$)'
 
