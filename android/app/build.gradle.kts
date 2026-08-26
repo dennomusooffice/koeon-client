@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,24 +7,68 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val publicSafeBackendUrl = "https://example.invalid"
+val releaseBackendUrl = providers.gradleProperty("KOEON_API_BASE_URL").orElse(publicSafeBackendUrl)
+val releaseTaskRequested = gradle.startParameter.taskNames.any {
+    it.substringAfterLast(':').contains("release", ignoreCase = true)
+}
+val releaseSigningInputs = mapOf(
+    "ANDROID_KEYSTORE_PATH" to providers.environmentVariable("ANDROID_KEYSTORE_PATH"),
+    "ANDROID_KEY_ALIAS" to providers.environmentVariable("ANDROID_KEY_ALIAS"),
+    "ANDROID_KEY_PASSWORD" to providers.environmentVariable("ANDROID_KEY_PASSWORD"),
+    "ANDROID_STORE_PASSWORD" to providers.environmentVariable("ANDROID_STORE_PASSWORD"),
+)
+
+fun javaStringLiteral(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+fun validateReleaseEndpoint(value: String) {
+    val uri = runCatching { URI(value) }.getOrElse { throw GradleException("Invalid release runtime endpoint") }
+    if (uri.scheme != "https" || uri.host.isNullOrBlank() || uri.userInfo != null || uri.fragment != null) {
+        throw GradleException("Release runtime endpoint must be credential-free HTTPS")
+    }
+    if (uri.host.equals("example.invalid", ignoreCase = true) || uri.host.endsWith(".invalid", ignoreCase = true)) {
+        throw GradleException("Release runtime endpoint must not use a placeholder host")
+    }
+}
+
+if (releaseTaskRequested) {
+    val missing = releaseSigningInputs.filterValues { it.orNull.isNullOrBlank() }.keys
+    if (missing.isNotEmpty()) throw GradleException("Missing required Android release signing input")
+    validateReleaseEndpoint(releaseBackendUrl.get())
+}
+
 android {
     namespace = "com.dennomuso.koeon"
     compileSdk = 36
 
+    signingConfigs {
+        create("release") {
+            storeFile = releaseSigningInputs.getValue("ANDROID_KEYSTORE_PATH").orNull?.let(::file)
+            keyAlias = releaseSigningInputs.getValue("ANDROID_KEY_ALIAS").orNull
+            keyPassword = releaseSigningInputs.getValue("ANDROID_KEY_PASSWORD").orNull
+            storePassword = releaseSigningInputs.getValue("ANDROID_STORE_PASSWORD").orNull
+        }
+    }
+
     defaultConfig {
-        applicationId = "org.example.koeon"
+        applicationId = "com.dennomuso.koeon"
         minSdk = 29
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.0-task002"
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "KOEON_BACKEND_URL", "\"https://example.invalid\"")
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "KOEON_BACKEND_URL", javaStringLiteral(publicSafeBackendUrl))
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+            buildConfigField("String", "KOEON_BACKEND_URL", javaStringLiteral(releaseBackendUrl.get()))
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

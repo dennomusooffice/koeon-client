@@ -6,7 +6,8 @@ cd "$root"
 
 mapfile -t workflows < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print | sort)
 ordinary_workflows=(.github/workflows/public-ci.yml)
-release_workflow=.github/workflows/ios-testflight-internal.yml
+ios_release_workflow=.github/workflows/ios-testflight-internal.yml
+android_release_workflow=.github/workflows/android-public-release.yml
 if ((${#workflows[@]} == 0)) || [[ ! -f "${ordinary_workflows[0]}" ]]; then
   echo "No workflows found" >&2
   exit 1
@@ -23,13 +24,16 @@ reject() {
 
 reject '(^|[[:space:]])pull_request_target:' 'Privileged pull_request_target trigger is forbidden'
 reject '(^|[[:space:]])workflow_run:' 'workflow_run execution of PR code is forbidden'
-reject '(^|[[:space:]])(contents|actions|checks|deployments|id-token|issues|packages|pull-requests|security-events|statuses):[[:space:]]*write([[:space:]]|$)' 'Workflow write permission is forbidden'
 reject '(^|[[:space:]])eval[[:space:]]' 'Shell eval is forbidden'
 reject '\$\{\{[^}]*github\.event\.' 'PR-controlled event metadata must not be interpolated into workflow execution'
 reject 'ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION' 'Node runtime security fallback is forbidden'
 
 if grep -IEn '\$\{\{[[:space:]]*secrets\.' "${ordinary_workflows[@]}"; then
   echo 'Secrets are forbidden in ordinary public PR workflows' >&2
+  exit 1
+fi
+if grep -IEn '(^|[[:space:]])(contents|actions|checks|deployments|id-token|issues|packages|pull-requests|security-events|statuses):[[:space:]]*write([[:space:]]|$)' "${ordinary_workflows[@]}"; then
+  echo 'Write permission is forbidden in ordinary Public CI' >&2
   exit 1
 fi
 if grep -IEn 'actions/(cache|upload-artifact|download-artifact)@' "${ordinary_workflows[@]}"; then
@@ -41,8 +45,11 @@ if grep -IEn '(xcodebuild[^#]*(archive|-exportArchive)|codesign[[:space:]]|--upl
   exit 1
 fi
 
-if [[ -f "$release_workflow" ]]; then
+if [[ -f "$ios_release_workflow" ]]; then
   node --test scripts/ios-testflight-security.test.mjs
+fi
+if [[ -f "$android_release_workflow" ]]; then
+  node --test scripts/android-public-release-security.test.mjs scripts/android-release-trust-policy.test.mjs
 fi
 
 while IFS= read -r reference; do

@@ -55,9 +55,11 @@ jobs:
         with:
           persist-credentials: false
       - run: bash scripts/ci-public-safety.sh
-      - name: Test protected TestFlight trust and candidate contracts
+      - name: Test protected release trust and candidate contracts
         run: >-
           node --test
+          scripts/android-public-release-security.test.mjs
+          scripts/android-release-trust-policy.test.mjs
           scripts/ios-release-trust-policy.test.mjs
           scripts/ios-release-candidate-contract.test.mjs
           scripts/ios-app-store-connect-preflight.test.mjs
