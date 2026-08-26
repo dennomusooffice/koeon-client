@@ -58,6 +58,7 @@ jobs:
       - name: Test protected release trust and candidate contracts
         run: >-
           node --test
+          scripts/android-apksigner-cert.test.mjs
           scripts/android-public-release-security.test.mjs
           scripts/android-release-trust-policy.test.mjs
           scripts/ios-release-trust-policy.test.mjs

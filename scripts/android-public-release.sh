@@ -167,11 +167,10 @@ grep -Fq 'Verifies' "$apk_signing_report" || { echo "APK_SIGNATURE_VALID=FAIL"; 
 grep -Fq 'Number of signers: 1' "$apk_signing_report" || { echo "APK_SIGNATURE_VALID=FAIL"; exit 1; }
 echo "APK_SIGNATURE_VALID=PASS"
 
-apk_certificate_sha256="$(
-  sed -n 's/^[[:space:]]*Signer #1 certificate SHA-256 digest:[[:space:]]*//p' "$apk_signing_report" |
-    head -n 1 |
-    normalize_sha256
-)"
+if ! apk_certificate_sha256="$(node "$INFRA_ROOT/scripts/android-apksigner-cert.mjs" "$apk_signing_report")"; then
+  echo "APK_SIGNER_CERT_FORMAT=FAIL"
+  exit 1
+fi
 [[ "$apk_certificate_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "APK_SIGNER_CERT_FORMAT=FAIL"; exit 1; }
 echo "APK_SIGNER_CERT_FORMAT=PASS"
 [[ "$apk_certificate_sha256" == "$certificate_sha256" ]] || { echo "APK_SIGNER_MATCHES_OFFICIAL_KEY=FAIL"; exit 1; }

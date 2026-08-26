@@ -49,7 +49,7 @@ if [[ -f "$ios_release_workflow" ]]; then
   node --test scripts/ios-testflight-security.test.mjs
 fi
 if [[ -f "$android_release_workflow" ]]; then
-  node --test scripts/android-public-release-security.test.mjs scripts/android-release-trust-policy.test.mjs
+  node --test scripts/android-apksigner-cert.test.mjs scripts/android-public-release-security.test.mjs scripts/android-release-trust-policy.test.mjs
 fi
 
 while IFS= read -r reference; do
