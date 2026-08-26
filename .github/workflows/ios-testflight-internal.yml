@@ -101,7 +101,6 @@ jobs:
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
       KOEON_BUNDLE_ID: ${{ vars.KOEON_BUNDLE_ID }}
       KOEON_ASSOCIATED_DOMAIN: ${{ vars.KOEON_ASSOCIATED_DOMAIN }}
-      IOS_CREDENTIAL_DIR: ${{ runner.temp }}/ios-app-credential
     steps:
       - name: Check out protected release implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -129,6 +128,7 @@ jobs:
             exit 1
           }
           echo "::add-mask::$KOEON_API_BASE_URL"
+          echo "IOS_CREDENTIAL_DIR=$RUNNER_TEMP/ios-app-credential" >>"$GITHUB_ENV"
           xcodebuild -version
           node --test \
             "$INFRA_ROOT/scripts/ios-release-candidate-contract.test.mjs" \
