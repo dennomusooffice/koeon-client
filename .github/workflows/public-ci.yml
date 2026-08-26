@@ -61,6 +61,8 @@ jobs:
           scripts/ios-release-trust-policy.test.mjs
           scripts/ios-release-candidate-contract.test.mjs
           scripts/ios-app-store-connect-preflight.test.mjs
+      - name: Test secret-safe signed candidate diagnostics
+        run: python3 scripts/ios-signed-candidate-validation.test.py
 
   ios-simulator:
     runs-on: macos-26
