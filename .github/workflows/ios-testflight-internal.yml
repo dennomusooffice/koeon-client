@@ -133,6 +133,7 @@ jobs:
           node --test \
             "$INFRA_ROOT/scripts/ios-release-candidate-contract.test.mjs" \
             "$INFRA_ROOT/scripts/ios-app-store-connect-preflight.test.mjs"
+          python3 "$INFRA_ROOT/scripts/ios-signed-candidate-validation.test.py"
       - name: Materialize temporary App Store Connect credential
         shell: bash
         run: |

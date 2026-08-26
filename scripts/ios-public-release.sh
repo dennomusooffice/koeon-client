@@ -186,50 +186,14 @@ profile="$RUNNER_TEMP/public-release-profile.plist"
 codesign --verify --deep --strict --verbose=2 "$signed_app"
 codesign -d --entitlements :- "$signed_app" >"$signed_entitlements" 2>/dev/null
 security cms -D -i "$signed_app/embedded.mobileprovision" >"$profile"
-APP_PATH="$signed_app" SIGNED_ENTITLEMENTS="$signed_entitlements" PROFILE_PLIST="$profile" python3 - <<'PY'
-import os
-import plistlib
-from pathlib import Path
-
-app = Path(os.environ["APP_PATH"])
-with (app / "Info.plist").open("rb") as stream:
-    info = plistlib.load(stream)
-with open(os.environ["SIGNED_ENTITLEMENTS"], "rb") as stream:
-    signed = plistlib.load(stream)
-with open(os.environ["PROFILE_PLIST"], "rb") as stream:
-    profile = plistlib.load(stream)
-application_identifier = f'{os.environ["APPLE_TEAM_ID"]}.{os.environ["KOEON_BUNDLE_ID"]}'
-checks = [
-    info.get("CFBundleIdentifier") == os.environ["KOEON_BUNDLE_ID"],
-    info.get("CFBundleShortVersionString") == os.environ["MARKETING_VERSION"],
-    info.get("CFBundleVersion") == os.environ["BUILD_NUMBER"],
-    info.get("KOEONAPIBaseURL") == os.environ["KOEON_API_BASE_URL"],
-    info.get("KOEONAPIBaseURL") != "https://example.invalid",
-    signed.get("application-identifier") == application_identifier,
-    signed.get("com.apple.developer.team-identifier") == os.environ["APPLE_TEAM_ID"],
-    signed.get("aps-environment") == "production",
-    signed.get("com.apple.developer.push-to-talk") is True,
-    os.environ["KOEON_ASSOCIATED_DOMAIN"] in signed.get("com.apple.developer.associated-domains", []),
-    signed.get("get-task-allow") in (None, False),
-]
-profile_entitlements = profile.get("Entitlements", {})
-profile_domains = profile_entitlements.get("com.apple.developer.associated-domains", [])
-checks.extend([
-    profile_entitlements.get("application-identifier") == application_identifier,
-    profile_entitlements.get("com.apple.developer.team-identifier") == os.environ["APPLE_TEAM_ID"],
-    profile_entitlements.get("aps-environment") == "production",
-    profile_entitlements.get("com.apple.developer.push-to-talk") is True,
-    os.environ["KOEON_ASSOCIATED_DOMAIN"] in profile_domains or "*" in profile_domains,
-])
-if not all(checks):
-    raise SystemExit("Signed candidate validation failed")
-print("ARCHIVE=PASS")
-print("CODE_SIGNING=PASS")
-print("PROVISIONING=PASS")
-print("EXPECTED_ENTITLEMENTS=PASS")
-print("RUNTIME_ENDPOINT_CONFIGURED=YES")
-print("EFFECTIVE_EXAMPLE_INVALID=NO")
-PY
+APP_PATH="$signed_app" SIGNED_ENTITLEMENTS="$signed_entitlements" PROFILE_PLIST="$profile" \
+  python3 "$INFRA_ROOT/scripts/ios-signed-candidate-validation.py"
+echo "ARCHIVE=PASS"
+echo "CODE_SIGNING=PASS"
+echo "PROVISIONING=PASS"
+echo "EXPECTED_ENTITLEMENTS=PASS"
+echo "RUNTIME_ENDPOINT_CONFIGURED=YES"
+echo "EFFECTIVE_EXAMPLE_INVALID=NO"
 
 ipa_sha256="$(shasum -a 256 "${ipa[0]}" | awk '{print $1}')"
 [[ "$ipa_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "Signed IPA SHA-256 calculation failed" >&2; exit 1; }
