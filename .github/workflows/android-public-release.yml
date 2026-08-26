@@ -1,0 +1,162 @@
+name: Android Public Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Validate a disposable signed candidate or rebuild and publish the exact source
+        required: true
+        default: CANDIDATE_ONLY
+        type: choice
+        options:
+          - CANDIDATE_ONLY
+          - PUBLISH_GITHUB_RELEASE
+      client_sha:
+        description: Exact protected main commit SHA
+        required: true
+        type: string
+      expected_tree_sha:
+        description: Exact protected main Git tree SHA
+        required: true
+        type: string
+      version_name:
+        description: Android version name
+        required: true
+        default: 1.0.0
+        type: string
+      version_code:
+        description: Positive Android version code
+        required: true
+        default: "1"
+        type: string
+      publish_confirmation:
+        description: Publish mode requires the exact value PUBLISH_ANDROID_RELEASE
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: koeon-android-public-release
+  cancel-in-progress: false
+
+jobs:
+  trust-gate:
+    name: Validate immutable protected Android source
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      client_sha: ${{ steps.policy.outputs.client_sha }}
+      tree_sha: ${{ steps.policy.outputs.tree_sha }}
+      workflow_sha: ${{ steps.policy.outputs.workflow_sha }}
+      release_tag: ${{ steps.policy.outputs.release_tag }}
+    steps:
+      - name: Check out protected release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-infrastructure
+          persist-credentials: false
+      - name: Test Android release trust policy
+        run: node --test release-infrastructure/scripts/android-release-trust-policy.test.mjs
+      - name: Validate exact protected main and required Public CI
+        id: policy
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RELEASE_MODE: ${{ inputs.mode }}
+          CLIENT_SHA: ${{ inputs.client_sha }}
+          EXPECTED_TREE_SHA: ${{ inputs.expected_tree_sha }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
+        run: node release-infrastructure/scripts/android-release-trust-policy.mjs
+
+  build-sign-validate-publish:
+    name: Build, sign, validate, publish if authorized, and dispose
+    needs: trust-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    environment:
+      name: android-public-release
+    permissions:
+      contents: write
+    env:
+      RELEASE_MODE: ${{ inputs.mode }}
+      CLIENT_SHA: ${{ needs.trust-gate.outputs.client_sha }}
+      EXPECTED_TREE_SHA: ${{ needs.trust-gate.outputs.tree_sha }}
+      RELEASE_TAG: ${{ needs.trust-gate.outputs.release_tag }}
+      CLIENT_SOURCE_DIR: ${{ github.workspace }}/client-source
+      INFRA_ROOT: ${{ github.workspace }}/release-infrastructure
+      VERSION_NAME: ${{ inputs.version_name }}
+      VERSION_CODE: ${{ inputs.version_code }}
+      PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      KOEON_API_BASE_URL: ${{ secrets.KOEON_API_BASE_URL }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out protected release implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.trust-gate.outputs.workflow_sha }}
+          path: release-infrastructure
+          persist-credentials: false
+      - name: Check out exact protected main source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.trust-gate.outputs.client_sha }}
+          path: client-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Validate protected secret contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          [[ -n "$ANDROID_KEYSTORE_BASE64" ]] || { echo "ANDROID_KEYSTORE=PRESENT check failed" >&2; exit 1; }
+          [[ -n "$ANDROID_KEY_ALIAS" ]] || { echo "ANDROID_KEY_ALIAS=PRESENT check failed" >&2; exit 1; }
+          [[ -n "$ANDROID_KEY_PASSWORD" ]] || { echo "ANDROID_KEY_PASSWORD=PRESENT check failed" >&2; exit 1; }
+          [[ -n "$ANDROID_STORE_PASSWORD" ]] || { echo "ANDROID_STORE_PASSWORD=PRESENT check failed" >&2; exit 1; }
+          [[ -n "$KOEON_API_BASE_URL" ]] || { echo "KOEON_API_BASE_URL=PRESENT check failed" >&2; exit 1; }
+          echo "ANDROID_RELEASE_SECRET_NAMES=PRESENT"
+      - name: Build, sign, validate, publish if authorized, and dispose
+        id: release
+        shell: bash
+        run: bash "$INFRA_ROOT/scripts/android-public-release.sh"
+      - name: Write sanitized Android release evidence
+        if: always()
+        shell: bash
+        env:
+          APK_SHA256: ${{ steps.release.outputs.apk_sha256 }}
+          CERTIFICATE_SHA256: ${{ steps.release.outputs.certificate_sha256 }}
+        run: |
+          set -euo pipefail
+          set +x
+          {
+            echo "## KOEON Android protected release evidence"
+            echo "- Mode: \`$RELEASE_MODE\`"
+            echo "- Exact commit: \`$CLIENT_SHA\`"
+            echo "- Exact tree: \`$EXPECTED_TREE_SHA\`"
+            echo "- Version: \`$VERSION_NAME ($VERSION_CODE)\`"
+            echo "- Release tag: \`$RELEASE_TAG\`"
+            echo "- APK SHA-256: \`${APK_SHA256:-NOT_AVAILABLE}\`"
+            echo "- Signing certificate SHA-256: \`${CERTIFICATE_SHA256:-NOT_AVAILABLE}\`"
+            echo "- Runtime endpoint value: not logged"
+            echo "- Signing key retained as artifact: NO"
+            echo "- Signed APK retained as Actions artifact: NO"
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Remove JKS, APK, certificate, and all signing material
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          rm -rf "$RUNNER_TEMP/koeon-android-public-release"
+          find "$RUNNER_TEMP" -maxdepth 2 -type f \( -name '*.jks' -o -name '*.keystore' \) -delete
+          test "$(find "$RUNNER_TEMP" -maxdepth 2 -type f \( -name '*.jks' -o -name '*.keystore' \) | wc -l | tr -d ' ')" = 0
+          echo "CLEANUP=PASS"
+          echo "SIGNING_KEY_ARTIFACT_COUNT=0"
