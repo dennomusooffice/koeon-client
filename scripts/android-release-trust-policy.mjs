@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 export const FULL_SHA = /^[0-9a-f]{40}$/u;
 export const VERSION_NAME = /^[0-9]+\.[0-9]+\.[0-9]+$/u;
 export const VERSION_CODE = /^[1-9][0-9]*$/u;
-export const MODES = new Set(["CANDIDATE_ONLY", "PUBLISH_GITHUB_RELEASE"]);
+export const MODES = new Set(["DIAGNOSTIC_ONLY", "CANDIDATE_ONLY", "PUBLISH_GITHUB_RELEASE"]);
 export const REQUIRED_PUBLIC_CHECKS = [
   "protocol",
   "android",

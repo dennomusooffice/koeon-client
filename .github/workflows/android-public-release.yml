@@ -9,6 +9,7 @@ on:
         default: CANDIDATE_ONLY
         type: choice
         options:
+          - DIAGNOSTIC_ONLY
           - CANDIDATE_ONLY
           - PUBLISH_GITHUB_RELEASE
       client_sha:

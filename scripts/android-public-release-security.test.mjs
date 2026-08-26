@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const workflow = await readFile(new URL("../.github/workflows/android-public-release.yml", import.meta.url), "utf8");
 const gradle = await readFile(new URL("../android/app/build.gradle.kts", import.meta.url), "utf8");
 const releaseScript = await readFile(new URL("./android-public-release.sh", import.meta.url), "utf8");
+const originScript = new URL("./android-placeholder-origin.py", import.meta.url);
+const originSource = await readFile(originScript, "utf8");
 
 test("uses manual dispatch and the protected Android Environment only", () => {
   const trigger = workflow.slice(workflow.indexOf("on:\n"), workflow.indexOf("\npermissions:"));
@@ -71,7 +75,18 @@ test("verifies official signature, app identity, non-debuggable runtime, and pub
   assert.match(releaseScript, /APK_SIGNER_MATCHES_OFFICIAL_KEY=PASS/u);
   assert.match(releaseScript, /APK_APPLICATION_ID=com\.dennomuso\.koeon/u);
   assert.match(releaseScript, /APK_DEBUGGABLE=NO/u);
-  assert.match(releaseScript, /APK_RUNTIME_ENDPOINT_CONFIGURED=PASS/u);
-  assert.ok(releaseScript.indexOf("APK_RUNTIME_ENDPOINT_CONFIGURED=PASS") < releaseScript.indexOf("gh release create"));
+  assert.match(originSource, /APK_RUNTIME_ENDPOINT_CONFIGURED=PASS/u);
+  assert.ok(releaseScript.indexOf("android-placeholder-origin.py") < releaseScript.indexOf("gh release create"));
   assert.doesNotMatch(releaseScript, /upload-artifact|download-artifact/u);
+});
+
+test("keeps diagnostic mode non-publishing and classifies placeholder owners deterministically", () => {
+  assert.match(workflow, /- DIAGNOSTIC_ONLY/u);
+  assert.match(releaseScript, /RELEASE_MODE" == "DIAGNOSTIC_ONLY/u);
+  assert.match(releaseScript, /android-placeholder-origin\.py/u);
+  assert.ok(releaseScript.indexOf("android-placeholder-origin.py") < releaseScript.indexOf("gh release create"));
+  if (process.platform !== "win32") {
+    const output = execFileSync("python3", [fileURLToPath(originScript), "--self-test"], { encoding: "utf8" });
+    assert.match(output, /ANDROID_PLACEHOLDER_ORIGIN_SELF_TEST=PASS/u);
+  }
 });
