@@ -252,6 +252,19 @@ func iosVolumeProbeCanTriggerPtt(
     outputVolumeChanged: Bool
 ) -> Bool { false }
 
+func shouldRequestAppleBeginAfterFloorGrant(
+    attempt: Int,
+    currentAttempt: Int,
+    gateState: PttRequestGateState,
+    releaseRequestedBeforeBegin: Bool,
+    alreadyIssued: Bool
+) -> Bool {
+    attempt == currentAttempt &&
+        gateState == .beginRequested &&
+        !releaseRequestedBeforeBegin &&
+        !alreadyIssued
+}
+
 @MainActor
 final class IntercomSessionController: ObservableObject {
     @Published private(set) var fixture: FixtureResponse?
@@ -1085,7 +1098,9 @@ final class IntercomSessionController: ObservableObject {
             guard let self else { return }
             let prepared = await self.ptt?.preArmForAppleActivation(
                 maximumReadyWaitMilliseconds: self.maximumReadyWaitMilliseconds,
-                onFloorGranted: nil
+                onFloorGranted: { [weak self] in
+                    await self?.requestAppleBeginAfterFloorGrant(attempt: attempt)
+                }
             ) == true
             guard attempt == self.txAttemptGeneration else { return }
             self.appPrearmTask = nil
@@ -1099,12 +1114,24 @@ final class IntercomSessionController: ObservableObject {
             }
             guard !self.pttRequestGate.releaseRequestedBeforeBegin else { return }
             self.appPrearmReady = true
-            guard self.pttRequestGate.state == .beginRequested else { return }
-            self.appleBeginRequestedAt = Date()
-            self.appleBeginIssuedForAttempt = true
-            self.pushToTalk.requestBeginTransmitting()
+            guard self.pttRequestGate.state == .beginRequested ||
+                    self.pttRequestGate.state == .transmitting else { return }
+            self.requestAppleBeginAfterFloorGrant(attempt: attempt)
             self.tryActivateAppTransmission()
         }
+    }
+
+    private func requestAppleBeginAfterFloorGrant(attempt: Int) {
+        guard shouldRequestAppleBeginAfterFloorGrant(
+            attempt: attempt,
+            currentAttempt: txAttemptGeneration,
+            gateState: pttRequestGate.state,
+            releaseRequestedBeforeBegin: pttRequestGate.releaseRequestedBeforeBegin,
+            alreadyIssued: appleBeginIssuedForAttempt
+        ) else { return }
+        appleBeginRequestedAt = Date()
+        appleBeginIssuedForAttempt = true
+        pushToTalk.requestBeginTransmitting()
     }
 
     func pttUp() {
@@ -2016,6 +2043,7 @@ final class IntercomSessionController: ObservableObject {
                 "controlToFirstPcm": number(rxSnapshot.controlToFirstPcmMilliseconds),
                 "estimatedOutputPipeline": number(rxSnapshot.estimatedOutputPipelineMilliseconds),
                 "playoutDrainTarget": rxSnapshot.rxPlayoutDrainTargetMilliseconds,
+                "pttDownToLocalUiFeedback": duration(pttSnapshot.pttDownAt, pttSnapshot.localUiFeedbackAt),
                 "pttDownToTalking": duration(pttSnapshot.pttDownAt, pttSnapshot.talkingAt),
                 "floorRequestToGrant": duration(pttSnapshot.floorRequestAt, pttSnapshot.floorGrantedAt),
                 "floorGrantToReadyBarrierComplete": duration(
@@ -2035,6 +2063,7 @@ final class IntercomSessionController: ObservableObject {
             "txLifecycle": [
                 "attemptGeneration": pttSnapshot.attemptGeneration,
                 "pttDownAt": timestamp(pttSnapshot.pttDownAt),
+                "localUiFeedbackAt": timestamp(pttSnapshot.localUiFeedbackAt),
                 "floorRequestAt": timestamp(pttSnapshot.floorRequestAt),
                 "floorGrantedAt": timestamp(pttSnapshot.floorGrantedAt),
                 "readyBarrierStartedAt": timestamp(pttSnapshot.readyBarrierStartedAt),

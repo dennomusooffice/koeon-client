@@ -442,6 +442,7 @@ struct PTTSnapshot: Sendable {
     var leaseExpiresAt: Date?
     var maxTxExpiresAt: Date?
     var pttDownAt: Date?
+    var localUiFeedbackAt: Date?
     var floorRequestAt: Date?
     var floorGrantedAt: Date?
     var readyBarrierStartedAt: Date?
@@ -495,6 +496,7 @@ struct PTTSnapshot: Sendable {
             leaseExpiresAt: nil,
             maxTxExpiresAt: nil,
             pttDownAt: nil,
+            localUiFeedbackAt: nil,
             floorRequestAt: nil,
             floorGrantedAt: nil,
             readyBarrierStartedAt: nil,

@@ -42,7 +42,7 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
         put("schema", JsonPrimitive(FIELD_DIAGNOSTIC_SCHEMA)); put("capturedAt", JsonPrimitive(capturedAt)); put("platform", JsonPrimitive("android"))
         put("settings", buildJsonObject { put("headsetPttMode", JsonPrimitive(d.headsetPttMode.name)); put("hardwareVolumePttMode", JsonPrimitive(d.hardwareVolumePttMode.name)) })
         put("state", buildJsonObject { put("connection", JsonPrimitive(state.connectionState.name)); put("ptt", JsonPrimitive(state.ptt.state.name)); put("pttSemanticState", JsonPrimitive(semantic.name)); put("pttEligible", JsonPrimitive(eligible)); put("pttBlockReason", nullable(blockReason)); put("rx", JsonPrimitive(rx.state.name)) })
-        put("timingMs", buildJsonObject { put("floor", nullable(state.ptt.timing.floorLatencyMs)); put("ready", nullable(state.ptt.timing.readyWaitMs)); put("controlPublish", JsonNull) })
+        put("timingMs", buildJsonObject { put("localUiFeedback", nullable(state.ptt.timing.localUiFeedbackLatencyMs)); put("floor", nullable(state.ptt.timing.floorLatencyMs)); put("ready", nullable(state.ptt.timing.readyWaitMs)); put("controlPublish", JsonNull) })
         put("network", buildJsonObject { put("rtt", JsonNull); put("jitter", JsonNull); put("packetLoss", JsonNull) })
         put("liveKit", buildJsonObject { put("deployment", JsonPrimitive(d.liveKitDeployment)); put("endpointHost", nullable(d.liveKitEndpointHost)); put("connectionState", JsonPrimitive(state.connectionState.name)) })
         put("txSafety", buildJsonObject { put("renewFailures", JsonNull); put("lastError", nullable(state.ptt.lastError)) })

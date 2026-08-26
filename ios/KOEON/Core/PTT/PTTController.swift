@@ -96,6 +96,7 @@ actor PTTController {
         snapshot.attemptGeneration = operation
         snapshot.state = .requestingFloor
         snapshot.pttDownAt = clock.now
+        snapshot.localUiFeedbackAt = clock.now
         snapshot.floorRequestAt = clock.now
         publish()
 
