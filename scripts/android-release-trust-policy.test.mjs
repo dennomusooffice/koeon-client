@@ -12,6 +12,10 @@ const successfulChecks = REQUIRED_PUBLIC_CHECKS.map((name) => ({ name, status: "
 
 test("accepts candidate and explicitly confirmed publish inputs", () => {
   assert.doesNotThrow(() => validateDispatchInputs({
+    mode: "DIAGNOSTIC_ONLY", clientSha: sha, expectedTreeSha: tree,
+    versionName: "1.0.0", versionCode: "1", publishConfirmation: "",
+  }));
+  assert.doesNotThrow(() => validateDispatchInputs({
     mode: "CANDIDATE_ONLY", clientSha: sha, expectedTreeSha: tree,
     versionName: "1.0.0", versionCode: "1", publishConfirmation: "",
   }));

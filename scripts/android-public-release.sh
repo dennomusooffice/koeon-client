@@ -155,7 +155,8 @@ build_tools="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools" -mindep
 apksigner="$build_tools/apksigner"
 aapt="$build_tools/aapt"
 zipalign="$build_tools/zipalign"
-[[ -x "$apksigner" && -x "$aapt" && -x "$zipalign" ]] || { echo "ANDROID_OFFICIAL_VALIDATION_TOOLS=FAIL"; exit 1; }
+dexdump="$build_tools/dexdump"
+[[ -x "$apksigner" && -x "$aapt" && -x "$zipalign" && -x "$dexdump" ]] || { echo "ANDROID_OFFICIAL_VALIDATION_TOOLS=FAIL"; exit 1; }
 echo "ANDROID_OFFICIAL_VALIDATION_TOOLS=PASS"
 
 "$zipalign" -c -P 16 -v 4 "$apk_path" >/dev/null
@@ -202,22 +203,15 @@ PY
 
 mkdir -p "$dex_extract"
 unzip -qq "$apk_path" 'classes*.dex' -d "$dex_extract"
-DEX_EXTRACT="$dex_extract" EXPECTED_ENDPOINT="$KOEON_API_BASE_URL" python3 - <<'PY'
-import os
-from pathlib import Path
-
-payloads = [path.read_bytes() for path in Path(os.environ["DEX_EXTRACT"]).glob("classes*.dex")]
-if not payloads:
-    raise SystemExit("APK_RUNTIME_ENDPOINT_CONFIGURED=FAIL")
-expected = os.environ["EXPECTED_ENDPOINT"].encode("utf-8")
-placeholder = b"https://example.invalid"
-if not any(expected in payload for payload in payloads):
-    raise SystemExit("APK_RUNTIME_ENDPOINT_CONFIGURED=FAIL")
-if any(placeholder in payload for payload in payloads):
-    raise SystemExit("APK_RUNTIME_ENDPOINT_PLACEHOLDER=YES")
-print("APK_RUNTIME_ENDPOINT_CONFIGURED=PASS")
-print("APK_RUNTIME_ENDPOINT_PLACEHOLDER=NO")
-PY
+validation_mode="enforce"
+if [[ "$RELEASE_MODE" == "DIAGNOSTIC_ONLY" ]]; then
+  validation_mode="diagnostic"
+fi
+EXPECTED_ENDPOINT="$KOEON_API_BASE_URL" python3 "$INFRA_ROOT/scripts/android-placeholder-origin.py" \
+  --dex-dir "$dex_extract" \
+  --dexdump "$dexdump" \
+  --source-root "$CLIENT_SOURCE_DIR" \
+  --mode "$validation_mode"
 
 apk_sha256="$(sha256sum "$apk_path" | awk '{print $1}')"
 [[ "$apk_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "APK_SHA256=FAIL"; exit 1; }
@@ -239,9 +233,13 @@ if [[ "$RELEASE_MODE" == "PUBLISH_GITHUB_RELEASE" ]]; then
     --notes "Public direct-distribution release built from exact commit $CLIENT_SHA (tree $EXPECTED_TREE_SHA), version $VERSION_NAME ($VERSION_CODE)."
   echo "GITHUB_RELEASE_ASSET=PASS"
   echo "PUBLIC_ANDROID_DISTRIBUTION=PASS"
-else
+elif [[ "$RELEASE_MODE" == "CANDIDATE_ONLY" ]]; then
   echo "GITHUB_RELEASE_ASSET=NOT_RUN"
   echo "SIGNED_ANDROID_CANDIDATE=PASS"
+else
+  echo "GITHUB_RELEASE_ASSET=NOT_RUN"
+  echo "SIGNED_ANDROID_CANDIDATE=NOT_RUN"
+  echo "ANDROID_PLACEHOLDER_DIAGNOSTIC=PASS"
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
