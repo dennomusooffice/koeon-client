@@ -8,6 +8,7 @@ import hashlib
 import json
 import plistlib
 import struct
+import subprocess
 from pathlib import Path
 
 
@@ -67,14 +68,28 @@ def validate_app(app: Path) -> None:
     if not assets.is_file() or assets.stat().st_size == 0:
         fail("APPICON_COMPILED_INTO_APP")
     try:
+        result = subprocess.run(
+            ["xcrun", "assetutil", "--info", str(assets)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        renditions = json.loads(result.stdout)
+    except (OSError, subprocess.CalledProcessError, UnicodeError, json.JSONDecodeError):
+        fail("APPICON_COMPILED_INTO_APP")
+    if not any(
+        isinstance(item, dict)
+        and (item.get("Name") == "AppIcon" or item.get("AssetType") == "App Icon")
+        for item in renditions
+    ):
+        fail("APPICON_COMPILED_INTO_APP")
+    try:
         with info_path.open("rb") as stream:
             info = plistlib.load(stream)
     except (OSError, plistlib.InvalidFileException):
         fail("APPICON_COMPILED_INTO_APP")
     primary = info.get("CFBundleIcons", {}).get("CFBundlePrimaryIcon", {})
-    icon_name = primary.get("CFBundleIconName")
-    icon_files = primary.get("CFBundleIconFiles", [])
-    if icon_name != "AppIcon" and not any(str(value).startswith("AppIcon") for value in icon_files):
+    if primary and primary.get("CFBundleIconName") not in (None, "AppIcon"):
         fail("APPICON_COMPILED_INTO_APP")
     print("APPICON_COMPILED_INTO_APP=PASS")
 
