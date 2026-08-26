@@ -32,7 +32,9 @@ if printf '%s\0' "${tracked[@]}" | grep -zEiq '/([^/]*(\.p8|\.p12|\.mobileprovis
 fi
 
 secret_pattern='(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|gh[pousr]_[0-9A-Za-z]{30,}|xox[baprs]-[0-9A-Za-z-]{10,}|LIVEKIT_API_SECRET[[:space:]]*=)'
-private_reference_pattern='(muso-apps\.net|testflight\.apple\.com/join/|DEVELOPMENT_TEAM[[:space:]]*=[[:space:]]*[A-Z0-9]{10}([^A-Z0-9]|$))'
+private_reference_pattern='(testflight\.apple\.com/join/|DEVELOPMENT_TEAM[[:space:]]*=[[:space:]]*[A-Z0-9]{10}([^A-Z0-9]|$))'
+muso_reference_pattern='([[:alnum:]-]+\.)*muso-apps\.net'
+approved_public_invite_host='koeon.muso-apps.net'
 production_secret_pattern='(APNS_(AUTH_)?KEY|APP_STORE_CONNECT_(KEY|ISSUER)|PLAY_(SERVICE_ACCOUNT|SIGNING)|LIVEKIT_API_SECRET)[[:space:]]*[:=]'
 private_ip_pattern='(^|[^0-9])(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})([^0-9]|$)'
 
@@ -43,6 +45,16 @@ fi
 
 if grep -IEn "$private_reference_pattern" "${tracked[@]}"; then
   echo "Private endpoint, signing team, or tester code found" >&2
+  exit 1
+fi
+
+# Allow only the exact, approved public Invite host. Any other muso-apps.net
+# hostname (including the apex) remains a publication blocker.
+unapproved_muso_references="$(grep -IEno "$muso_reference_pattern" "${tracked[@]}" \
+  | grep -vE ":${approved_public_invite_host}$" || true)"
+if [[ -n "$unapproved_muso_references" ]]; then
+  echo "Unapproved muso-apps.net reference found" >&2
+  printf '%s\n' "$unapproved_muso_references" >&2
   exit 1
 fi
 
@@ -95,6 +107,13 @@ while IFS= read -r commit; do
     echo "Private reference found in history at $commit" >&2
     exit 1
   fi
+  history_muso_references="$(git grep -IEno "$muso_reference_pattern" "$commit" "${history_pathspec[@]}" \
+    | grep -vE ":${approved_public_invite_host}$" || true)"
+  if [[ -n "$history_muso_references" ]]; then
+    echo "Unapproved muso-apps.net reference found in history at $commit" >&2
+    printf '%s\n' "$history_muso_references" >&2
+    exit 1
+  fi
   if git grep -IEn 'moty20[0-9]{2}' "$commit" "${history_pathspec[@]}"; then
     echo "Legacy event campaign identifier found in history at $commit" >&2
     exit 1
@@ -103,6 +122,14 @@ done < <(git rev-list --all)
 
 if git log --all --format='%B' | grep -Eiq "$secret_pattern|$private_reference_pattern"; then
   echo "Sensitive value found in commit messages" >&2
+  exit 1
+fi
+
+unapproved_muso_messages="$(git log --all --format='%B' \
+  | grep -Eio "$muso_reference_pattern" \
+  | grep -vE "^${approved_public_invite_host}$" || true)"
+if [[ -n "$unapproved_muso_messages" ]]; then
+  echo "Unapproved muso-apps.net reference found in commit messages" >&2
   exit 1
 fi
 
