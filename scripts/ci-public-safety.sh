@@ -5,7 +5,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 mapfile -t workflows < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print | sort)
-if ((${#workflows[@]} == 0)); then
+ordinary_workflows=(.github/workflows/public-ci.yml)
+release_workflow=.github/workflows/ios-testflight-internal.yml
+if ((${#workflows[@]} == 0)) || [[ ! -f "${ordinary_workflows[0]}" ]]; then
   echo "No workflows found" >&2
   exit 1
 fi
@@ -21,13 +23,27 @@ reject() {
 
 reject '(^|[[:space:]])pull_request_target:' 'Privileged pull_request_target trigger is forbidden'
 reject '(^|[[:space:]])workflow_run:' 'workflow_run execution of PR code is forbidden'
-reject '\$\{\{[[:space:]]*secrets\.' 'Secrets are forbidden in public PR workflows'
 reject '(^|[[:space:]])(contents|actions|checks|deployments|id-token|issues|packages|pull-requests|security-events|statuses):[[:space:]]*write([[:space:]]|$)' 'Workflow write permission is forbidden'
 reject '(^|[[:space:]])eval[[:space:]]' 'Shell eval is forbidden'
 reject '\$\{\{[^}]*github\.event\.' 'PR-controlled event metadata must not be interpolated into workflow execution'
-reject 'actions/(cache|upload-artifact|download-artifact)@' 'Shared cache/artifact transfer is disabled for initial public CI'
 reject 'ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION' 'Node runtime security fallback is forbidden'
-reject '(^|[^A-Za-z])(sign|signing|archive|testflight|app[[:space:]_-]*store|play[[:space:]_-]*upload|deploy|release)([^A-Za-z]|$)' 'Signing, release, or deploy workflow semantics are forbidden'
+
+if grep -IEn '\$\{\{[[:space:]]*secrets\.' "${ordinary_workflows[@]}"; then
+  echo 'Secrets are forbidden in ordinary public PR workflows' >&2
+  exit 1
+fi
+if grep -IEn 'actions/(cache|upload-artifact|download-artifact)@' "${ordinary_workflows[@]}"; then
+  echo 'Shared cache/artifact transfer is disabled for ordinary public CI' >&2
+  exit 1
+fi
+if grep -IEn '(xcodebuild[^#]*(archive|-exportArchive)|codesign[[:space:]]|--upload-app|CODE_SIGNING_ALLOWED[[:space:]]*=[[:space:]]*YES|environment:[[:space:]]*testflight-internal|\.(p8|p12|mobileprovision))' "${ordinary_workflows[@]}"; then
+  echo 'Signing, credential, archive, or deploy execution is forbidden in ordinary public CI' >&2
+  exit 1
+fi
+
+if [[ -f "$release_workflow" ]]; then
+  node --test scripts/ios-testflight-security.test.mjs
+fi
 
 while IFS= read -r reference; do
   if [[ "$reference" == ./* ]]; then
@@ -55,9 +71,9 @@ done
 
 echo 'PULL_REQUEST_TARGET=0'
 echo 'WORKFLOW_RUN_TRUSTED_PR_EXECUTION=0'
-echo 'PR_SECRET_REFERENCES=0'
+echo 'ORDINARY_PR_SECRET_REFERENCES=0'
 echo 'WORKFLOW_WRITE_PERMISSIONS=0'
-echo 'SIGNING_DEPLOY_JOBS=0'
+echo 'ORDINARY_PR_SIGNING_DEPLOY_JOBS=0'
 echo 'SHELL_INJECTION_FINDINGS=0'
 echo 'SHARED_CACHE_OR_ARTIFACT_CHANNELS=0'
 echo 'UNPINNED_ACTIONS=0'

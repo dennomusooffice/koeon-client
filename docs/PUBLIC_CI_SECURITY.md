@@ -1,6 +1,6 @@
 # Public CI security model（公開CIのsecurity設計）
 
-状態: public-client CI security policy。Public activationと最初のnon-member fork testは、別のoperational gateとして維持します。
+状態: public-client CI security policy。通常のuntrusted PR CIと、Human-approved internal TestFlight releaseを別trust domainとして管理します。
 
 ## Trust boundary
 
@@ -42,6 +42,12 @@ UNPINNED_ACTIONS = 0
 | malicious test / build execution | ephemeral hosted runner、timeout、read-only token | residual compute / log risk |
 
 将来、privileged trigger、secret reference、write permission、PR metadata interpolation、shared cache / artifact Action、signing / deploy semantics、mutable Action reference、persistされたcheckout credentialが追加された場合、`scripts/ci-public-safety.sh`はfailureにします。
+
+## Protected internal TestFlight workflow
+
+`.github/workflows/ios-testflight-internal.yml`は通常Public CIではありません。`workflow_dispatch`だけをtriggerとし、protected `main`由来workflow、unprivileged exact-source trust gate、`testflight-internal` Environment required reviewerの三段階で保護します。
+
+Environment secretsを参照するmacOS jobはPR eventから起動せず、fork codeをauthorityとして受け入れません。protected main ancestryまたはauthorized maintainerのsame-repository PR exact headだけを許可し、後者ではPublic CIの全必須jobが同一SHAで成功していることを確認します。signed IPAはartifactへ保存せず、candidate validationとSHA-256記録後に削除します。詳細は[`TESTFLIGHT_INTERNAL_RELEASE.md`](TESTFLIGHT_INTERNAL_RELEASE.md)を参照してください。
 
 ## Fork test
 

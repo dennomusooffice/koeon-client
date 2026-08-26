@@ -15,7 +15,7 @@ A6ではruleを変更していません。明示的に承認されたvisibility�
 5. material change後のstale approvalを無効化する。
 6. 必要に応じてconversation resolutionを必須とする。
 7. bypass actorを最小化し、auditする。
-8. public repositoryへsigning / deploy credentialを直接追加することを禁止する。
+8. repository-wide secretやPR-triggered workflowへsigning credentialを追加することを禁止する。Internal TestFlightに限り、required reviewerとprotected-main branch policyを持つ専用GitHub Environmentで管理する。
 9. 公開後、無害なnon-member fork PRを使用してruleを検証する。
 
 PRIVATE staging中のcompensating controlとして、Human Gate、no-force-push運用、exact SHA / diff review、CI evidenceの保全を継続します。
