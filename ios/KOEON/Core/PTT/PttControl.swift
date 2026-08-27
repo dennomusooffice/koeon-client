@@ -17,6 +17,7 @@ struct PttControlEvent: Codable, Equatable, Sendable {
     let leaseId: String
     let sequence: Int64
     let sentAt: Int64
+    var bufferedGenerationId: String? = nil
 }
 
 struct PttRxReadyEvent: Codable, Equatable, Sendable {
@@ -52,6 +53,7 @@ struct PttStartPublishDiagnostics: Equatable, Sendable {
 @MainActor
 protocol PttControlPublishing: AnyObject {
     func publishStart(leaseId: String) async throws -> PttStartPublishDiagnostics
+    func publishBufferedStart(leaseId: String, generationId: String) async throws -> PttStartPublishDiagnostics
     func publishEnd(leaseId: String) async throws
     func prepareRxReady(leaseId: String, expectedSessionIds: [String]) async
     func prepareRxReady(leaseId: String, expectedSessionIds: [String], expectedDeviceIds: [String]) async
@@ -61,6 +63,9 @@ protocol PttControlPublishing: AnyObject {
 }
 
 extension PttControlPublishing {
+    func publishBufferedStart(leaseId: String, generationId: String) async throws -> PttStartPublishDiagnostics {
+        try await publishStart(leaseId: leaseId)
+    }
     func prepareRxReady(leaseId: String, expectedSessionIds: [String]) async {}
     func prepareRxReady(leaseId: String, expectedSessionIds: [String], expectedDeviceIds: [String]) async {
         await prepareRxReady(leaseId: leaseId, expectedSessionIds: expectedSessionIds)

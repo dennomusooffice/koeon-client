@@ -466,6 +466,41 @@ final class InputGainProcessorTests: XCTestCase {
     }
 }
 
+final class BufferedAudioTimelineTests: XCTestCase {
+    func testCaptureIsMemoryBoundedToSixSeconds() {
+        let capture = Batv1CaptureBuffer()
+        capture.arm(generationId: UUID().uuidString)
+        let frame = Array(repeating: Int16(7), count: batv1BytesPerFrame / 2)
+        for _ in 0..<350 {
+            capture.append(samples: frame, sampleRate: batv1SampleRate, channels: 1)
+        }
+        XCTAssertEqual(capture.frameCount, 300)
+        XCTAssertEqual(capture.droppedFrames, 50)
+    }
+
+    func testNetworkForwardingIsZeroBeforeAuthorizationBoundary() {
+        let capture = Batv1CaptureBuffer()
+        capture.arm(generationId: UUID().uuidString)
+        let frame = Array(repeating: Int16(9), count: batv1BytesPerFrame / 2)
+        for _ in 0..<5 {
+            capture.append(samples: frame, sampleRate: batv1SampleRate, channels: 1)
+        }
+        var forwarded = 0
+        XCTAssertEqual(forwarded, 0)
+        XCTAssertEqual(capture.startForwarding { _ in forwarded += 1 }, 5)
+        capture.append(samples: frame, sampleRate: batv1SampleRate, channels: 1)
+        XCTAssertEqual(forwarded, 6)
+    }
+
+    func testPerReceiverCatchupRateContractAndMaximum() {
+        XCTAssertEqual(batv1PlaybackRate(backlogMilliseconds: 100), 1.00)
+        XCTAssertEqual(batv1PlaybackRate(backlogMilliseconds: 800), 1.20)
+        XCTAssertEqual(batv1PlaybackRate(backlogMilliseconds: 1_800), 1.325)
+        XCTAssertEqual(batv1PlaybackRate(backlogMilliseconds: 4_000), 1.45)
+        XCTAssertLessThanOrEqual(batv1PlaybackRate(backlogMilliseconds: Int.max), 1.50)
+    }
+}
+
 final class FieldLabSafetyTests: XCTestCase {
     func testVolumeProbeNeverTriggersPttIncludingMinMaxNoChange() {
         for mode in IOSVolumeProbeMode.allCases {

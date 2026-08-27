@@ -169,7 +169,11 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     }
 
     func publishStart(leaseId: String) async throws -> PttStartPublishDiagnostics {
-        try await publishStartControl(leaseId: leaseId)
+        try await publishStartControl(leaseId: leaseId, bufferedGenerationId: nil)
+    }
+
+    func publishBufferedStart(leaseId: String, generationId: String) async throws -> PttStartPublishDiagnostics {
+        try await publishStartControl(leaseId: leaseId, bufferedGenerationId: generationId)
     }
 
     func publishEnd(leaseId: String) async throws {
@@ -291,7 +295,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         return true
     }
 
-    private func publishControl(type: String, leaseId: String) async throws {
+    private func publishControl(type: String, leaseId: String, bufferedGenerationId: String? = nil) async throws {
         guard let room, room.connectionState == .connected,
               let channelId, let userId, let sessionId else {
             throw LiveKitRoomError.notConnected
@@ -305,7 +309,8 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
             sessionId: sessionId,
             leaseId: leaseId,
             sequence: controlSequence,
-            sentAt: Int64(Date().timeIntervalSince1970 * 1_000)
+            sentAt: Int64(Date().timeIntervalSince1970 * 1_000),
+            bufferedGenerationId: bufferedGenerationId
         )
         let data = try JSONEncoder().encode(event)
         try await room.localParticipant.publish(
@@ -314,14 +319,15 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         )
     }
 
-    private func publishStartControl(leaseId: String) async throws -> PttStartPublishDiagnostics {
+    private func publishStartControl(leaseId: String, bufferedGenerationId: String?) async throws -> PttStartPublishDiagnostics {
         guard let room, room.connectionState == .connected,
               let channelId, let userId, let sessionId else { throw LiveKitRoomError.notConnected }
         controlSequence += 1
         let event = PttControlEvent(
             version: pttControlVersion, type: "start", channelId: channelId,
             speakerUserId: userId, sessionId: sessionId, leaseId: leaseId,
-            sequence: controlSequence, sentAt: Int64(Date().timeIntervalSince1970 * 1_000)
+            sequence: controlSequence, sentAt: Int64(Date().timeIntervalSince1970 * 1_000),
+            bufferedGenerationId: bufferedGenerationId
         )
         let data = try JSONEncoder().encode(event)
         var result = PttStartPublishDiagnostics()

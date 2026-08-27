@@ -36,11 +36,23 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     private var peak: Float = 0
     private var calibrationUntil: Date?
     private var calibrationRms: [Float] = []
+    private var sampleRate = 0
+    private var channelCount = 0
+    private var postProcessedPcmConsumer: (@Sendable ([Int16], Int, Int) -> Void)?
 
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
     var audioProcessingName: String { "koeon_input_gain_v1" }
-    func audioProcessingInitialize(sampleRate: Int, channels: Int) {}
+    func audioProcessingInitialize(sampleRate: Int, channels: Int) {
+        lock.withLock {
+            self.sampleRate = sampleRate
+            channelCount = channels
+        }
+    }
     func audioProcessingRelease() {}
+
+    func setPostProcessedPcmConsumer(_ consumer: (@Sendable ([Int16], Int, Int) -> Void)?) {
+        lock.withLock { postProcessedPcmConsumer = consumer }
+    }
 
     func setRoute(_ route: String) {
         lock.withLock {
@@ -68,12 +80,14 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     func snapshot() -> InputGainSnapshot { lock.withLock { var copy = value; copy.effectiveGainDb = transmitting ? fixedGainDb : effectiveGain(); copy.rmsDbfs = rmsDbfs(); copy.peakDbfs = sampleCount > 0 ? dbfs(peak) : nil; return copy } }
 
     func audioProcessingProcess(audioBuffer: LKAudioBuffer) {
-        lock.withLock {
+        let output: (samples: [Int16], sampleRate: Int, consumer: (@Sendable ([Int16], Int, Int) -> Void)?) = lock.withLock {
             let gainDb = transmitting ? fixedGainDb : effectiveGain()
             let multiplier = powf(10, gainDb / 20)
             let processingEnabled = value.mode != .off
             var frameSquares: Double = 0
             var frameSamples = 0
+            var mono = [Int16]()
+            mono.reserveCapacity(audioBuffer.frames)
             for channel in 0..<audioBuffer.channels {
                 let samples = audioBuffer.rawBuffer(forChannel: channel)
                 for frame in 0..<audioBuffer.frames {
@@ -85,17 +99,22 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
                         if processed.limited { value.limiterHits += 1 }
                         samples[frame] = processed.sample * 32_767
                     }
+                    if channel == 0 {
+                        mono.append(Int16(max(Float(Int16.min), min(Float(Int16.max), samples[frame]))))
+                    }
                     frameSamples += 1
                 }
             }
-            guard frameSamples > 0 else { return }
+            guard frameSamples > 0 else { return ([], sampleRate, postProcessedPcmConsumer) }
             sumSquares += frameSquares
             sampleCount += frameSamples
             if let deadline = calibrationUntil {
                 calibrationRms.append(dbfs(sqrtf(Float(frameSquares / Double(frameSamples)))))
                 if Date() >= deadline { finishCalibration() }
             }
+            return (mono, sampleRate, postProcessedPcmConsumer)
         }
+        if !output.samples.isEmpty { output.consumer?(output.samples, output.sampleRate, 1) }
     }
 
     static func recommendedGain(speechRmsDbfs: Float) -> Float { min(12, max(-6, -18 - speechRmsDbfs)) }
