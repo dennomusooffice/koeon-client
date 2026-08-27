@@ -345,6 +345,13 @@ final class IntercomSessionController: ObservableObject {
     @Published private(set) var selectedAudioPublishProfile: AudioPublishProfile = .speech24k
     @Published private(set) var appliedAudioPublishProfile: AudioPublishProfile?
     @Published private(set) var fieldDiagnosticCopyResult = "Not copied"
+    @Published private(set) var rxReadyStartReceivedAt: Date?
+    @Published private(set) var rxReadyAppleAudioReadyAt: Date?
+    @Published private(set) var rxReadyPublishAttemptedAt: Date?
+    @Published private(set) var rxReadyPublishedAt: Date?
+    @Published private(set) var rxReadyPublishResult = "NOT_ATTEMPTED"
+    @Published private(set) var rxReadyPublishSessionIdGeneration: Int?
+    @Published private(set) var rxReadyPublishDeviceIdPresent: Bool?
 
     let room: LiveKitRoomController
     let audio: AudioSessionController
@@ -477,8 +484,10 @@ final class IntercomSessionController: ObservableObject {
             }
         }
         room.onPttControl = { [weak self] event, senderSessionId in
+            if event.type == "start" { self?.rxReadyStartReceivedAt = Date() }
             self?.rx?.handleControl(event, senderSessionId: senderSessionId)
             if self?.audio.pushToTalkAudioSessionActive == true {
+                self?.rxReadyAppleAudioReadyAt = Date()
                 self?.rx?.audioSessionDidActivate()
             }
         }
@@ -661,6 +670,7 @@ final class IntercomSessionController: ObservableObject {
                 self.appleDidActivateAttemptGeneration = generation
             }
             await self.audio.pushToTalkDidActivate(audioSession)
+            self.rxReadyAppleAudioReadyAt = Date()
             self.liveKitEngineReadyAt = self.audio.liveKitEngineAvailability == "DEFAULT" ? Date() : nil
             if self.audio.pushToTalkAudioSessionActive,
                self.audio.liveKitEngineAvailability == "DEFAULT",
@@ -899,8 +909,11 @@ final class IntercomSessionController: ObservableObject {
                         generation: generation, sessionId: sessionId, leaseId: leaseId, reason: reason
                     ) ?? false
                 },
-                onReceiverReady: { [weak room] speakerSessionId, leaseId in
-                    try? await room?.publishRxReady(speakerSessionId: speakerSessionId, leaseId: leaseId)
+                onReceiverReady: { [weak self, weak room] speakerSessionId, leaseId in
+                    guard let self, let room else { return }
+                    await self.publishReceiverReadyWithDiagnostics(
+                        room: room, speakerSessionId: speakerSessionId, leaseId: leaseId
+                    )
                 },
                 startCueEnabled: rxStartCueMode == .on
             ) { [weak self] snapshot in
@@ -1515,8 +1528,11 @@ final class IntercomSessionController: ObservableObject {
                     generation: generation, sessionId: sessionId, leaseId: leaseId, reason: reason
                 ) ?? false
             },
-            onReceiverReady: { [weak room] speakerSessionId, leaseId in
-                try? await room?.publishRxReady(speakerSessionId: speakerSessionId, leaseId: leaseId)
+            onReceiverReady: { [weak self, weak room] speakerSessionId, leaseId in
+                guard let self, let room else { return }
+                await self.publishReceiverReadyWithDiagnostics(
+                    room: room, speakerSessionId: speakerSessionId, leaseId: leaseId
+                )
             },
             startCueEnabled: rxStartCueMode == .on
         ) { [weak self] snapshot in Task { @MainActor in self?.applyRxSnapshot(snapshot) } }
@@ -1971,6 +1987,24 @@ final class IntercomSessionController: ObservableObject {
     func startInputGainCalibration() { inputGain.startCalibration(); objectWillChange.send() }
     func resetInputGainProfile() { inputGain.resetProfile(); objectWillChange.send() }
 
+    private func publishReceiverReadyWithDiagnostics(
+        room: LiveKitRoomController,
+        speakerSessionId: String,
+        leaseId: String
+    ) async {
+        rxReadyPublishAttemptedAt = Date()
+        rxReadyPublishSessionIdGeneration = rxWakeGeneration
+        rxReadyPublishDeviceIdPresent = (joinedSession?.deviceId ?? identity?.device.id) != nil
+        do {
+            try await room.publishRxReady(speakerSessionId: speakerSessionId, leaseId: leaseId)
+            rxReadyPublishedAt = Date()
+            rxReadyPublishResult = "SUCCESS"
+        } catch {
+            // Only the error type is retained; tokens, endpoint details and payloads are excluded.
+            rxReadyPublishResult = "FAILED_\(type(of: error))"
+        }
+    }
+
     func copyFieldDiagnosticJSON() {
         let gain = inputGain.snapshot()
         let liveKitIngress = room.ingressDiagnosticSnapshot()
@@ -2085,6 +2119,15 @@ final class IntercomSessionController: ObservableObject {
                 "liveKitEngineReadyAt": timestamp(liveKitEngineReadyAt),
                 "micUnmutedAt": timestamp(pttSnapshot.trackEnabledAt),
                 "talkingAt": timestamp(pttSnapshot.talkingAt),
+            ],
+            "backgroundRxReady": [
+                "rxReadyStartReceivedAt": timestamp(rxReadyStartReceivedAt),
+                "rxReadyAppleAudioReadyAt": timestamp(rxReadyAppleAudioReadyAt),
+                "rxReadyPublishAttemptedAt": timestamp(rxReadyPublishAttemptedAt),
+                "rxReadyPublishedAt": timestamp(rxReadyPublishedAt),
+                "rxReadyPublishResult": rxReadyPublishResult,
+                "rxReadyPublishSessionIdGeneration": number(rxReadyPublishSessionIdGeneration),
+                "rxReadyPublishDeviceIdPresent": optional(rxReadyPublishDeviceIdPresent),
             ],
             "releaseLifecycle": [
                 "generation": releaseGeneration,

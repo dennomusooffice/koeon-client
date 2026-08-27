@@ -12,7 +12,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -76,6 +78,7 @@ import com.dennomuso.koeon.core.haptics.PttHapticFeedbackController
 import com.dennomuso.koeon.core.audio.AudioAvailabilityState
 import com.dennomuso.koeon.core.ptt.PttState
 import com.dennomuso.koeon.core.ptt.PttSemanticState
+import com.dennomuso.koeon.core.ptt.isParentScrollEnabledWhileTouchPtt
 import com.dennomuso.koeon.core.ptt.localPttEligible
 import com.dennomuso.koeon.core.ptt.pttSemanticState
 import com.dennomuso.koeon.core.permission.JoinPermissionPolicy
@@ -193,7 +196,12 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        modifier = Modifier.fillMaxSize()
+            .verticalScroll(
+                rememberScrollState(),
+                enabled = isParentScrollEnabledWhileTouchPtt(state.diagnostics.appTouchPressed),
+            )
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("KOEON", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
@@ -420,20 +428,42 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 contentDescription = "Push to talk, ${pttSemantic.name.replace('_', ' ')}"
                 if (!pttEnabled) disabled()
             }
-            // Eligibility is sampled for a new DOWN only. The stable Session key keeps
-            // PREPARING/TALKING/self-speaker recomposition from cancelling an accepted press.
+            // PTT owns the accepted pointer stream until physical UP. Initial-pass
+            // consumption keeps parent scroll/touch-slop recognizers from cancelling it.
             .pointerInput(joined.sessionId) {
-                detectTapGestures(onPress = {
-                    if (!touchDownEligible || !manager.appTouchPttDown()) return@detectTapGestures
-                    hapticController.press(eligible = true)
-                    if (tryAwaitRelease()) {
-                        hapticController.release()
-                        manager.appTouchPttUp()
-                    } else {
-                        hapticController.cancel()
-                        manager.appTouchPttCancel("pointer_cancel")
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    if (!touchDownEligible || !manager.appTouchPttDown(down.id.value)) {
+                        return@awaitEachGesture
                     }
-                })
+                    hapticController.press(eligible = true)
+                    down.consume()
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change == null) {
+                                hapticController.cancel()
+                                manager.appTouchPttCancel("SYSTEM_CANCEL")
+                                break
+                            }
+                            if (!change.pressed) {
+                                change.consume()
+                                hapticController.release()
+                                manager.appTouchPttUp("PHYSICAL_UP")
+                                break
+                            }
+                            if (change.position != change.previousPosition) {
+                                manager.appTouchPttMove(down.id.value)
+                            }
+                            change.consume()
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        hapticController.cancel()
+                        manager.appTouchPttCancel("SYSTEM_CANCEL")
+                        throw cancelled
+                    }
+                }
             },
         contentAlignment = Alignment.Center,
     ) {

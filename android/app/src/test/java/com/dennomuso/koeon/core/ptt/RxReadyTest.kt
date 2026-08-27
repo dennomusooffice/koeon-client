@@ -111,6 +111,70 @@ class RxReadyTest {
         assertEquals(RxReadyReason.ALL_READY, result.await().reason)
     }
 
+    @Test fun `B2 fresh session ACK is accepted after bounded metadata reconciliation`() = runTest {
+        val barrier = RxReadyBarrier(
+            expectedSessionIds = listOf("old-session"),
+            expectedDeviceIds = listOf("stable-device"),
+            channelId = "stage", speakerSessionId = "speaker", leaseId = "lease-a",
+            elapsedRealtimeMs = { testScheduler.currentTime },
+            wallClockMs = { 1_000L + testScheduler.currentTime },
+        )
+        val result = async { barrier.waitForReady() }
+        assertEquals(
+            RxReadyAcceptance.PENDING_PARTICIPANT_METADATA,
+            barrier.acceptDetailed(
+                event("lease-a", "fresh-session", "stable-device"),
+                participantIdentity = "fresh-session",
+                participantDeviceId = null,
+            ),
+        )
+        advanceTimeBy(800)
+        assertTrue(barrier.reconcileParticipant("fresh-session", "stable-device"))
+        runCurrent()
+        assertEquals(RxReadyReason.ALL_READY, result.await().reason)
+        assertEquals(1, barrier.auditSnapshot().rejectedParticipantMetadataMissing)
+        assertEquals(0, barrier.auditSnapshot().rejectedEvents)
+    }
+
+    @Test fun `B3 metadata reconciliation stays bounded and cannot unlock stale ACK`() = runTest {
+        val barrier = RxReadyBarrier(
+            expectedSessionIds = listOf("old-session"),
+            expectedDeviceIds = listOf("stable-device"),
+            channelId = "stage", speakerSessionId = "speaker", leaseId = "lease-a",
+            elapsedRealtimeMs = { testScheduler.currentTime },
+            wallClockMs = { 1_000L + testScheduler.currentTime },
+        )
+        barrier.acceptDetailed(
+            event("lease-a", "fresh-session", "stable-device"),
+            participantIdentity = "fresh-session",
+            participantDeviceId = null,
+        )
+        advanceTimeBy(RxReadyBarrier.PENDING_METADATA_MAX_MS + 1)
+        assertFalse(barrier.reconcileParticipant("fresh-session", "stable-device"))
+        assertEquals(0, barrier.receivedCount())
+    }
+
+    @Test fun `B4 wrong device channel lease and session remain rejected`() = runTest {
+        val barrier = RxReadyBarrier(
+            expectedSessionIds = listOf("old-session"), expectedDeviceIds = listOf("stable-device"),
+            channelId = "stage", speakerSessionId = "speaker", leaseId = "lease-a",
+        )
+        assertEquals(RxReadyAcceptance.REJECTED_DEVICE_MISMATCH, barrier.acceptDetailed(
+            event("lease-a", "fresh-session", "wrong-device"), "fresh-session", "wrong-device",
+        ))
+        assertEquals(RxReadyAcceptance.REJECTED_LEASE_MISMATCH, barrier.acceptDetailed(
+            event("wrong-lease", "fresh-session", "stable-device"), "fresh-session", "stable-device",
+        ))
+        assertEquals(RxReadyAcceptance.REJECTED_SESSION_MISMATCH, barrier.acceptDetailed(
+            event("lease-a", "fresh-session", "stable-device"), "other-session", "stable-device",
+        ))
+        val wrongChannel = event("lease-a", "fresh-session", "stable-device").copy(channelId = "other")
+        assertEquals(RxReadyAcceptance.REJECTED_CHANNEL_MISMATCH, barrier.acceptDetailed(
+            wrongChannel, "fresh-session", "stable-device",
+        ))
+        assertEquals(0, barrier.receivedCount())
+    }
+
     @Test fun `single and multi timeout stay bounded`() = runTest {
         val single = async { barrier(listOf("receiver-a")) { testScheduler.currentTime }.waitForReady() }
         advanceTimeBy(RX_READY_SINGLE_MAX_WAIT_MS)
