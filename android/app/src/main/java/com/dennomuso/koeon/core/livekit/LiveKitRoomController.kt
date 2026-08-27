@@ -18,6 +18,7 @@ import com.dennomuso.koeon.core.ptt.PttRxReadyEvent
 import com.dennomuso.koeon.core.ptt.RxReadyBarrier
 import com.dennomuso.koeon.core.ptt.RxReadyAcceptance
 import com.dennomuso.koeon.core.ptt.RxReadyReason
+import com.dennomuso.koeon.core.ptt.RxReadyReconcileSource
 import com.dennomuso.koeon.core.ptt.RxReadyResult
 import com.dennomuso.koeon.core.ptt.RxAudioController
 import com.dennomuso.koeon.core.ptt.RxSnapshot
@@ -36,6 +37,8 @@ import io.livekit.android.room.track.DataPublishReliability
 import io.livekit.android.room.participant.AudioTrackPublishDefaults
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -98,7 +101,16 @@ data class LiveKitSnapshot(
     val rxReadyRejectedLeaseMismatch: Int = 0,
     val rxReadyRejectedChannelMismatch: Int = 0,
     val rxReadyRejectedDuplicate: Int = 0,
+    val rxReadyRejectedDeadlineExpired: Int = 0,
     val rxReadyPendingMetadataCount: Int = 0,
+    val rxReadyPendingMetadataEvents: Int = 0,
+    val rxReadyPendingOldestAgeMs: Long? = null,
+    val rxReadyPendingMaximumObservedAgeMs: Long = 0,
+    val rxReadyBarrierStartedAtElapsedRealtimeMs: Long? = null,
+    val rxReadyBarrierDeadlineAtElapsedRealtimeMs: Long? = null,
+    val rxReadyMetadataAvailableAt: Instant? = null,
+    val rxReadyLastReconcileSource: String? = null,
+    val rxReadyTimeoutReason: String? = null,
     val rxReadyFirstEventReceivedAt: Instant? = null,
     val rxReadyFirstAcceptedAt: Instant? = null,
     val rx: RxSnapshot = RxSnapshot(),
@@ -215,6 +227,7 @@ class LiveKitRoomController(
     private var controlSequence = 0L
     private var rxAudio: RxAudioController? = null
     private var rxReadyBarrier: RxReadyBarrier? = null
+    private var rxReadyReconcileJob: Job? = null
     private var rxReadyLeaseId: String? = null
     private var rxReadyPublishLeaseId: String? = null
     private var rxReadyStartLeaseId: String? = null
@@ -341,6 +354,8 @@ class LiveKitRoomController(
         expectedSessionIds: List<String>,
         expectedDeviceIds: List<String>,
     ) {
+        rxReadyReconcileJob?.cancel()
+        rxReadyReconcileJob = null
         rxReadyBarrier?.cancel()
         val currentChannel = channelId ?: return
         val currentSession = sessionId ?: return
@@ -376,6 +391,7 @@ class LiveKitRoomController(
             return RxReadyResult(RxReadyReason.NO_EXPECTATIONS, 0, 0, 1.0, 0, 0)
         }
         val result = barrier.waitForReady()
+        applyRxReadyBarrierSnapshot(barrier)
         _snapshot.value = _snapshot.value.copy(
             rxReadyExpectedCount = result.expectedCount,
             rxReadyReceivedCount = result.receivedCountAtMicOn,
@@ -385,6 +401,8 @@ class LiveKitRoomController(
     }
 
     override fun cancelRxReady() {
+        rxReadyReconcileJob?.cancel()
+        rxReadyReconcileJob = null
         rxReadyBarrier?.cancel()
         rxReadyBarrier = null
         rxReadyLeaseId = null
@@ -474,6 +492,7 @@ class LiveKitRoomController(
                 )
             }
             is RoomEvent.Disconnected -> {
+                cancelRxReady()
                 _snapshot.value = _snapshot.value.copy(
                     connectionState = IntercomConnectionState.DISCONNECTED,
                     participantNames = emptyList(),
@@ -483,13 +502,25 @@ class LiveKitRoomController(
             }
             is RoomEvent.ParticipantConnected -> {
                 refreshParticipants(event.room)
-                reconcilePendingRxReady(event.participant.identity?.value, event.participant.metadata?.let(::participantDeviceId))
+                reconcilePendingRxReady(
+                    event.participant.identity?.value,
+                    event.participant.metadata?.let(::participantDeviceId),
+                    RxReadyReconcileSource.PARTICIPANT_CONNECTED,
+                )
             }
             is RoomEvent.ParticipantMetadataChanged -> {
                 refreshParticipants(event.room)
-                reconcilePendingRxReady(event.participant.identity?.value, event.participant.metadata?.let(::participantDeviceId))
+                reconcilePendingRxReady(
+                    event.participant.identity?.value,
+                    event.participant.metadata?.let(::participantDeviceId),
+                    RxReadyReconcileSource.PARTICIPANT_METADATA_CHANGED,
+                )
             }
-            is RoomEvent.ParticipantDisconnected -> refreshParticipants(event.room)
+            is RoomEvent.ParticipantDisconnected -> {
+                rxReadyBarrier?.discardPendingParticipant(event.participant.identity?.value)
+                rxReadyBarrier?.let(::applyRxReadyBarrierSnapshot)
+                refreshParticipants(event.room)
+            }
             is RoomEvent.ActiveSpeakersChanged -> {
                 val remote = event.speakers.firstOrNull { it is io.livekit.android.room.participant.RemoteParticipant }
                 rxAudio?.handleRemoteAudioActivity(remote?.identity?.value, remote != null)
@@ -544,7 +575,10 @@ class LiveKitRoomController(
                             event.participant?.metadata?.let(::participantDeviceId),
                         )
                         applyRxReadyBarrierSnapshot(barrier)
-                        if (acceptance == RxReadyAcceptance.PENDING_PARTICIPANT_METADATA) refreshParticipants(event.room)
+                        if (acceptance == RxReadyAcceptance.PENDING_PARTICIPANT_METADATA) {
+                            refreshParticipants(event.room)
+                            schedulePendingRxReadyReconciliation(event.room)
+                        }
                     }
                 }
             }
@@ -578,10 +612,40 @@ class LiveKitRoomController(
         }
     }
 
-    private fun reconcilePendingRxReady(participantIdentity: String?, participantDeviceId: String?) {
+    private fun reconcilePendingRxReady(
+        participantIdentity: String?,
+        participantDeviceId: String?,
+        source: RxReadyReconcileSource,
+    ) {
         val barrier = rxReadyBarrier ?: return
-        barrier.reconcileParticipant(participantIdentity, participantDeviceId)
+        barrier.reconcileParticipant(participantIdentity, participantDeviceId, source)
         applyRxReadyBarrierSnapshot(barrier)
+    }
+
+    private fun schedulePendingRxReadyReconciliation(currentRoom: Room) {
+        val barrier = rxReadyBarrier ?: return
+        if (!barrier.hasPendingMetadata()) return
+        rxReadyReconcileJob?.cancel()
+        rxReadyReconcileJob = scope.launch {
+            while (isActive && rxReadyBarrier === barrier && barrier.hasPendingMetadata()) {
+                currentRoom.remoteParticipants.values.forEach { participant ->
+                    barrier.reconcileParticipant(
+                        participant.identity?.value,
+                        participant.metadata?.let(::participantDeviceId),
+                        RxReadyReconcileSource.BOUNDED_POLL,
+                    )
+                }
+                applyRxReadyBarrierSnapshot(barrier)
+                if (!barrier.hasPendingMetadata()) break
+                val remaining = barrier.remainingMs()
+                if (remaining <= 0L) {
+                    barrier.expirePendingAtDeadline()
+                    applyRxReadyBarrierSnapshot(barrier)
+                    break
+                }
+                delay(minOf(75L, remaining))
+            }
+        }
     }
 
     private fun applyRxReadyBarrierSnapshot(barrier: RxReadyBarrier) {
@@ -598,7 +662,18 @@ class LiveKitRoomController(
             rxReadyRejectedLeaseMismatch = audit.rejectedLeaseMismatch,
             rxReadyRejectedChannelMismatch = audit.rejectedChannelMismatch,
             rxReadyRejectedDuplicate = audit.rejectedDuplicate,
+            rxReadyRejectedDeadlineExpired = audit.rejectedDeadlineExpired,
             rxReadyPendingMetadataCount = audit.pendingMetadataCount,
+            rxReadyPendingMetadataEvents = audit.pendingMetadataEvents,
+            rxReadyPendingOldestAgeMs = audit.pendingOldestAgeMs,
+            rxReadyPendingMaximumObservedAgeMs = audit.pendingMaximumObservedAgeMs,
+            rxReadyBarrierStartedAtElapsedRealtimeMs = audit.barrierStartedAtElapsedRealtimeMs,
+            rxReadyBarrierDeadlineAtElapsedRealtimeMs = audit.barrierDeadlineAtElapsedRealtimeMs,
+            rxReadyMetadataAvailableAt = audit.metadataAvailableAtMs?.let(Instant::ofEpochMilli),
+            rxReadyLastReconcileSource = audit.lastReconcileSource?.name,
+            rxReadyTimeoutReason = audit.completionReason
+                ?.takeIf { it == RxReadyReason.SINGLE_TIMEOUT || it == RxReadyReason.MULTI_TIMEOUT }
+                ?.name,
             rxReadyFirstEventReceivedAt = audit.firstEventReceivedAtMs?.let(Instant::ofEpochMilli),
             rxReadyFirstAcceptedAt = audit.firstAcceptedAtMs?.let(Instant::ofEpochMilli),
         )
