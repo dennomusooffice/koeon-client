@@ -71,7 +71,17 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             })
         })
         put("audioGain", buildJsonObject { put("mode", JsonPrimitive(gain.mode.name)); put("effectiveDb", JsonPrimitive(gain.effectiveGainDb)); put("preKoeonRmsDbfs", gain.inputRmsDbfs?.let(::JsonPrimitive) ?: JsonNull); put("preKoeonPeakDbfs", gain.inputPeakDbfs?.let(::JsonPrimitive) ?: JsonNull); put("postKoeonRmsDbfs", gain.postKoeonRmsDbfs?.let(::JsonPrimitive) ?: JsonNull); put("postKoeonPeakDbfs", gain.postKoeonPeakDbfs?.let(::JsonPrimitive) ?: JsonNull); put("limiterHits", JsonPrimitive(gain.limiterHitCount)) })
-        put("platformSpecific", buildJsonObject { put("build", JsonPrimitive("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")); put("foregroundService", nullable(d.foregroundService)); put("lastPttInput", nullable(d.lastPttInputSource?.name)) })
+        put("platformSpecific", buildJsonObject {
+            put("build", JsonPrimitive("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"))
+            put("foregroundService", nullable(d.foregroundService))
+            put("lastPttInput", nullable(d.lastPttInputSource?.name))
+            put("appTouchDownCount", JsonPrimitive(d.appTouchDownCount))
+            put("appTouchUpCount", JsonPrimitive(d.appTouchUpCount))
+            put("appTouchCancelCount", JsonPrimitive(d.appTouchCancelCount))
+            put("appTouchLastDownAt", nullable(d.appTouchLastDownAt))
+            put("appTouchLastUpAt", nullable(d.appTouchLastUpAt))
+            put("appTouchLastCancelReason", nullable(d.appTouchLastCancelReason))
+        })
     }
     return fieldDiagnosticJson.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), value)
 }

@@ -48,6 +48,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -349,6 +350,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     // Preserve the current gesture until UP, but only READY can start a new one.
     val interactionEnabled = canTransmit && (inputPressed || pttSemantic == PttSemanticState.READY)
     val pttEnabled = interactionEnabled && pttSemantic == PttSemanticState.READY
+    val touchDownEligible by rememberUpdatedState(pttEnabled)
     val pttColor = when (pttSemantic) {
         PttSemanticState.READY -> Color(0xFF1DB954)
         PttSemanticState.TALKING -> Color(0xFF16E05D)
@@ -418,22 +420,20 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 contentDescription = "Push to talk, ${pttSemantic.name.replace('_', ' ')}"
                 if (!pttEnabled) disabled()
             }
-            // PTT state changes immediately after DOWN. Keeping it out of the key is
-            // essential: restarting pointerInput here cancels tryAwaitRelease and loses UP.
-            .pointerInput(interactionEnabled) {
-                if (interactionEnabled) {
-                    detectTapGestures(onPress = {
-                        if (hapticController.press(eligible = true)) {
-                            manager.appTouchPttDown()
-                            try {
-                                tryAwaitRelease()
-                            } finally {
-                                hapticController.release()
-                                manager.appTouchPttUp()
-                            }
-                        }
-                    })
-                }
+            // Eligibility is sampled for a new DOWN only. The stable Session key keeps
+            // PREPARING/TALKING/self-speaker recomposition from cancelling an accepted press.
+            .pointerInput(joined.sessionId) {
+                detectTapGestures(onPress = {
+                    if (!touchDownEligible || !manager.appTouchPttDown()) return@detectTapGestures
+                    hapticController.press(eligible = true)
+                    if (tryAwaitRelease()) {
+                        hapticController.release()
+                        manager.appTouchPttUp()
+                    } else {
+                        hapticController.cancel()
+                        manager.appTouchPttCancel("pointer_cancel")
+                    }
+                })
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -615,6 +615,10 @@ private fun Diagnostics(state: IntercomUiState) {
             DiagnosticRow("Headset PTT mode", state.diagnostics.headsetPttMode.name)
             DiagnosticRow("Last PTT input", state.diagnostics.lastPttInputSource?.name ?: "Unavailable")
             DiagnosticRow("App touch pressed", state.diagnostics.appTouchPressed.toString())
+            DiagnosticRow("App touch DOWN/UP/CANCEL", "${state.diagnostics.appTouchDownCount}/${state.diagnostics.appTouchUpCount}/${state.diagnostics.appTouchCancelCount}")
+            DiagnosticRow("App touch last DOWN", state.diagnostics.appTouchLastDownAt ?: "Unavailable")
+            DiagnosticRow("App touch last UP", state.diagnostics.appTouchLastUpAt ?: "Unavailable")
+            DiagnosticRow("App touch last cancel", state.diagnostics.appTouchLastCancelReason ?: "Unavailable")
             DiagnosticRow("Headset latched", state.diagnostics.headsetLatched.toString())
             DiagnosticRow("Headset route present", state.diagnostics.headsetRoutePresent.toString())
             DiagnosticRow("Hardware Volume PTT", state.diagnostics.hardwareVolumePttMode.name)

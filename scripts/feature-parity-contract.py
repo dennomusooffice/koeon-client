@@ -160,10 +160,27 @@ def main() -> int:
         "P0_2_RX_STATE_DIVERGENCE_CONTRACT",
     )
     require(
+        ".pointerInput(joined.sessionId)" in android_ui
+        and "rememberUpdatedState(pttEnabled)" in android_ui
+        and ".pointerInput(interactionEnabled)" not in android_ui
+        and "tryAwaitRelease()" in android_ui
+        and "appTouchPttCancel(\"pointer_cancel\")" in android_ui
+        and all(
+            marker in android_session
+            for marker in (
+                "appTouchDownCount",
+                "appTouchUpCount",
+                "appTouchCancelCount",
+                "appTouchLastCancelReason",
+            )
+        ),
+        "ANDROID_TOUCH_PTT_GESTURE_LIFETIME_CONTRACT",
+    )
+    require(
         'applicationId = "com.dennomuso.koeon"' in gradle
-        and 'versionCode = 2' in gradle
-        and 'versionName = "1.0.1"' in gradle,
-        "ANDROID_1_0_1_IDENTITY_VERSION_CONTRACT",
+        and 'versionCode = 3' in gradle
+        and 'versionName = "1.0.2"' in gradle,
+        "ANDROID_1_0_2_IDENTITY_VERSION_CONTRACT",
     )
     require(
         "KOEON_API_BASE_URL" in gradle
