@@ -201,6 +201,11 @@ class RxReadyTest {
         assertEquals(RxReadyAcceptance.REJECTED_SESSION_MISMATCH, barrier.acceptDetailed(
             event("lease-a", "fresh-session", "stable-device"), "other-session", "stable-device",
         ))
+        assertEquals(RxReadyAcceptance.REJECTED_SESSION_MISMATCH, barrier.acceptDetailed(
+            event("lease-a", "fresh-session", "stable-device").copy(speakerSessionId = "wrong-speaker"),
+            "fresh-session",
+            "stable-device",
+        ))
         val wrongChannel = event("lease-a", "fresh-session", "stable-device").copy(channelId = "other")
         assertEquals(RxReadyAcceptance.REJECTED_CHANNEL_MISMATCH, barrier.acceptDetailed(
             wrongChannel, "fresh-session", "stable-device",
@@ -260,6 +265,19 @@ class RxReadyTest {
         assertFalse(barrier.reconcileParticipant("fresh-session", "stable-device"))
         assertEquals(0, barrier.receivedCount())
         assertEquals(0, barrier.auditSnapshot().pendingMetadataCount)
+    }
+
+    @Test fun `generation cancellation discards pending ACK`() = runTest {
+        val barrier = deviceBarrier { testScheduler.currentTime }
+        barrier.acceptDetailed(
+            event("lease-a", "fresh-session", "stable-device"),
+            participantIdentity = "fresh-session",
+            participantDeviceId = null,
+        )
+        barrier.cancel()
+        assertFalse(barrier.hasPendingMetadata())
+        assertFalse(barrier.reconcileParticipant("fresh-session", "stable-device"))
+        assertEquals(0, barrier.receivedCount())
     }
 
     private fun barrier(expected: List<String>, now: () -> Long) = RxReadyBarrier(

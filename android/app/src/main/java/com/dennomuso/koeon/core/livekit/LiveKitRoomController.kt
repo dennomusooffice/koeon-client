@@ -110,7 +110,7 @@ data class LiveKitSnapshot(
     val rxReadyBarrierDeadlineAtElapsedRealtimeMs: Long? = null,
     val rxReadyMetadataAvailableAt: Instant? = null,
     val rxReadyLastReconcileSource: String? = null,
-    val rxReadyCompletionReason: String? = null,
+    val rxReadyTimeoutReason: String? = null,
     val rxReadyFirstEventReceivedAt: Instant? = null,
     val rxReadyFirstAcceptedAt: Instant? = null,
     val rx: RxSnapshot = RxSnapshot(),
@@ -671,7 +671,9 @@ class LiveKitRoomController(
             rxReadyBarrierDeadlineAtElapsedRealtimeMs = audit.barrierDeadlineAtElapsedRealtimeMs,
             rxReadyMetadataAvailableAt = audit.metadataAvailableAtMs?.let(Instant::ofEpochMilli),
             rxReadyLastReconcileSource = audit.lastReconcileSource?.name,
-            rxReadyCompletionReason = audit.completionReason?.name,
+            rxReadyTimeoutReason = audit.completionReason
+                ?.takeIf { it == RxReadyReason.SINGLE_TIMEOUT || it == RxReadyReason.MULTI_TIMEOUT }
+                ?.name,
             rxReadyFirstEventReceivedAt = audit.firstEventReceivedAtMs?.let(Instant::ofEpochMilli),
             rxReadyFirstAcceptedAt = audit.firstAcceptedAtMs?.let(Instant::ofEpochMilli),
         )
