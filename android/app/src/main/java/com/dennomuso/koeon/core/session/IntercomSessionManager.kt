@@ -258,6 +258,11 @@ class IntercomSessionManager(
         AudioDeviceProfileStore(appContext.getSharedPreferences("koeon_audio_profiles", Context.MODE_PRIVATE)),
         initialMode = productionAudioCaptureProfile.koeonGainMode,
     )
+    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer().also { capture ->
+        gainProcessor.postProcessedPcmConsumer = capture::appendPostProcessedPcm
+    }
+    private var batv1Transmitter: com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter? = null
+    private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
     private val room = LiveKitRoomController(appContext, scope, gainProcessor) { event ->
         when (event) {
             is AudioFocusEvent.Lost -> handleAudioInterruption(event.reason)
@@ -1010,12 +1015,27 @@ class IntercomSessionManager(
             override suspend fun renew(leaseId: String): FloorResponse = api.renew(join.sessionId, leaseId)
             override suspend fun release(leaseId: String): FloorResponse = api.release(join.sessionId, leaseId)
         }
+        val deviceId = join.deviceId
+        batv1Receiver?.stop()
+        batv1Receiver = com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver(scope, api, join.sessionId)
+        room.onBufferedAudioStart = { generationId -> batv1Receiver?.start(generationId) }
+        batv1Transmitter = if (join.canPublish && !deviceId.isNullOrBlank()) {
+            com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter(
+                scope = scope,
+                api = api,
+                capture = batv1Capture,
+                channelId = join.channel.id,
+                sessionId = join.sessionId,
+                deviceId = deviceId,
+            )
+        } else null
         pttController = PttController(
             scope = scope,
             floor = floor,
             microphone = room,
             cuePlayer = TonePttCuePlayer(appContext),
             control = room,
+            bufferedAudio = batv1Transmitter,
             clock = SystemPttClock(),
             onSnapshot = { ptt ->
                 if (ptt.state == PttState.TRANSMITTING && previousPttState != PttState.TRANSMITTING) {

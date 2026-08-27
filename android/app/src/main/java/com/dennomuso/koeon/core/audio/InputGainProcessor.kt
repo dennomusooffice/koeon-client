@@ -96,6 +96,7 @@ class InputGainProcessor(
     initialMode: InputGainMode = InputGainMode.OFF,
     private val onSnapshot: (InputGainSnapshot) -> Unit = {},
 ) : AudioProcessorInterface {
+    @Volatile var postProcessedPcmConsumer: ((ByteBuffer) -> Unit)? = null
     private var mode = initialMode
     private var route = "Unavailable"
     private var profile = AudioDeviceProfile("gain.unavailable", route, "unknown")
@@ -216,6 +217,7 @@ class InputGainProcessor(
                 if (System.currentTimeMillis() >= deadline) finishCalibration()
             }
         }
+        postProcessedPcmConsumer?.invoke(buffer.duplicate().apply { rewind() })
         // Realtime callback performs no UI dispatch or per-frame snapshot allocation.
     }
 

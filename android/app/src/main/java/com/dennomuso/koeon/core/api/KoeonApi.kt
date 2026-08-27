@@ -12,6 +12,10 @@ import com.dennomuso.koeon.core.model.MeResponse
 import com.dennomuso.koeon.core.model.LeaseRequest
 import com.dennomuso.koeon.core.model.LeaveResponse
 import com.dennomuso.koeon.core.model.SessionRequest
+import com.dennomuso.koeon.core.model.Batv1PublishRequest
+import com.dennomuso.koeon.core.model.Batv1PublishResponse
+import com.dennomuso.koeon.core.model.Batv1SubscribeRequest
+import com.dennomuso.koeon.core.model.Batv1SubscribeResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -33,6 +37,10 @@ interface KoeonApi {
     suspend fun renew(sessionId: String, leaseId: String): FloorResponse
     suspend fun release(sessionId: String, leaseId: String): FloorResponse
     suspend fun floorStatus(sessionId: String): FloorResponse
+    suspend fun publishBufferedAudio(request: Batv1PublishRequest): Batv1PublishResponse =
+        throw UnsupportedOperationException("BATv1 publish is unavailable")
+    suspend fun subscribeBufferedAudio(request: Batv1SubscribeRequest): Batv1SubscribeResponse =
+        throw UnsupportedOperationException("BATv1 subscribe is unavailable")
     suspend fun logout()
 }
 
@@ -85,6 +93,12 @@ class HttpKoeonApi(
 
     override suspend fun floorStatus(sessionId: String): FloorResponse =
         get("/api/floor/status?sessionId=${java.net.URLEncoder.encode(sessionId, Charsets.UTF_8.name())}")
+
+    override suspend fun publishBufferedAudio(request: Batv1PublishRequest): Batv1PublishResponse =
+        post("/api/audio/batv1/publish", request)
+
+    override suspend fun subscribeBufferedAudio(request: Batv1SubscribeRequest): Batv1SubscribeResponse =
+        post("/api/audio/batv1/subscribe", request)
 
     override suspend fun logout() {
         post<EmptyRequest, LogoutResponse>("/api/auth/logout", EmptyRequest())
