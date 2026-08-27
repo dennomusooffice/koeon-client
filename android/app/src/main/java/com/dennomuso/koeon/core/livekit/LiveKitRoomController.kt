@@ -231,6 +231,7 @@ class LiveKitRoomController(
     private var rxReadyLeaseId: String? = null
     private var rxReadyPublishLeaseId: String? = null
     private var rxReadyStartLeaseId: String? = null
+    var onBufferedAudioStart: (String) -> Unit = {}
 
     private val _snapshot = MutableStateFlow(LiveKitSnapshot())
     val snapshot: StateFlow<LiveKitSnapshot> = _snapshot.asStateFlow()
@@ -343,6 +344,9 @@ class LiveKitRoomController(
 
     override suspend fun publishStart(leaseId: String): Result<Unit> = publishControl("start", leaseId)
 
+    override suspend fun publishBufferedStart(leaseId: String, generationId: String): Result<Unit> =
+        publishControl("start", leaseId, generationId)
+
     override suspend fun publishEnd(leaseId: String): Result<Unit> = publishControl("end", leaseId)
 
     override fun prepareRxReady(leaseId: String, expectedSessionIds: List<String>) {
@@ -425,7 +429,7 @@ class LiveKitRoomController(
         rxAudio?.reconcileFloor(floor)
     }
 
-    private suspend fun publishControl(type: String, leaseId: String): Result<Unit> {
+    private suspend fun publishControl(type: String, leaseId: String, bufferedGenerationId: String? = null): Result<Unit> {
         val currentRoom = room ?: return Result.failure(IllegalStateException("LiveKit Room is unavailable"))
         val currentChannel = channelId ?: return Result.failure(IllegalStateException("Channel is unavailable"))
         val currentUser = userId ?: return Result.failure(IllegalStateException("User is unavailable"))
@@ -438,6 +442,7 @@ class LiveKitRoomController(
             leaseId = leaseId,
             sequence = ++controlSequence,
             sentAt = System.currentTimeMillis(),
+            bufferedGenerationId = bufferedGenerationId,
         )
         val data = pttControlJson.encodeToString(event).encodeToByteArray()
         if (type == "start") {
@@ -558,6 +563,7 @@ class LiveKitRoomController(
                                 }
                             }
                             val startArmed = rxAudio?.handleControl(control, participantIdentity) == true
+                            if (control.type == "start") control.bufferedGenerationId?.let(onBufferedAudioStart)
                             if (startArmed && participantIdentity != null) {
                                 _snapshot.value = _snapshot.value.copy(rxReadyStartArmedAt = Instant.now())
                                 publishReceiverReady(control, participantIdentity)
