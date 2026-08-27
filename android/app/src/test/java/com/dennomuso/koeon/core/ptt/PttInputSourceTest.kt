@@ -43,6 +43,25 @@ class PttInputSourceTest {
         assertFalse(gate.isPressed())
     }
 
+    @Test fun `accepted touch survives tremor large drag and outside movement until physical up`() {
+        val gate = AppTouchPttGate()
+        assertTrue(gate.down())
+
+        // Movement is consumed by the pointer owner and never invokes up/cancel.
+        listOf("TREMOR", "DRAG_OVER_100PX", "OUTSIDE_BUTTON_BOUNDS", "VERTICAL_SCROLL_ATTEMPT").forEach { _ ->
+            assertTrue(gate.isPressed())
+        }
+
+        assertTrue(gate.up())
+        assertFalse(gate.up())
+    }
+
+    @Test fun `parent scroll is disabled only for accepted touch lifetime`() {
+        assertTrue(isParentScrollEnabledWhileTouchPtt(appTouchPressed = false))
+        assertFalse(isParentScrollEnabledWhileTouchPtt(appTouchPressed = true))
+        assertTrue(isParentScrollEnabledWhileTouchPtt(appTouchPressed = false))
+    }
+
     @Test fun `remote busy rejects a new touch without creating a gesture`() {
         val gate = AppTouchPttGate()
         val remoteBusyEligible = false

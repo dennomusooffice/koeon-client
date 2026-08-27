@@ -58,6 +58,8 @@ class AppTouchPttGate {
     fun isPressed(): Boolean = pressed
 }
 
+fun isParentScrollEnabledWhileTouchPtt(appTouchPressed: Boolean): Boolean = !appTouchPressed
+
 enum class HardwareVolumePttMode { OFF, TOGGLE }
 enum class HardwareVolumeAction { DOWN, UP, IGNORE }
 

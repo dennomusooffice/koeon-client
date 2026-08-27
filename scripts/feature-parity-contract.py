@@ -163,8 +163,13 @@ def main() -> int:
         ".pointerInput(joined.sessionId)" in android_ui
         and "rememberUpdatedState(pttEnabled)" in android_ui
         and ".pointerInput(interactionEnabled)" not in android_ui
-        and "tryAwaitRelease()" in android_ui
-        and "appTouchPttCancel(\"pointer_cancel\")" in android_ui
+        and "awaitEachGesture" in android_ui
+        and "awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)" in android_ui
+        and "awaitPointerEvent(pass = PointerEventPass.Initial)" in android_ui
+        and "change.consume()" in android_ui
+        and "isParentScrollEnabledWhileTouchPtt(state.diagnostics.appTouchPressed)" in android_ui
+        and "tryAwaitRelease()" not in android_ui
+        and "appTouchPttCancel(\"pointer_cancel\")" not in android_ui
         and all(
             marker in android_session
             for marker in (
@@ -172,15 +177,18 @@ def main() -> int:
                 "appTouchUpCount",
                 "appTouchCancelCount",
                 "appTouchLastCancelReason",
+                "appTouchMoveCount",
+                "appTouchScrollSuppressedCount",
+                "appTouchPointerIdPresent",
             )
         ),
         "ANDROID_TOUCH_PTT_GESTURE_LIFETIME_CONTRACT",
     )
     require(
         'applicationId = "com.dennomuso.koeon"' in gradle
-        and 'versionCode = 3' in gradle
-        and 'versionName = "1.0.2"' in gradle,
-        "ANDROID_1_0_2_IDENTITY_VERSION_CONTRACT",
+        and 'versionCode = 4' in gradle
+        and 'versionName = "1.0.3"' in gradle,
+        "ANDROID_1_0_3_IDENTITY_VERSION_CONTRACT",
     )
     require(
         "KOEON_API_BASE_URL" in gradle

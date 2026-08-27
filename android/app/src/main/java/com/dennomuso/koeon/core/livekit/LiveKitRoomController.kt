@@ -16,6 +16,7 @@ import com.dennomuso.koeon.core.ptt.PTT_RX_READY_TOPIC
 import com.dennomuso.koeon.core.ptt.PTT_RX_READY_VERSION
 import com.dennomuso.koeon.core.ptt.PttRxReadyEvent
 import com.dennomuso.koeon.core.ptt.RxReadyBarrier
+import com.dennomuso.koeon.core.ptt.RxReadyAcceptance
 import com.dennomuso.koeon.core.ptt.RxReadyReason
 import com.dennomuso.koeon.core.ptt.RxReadyResult
 import com.dennomuso.koeon.core.ptt.RxAudioController
@@ -89,6 +90,17 @@ data class LiveKitSnapshot(
     val rxReadyStartArmedAt: Instant? = null,
     val rxReadySenderIdentityPresent: Boolean? = null,
     val rxReadyReceiverDeviceIdPresent: Boolean? = null,
+    val rxReadyReceivedEvents: Int = 0,
+    val rxReadyRejectedCount: Int = 0,
+    val rxReadyRejectedSessionMismatch: Int = 0,
+    val rxReadyRejectedDeviceMismatch: Int = 0,
+    val rxReadyRejectedParticipantMetadataMissing: Int = 0,
+    val rxReadyRejectedLeaseMismatch: Int = 0,
+    val rxReadyRejectedChannelMismatch: Int = 0,
+    val rxReadyRejectedDuplicate: Int = 0,
+    val rxReadyPendingMetadataCount: Int = 0,
+    val rxReadyFirstEventReceivedAt: Instant? = null,
+    val rxReadyFirstAcceptedAt: Instant? = null,
     val rx: RxSnapshot = RxSnapshot(),
     val lastError: String? = null,
     val deployment: String = "UNKNOWN",
@@ -469,9 +481,15 @@ class LiveKitRoomController(
                     lastError = event.error?.message,
                 )
             }
-            is RoomEvent.ParticipantConnected,
-            is RoomEvent.ParticipantDisconnected,
-            -> refreshParticipants(event.room)
+            is RoomEvent.ParticipantConnected -> {
+                refreshParticipants(event.room)
+                reconcilePendingRxReady(event.participant.identity?.value, event.participant.metadata?.let(::participantDeviceId))
+            }
+            is RoomEvent.ParticipantMetadataChanged -> {
+                refreshParticipants(event.room)
+                reconcilePendingRxReady(event.participant.identity?.value, event.participant.metadata?.let(::participantDeviceId))
+            }
+            is RoomEvent.ParticipantDisconnected -> refreshParticipants(event.room)
             is RoomEvent.ActiveSpeakersChanged -> {
                 val remote = event.speakers.firstOrNull { it is io.livekit.android.room.participant.RemoteParticipant }
                 rxAudio?.handleRemoteAudioActivity(remote?.identity?.value, remote != null)
@@ -520,17 +538,13 @@ class LiveKitRoomController(
                             pttRxReadyJson.decodeFromString<PttRxReadyEvent>(event.data.decodeToString())
                         }.getOrNull() ?: return
                         val barrier = rxReadyBarrier ?: return
-                        if (barrier.accept(
+                        val acceptance = barrier.acceptDetailed(
                             ready,
                             event.participant?.identity?.value,
                             event.participant?.metadata?.let(::participantDeviceId),
-                        )) {
-                            _snapshot.value = _snapshot.value.copy(
-                                rxReadyExpectedCount = barrier.expectedCount(),
-                                rxReadyReceivedCount = barrier.receivedCount(),
-                                rxReadyLateCount = barrier.lateCount(),
-                            )
-                        }
+                        )
+                        applyRxReadyBarrierSnapshot(barrier)
+                        if (acceptance == RxReadyAcceptance.PENDING_PARTICIPANT_METADATA) refreshParticipants(event.room)
                     }
                 }
             }
@@ -562,6 +576,32 @@ class LiveKitRoomController(
             }
             else -> Unit
         }
+    }
+
+    private fun reconcilePendingRxReady(participantIdentity: String?, participantDeviceId: String?) {
+        val barrier = rxReadyBarrier ?: return
+        barrier.reconcileParticipant(participantIdentity, participantDeviceId)
+        applyRxReadyBarrierSnapshot(barrier)
+    }
+
+    private fun applyRxReadyBarrierSnapshot(barrier: RxReadyBarrier) {
+        val audit = barrier.auditSnapshot()
+        _snapshot.value = _snapshot.value.copy(
+            rxReadyExpectedCount = barrier.expectedCount(),
+            rxReadyReceivedCount = barrier.receivedCount(),
+            rxReadyLateCount = barrier.lateCount(),
+            rxReadyReceivedEvents = audit.receivedEvents,
+            rxReadyRejectedCount = audit.rejectedEvents,
+            rxReadyRejectedSessionMismatch = audit.rejectedSessionMismatch,
+            rxReadyRejectedDeviceMismatch = audit.rejectedDeviceMismatch,
+            rxReadyRejectedParticipantMetadataMissing = audit.rejectedParticipantMetadataMissing,
+            rxReadyRejectedLeaseMismatch = audit.rejectedLeaseMismatch,
+            rxReadyRejectedChannelMismatch = audit.rejectedChannelMismatch,
+            rxReadyRejectedDuplicate = audit.rejectedDuplicate,
+            rxReadyPendingMetadataCount = audit.pendingMetadataCount,
+            rxReadyFirstEventReceivedAt = audit.firstEventReceivedAtMs?.let(Instant::ofEpochMilli),
+            rxReadyFirstAcceptedAt = audit.firstAcceptedAtMs?.let(Instant::ofEpochMilli),
+        )
     }
 
     private fun refreshParticipants(currentRoom: Room) {

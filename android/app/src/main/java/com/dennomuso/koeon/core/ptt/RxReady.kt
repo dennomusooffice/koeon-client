@@ -45,6 +45,31 @@ data class RxReadyResult(
         get() = reason == RxReadyReason.SINGLE_TIMEOUT || reason == RxReadyReason.MULTI_TIMEOUT
 }
 
+enum class RxReadyAcceptance {
+    ACCEPTED,
+    PENDING_PARTICIPANT_METADATA,
+    REJECTED_SESSION_MISMATCH,
+    REJECTED_DEVICE_MISMATCH,
+    REJECTED_LEASE_MISMATCH,
+    REJECTED_CHANNEL_MISMATCH,
+    REJECTED_DUPLICATE,
+    REJECTED_MALFORMED,
+}
+
+data class RxReadyAuditSnapshot(
+    val receivedEvents: Int = 0,
+    val rejectedEvents: Int = 0,
+    val rejectedSessionMismatch: Int = 0,
+    val rejectedDeviceMismatch: Int = 0,
+    val rejectedParticipantMetadataMissing: Int = 0,
+    val rejectedLeaseMismatch: Int = 0,
+    val rejectedChannelMismatch: Int = 0,
+    val rejectedDuplicate: Int = 0,
+    val pendingMetadataCount: Int = 0,
+    val firstEventReceivedAtMs: Long? = null,
+    val firstAcceptedAtMs: Long? = null,
+)
+
 class RxReadyBarrier(
     expectedSessionIds: List<String>,
     expectedDeviceIds: List<String> = emptyList(),
@@ -54,6 +79,8 @@ class RxReadyBarrier(
     private val elapsedRealtimeMs: () -> Long = SystemClock::elapsedRealtime,
     private val wallClockMs: () -> Long = System::currentTimeMillis,
 ) {
+    private data class PendingReady(val event: PttRxReadyEvent, val receivedAtMs: Long)
+
     private val expected = expectedSessionIds.filter(String::isNotBlank).toSet()
     private val expectedDevices = expectedDeviceIds.filter(String::isNotBlank).toSet()
     private val effectiveExpected = if (expectedDevices.isEmpty()) expected else expectedDevices
@@ -64,32 +91,104 @@ class RxReadyBarrier(
     private var completedAtMicOn: Int? = null
     private var firstReadyAt: Long? = null
     private var allReadyAt: Long? = null
+    private val pendingBySession = mutableMapOf<String, PendingReady>()
+    private var audit = RxReadyAuditSnapshot()
 
-    fun accept(event: PttRxReadyEvent, participantIdentity: String?, participantDeviceId: String? = null): Boolean = synchronized(this) {
-        if (
-            cancelled ||
-            participantIdentity.isNullOrBlank() ||
-            event.version != PTT_RX_READY_VERSION ||
-            event.type != "rx_ready" ||
-            event.channelId != channelId ||
-            event.speakerSessionId != speakerSessionId ||
-            event.leaseId != leaseId ||
+    companion object {
+        const val PENDING_METADATA_MAX_MS = 1_500L
+    }
+
+    fun accept(event: PttRxReadyEvent, participantIdentity: String?, participantDeviceId: String? = null): Boolean =
+        acceptDetailed(event, participantIdentity, participantDeviceId) == RxReadyAcceptance.ACCEPTED
+
+    fun acceptDetailed(
+        event: PttRxReadyEvent,
+        participantIdentity: String?,
+        participantDeviceId: String? = null,
+    ): RxReadyAcceptance = synchronized(this) {
+        val eventAt = wallClockMs()
+        audit = audit.copy(
+            receivedEvents = audit.receivedEvents + 1,
+            firstEventReceivedAtMs = audit.firstEventReceivedAtMs ?: eventAt,
+        )
+        if (cancelled || event.version != PTT_RX_READY_VERSION || event.type != "rx_ready") {
+            return@synchronized reject(RxReadyAcceptance.REJECTED_MALFORMED)
+        }
+        if (event.channelId != channelId) return@synchronized reject(RxReadyAcceptance.REJECTED_CHANNEL_MISMATCH)
+        if (event.leaseId != leaseId) return@synchronized reject(RxReadyAcceptance.REJECTED_LEASE_MISMATCH)
+        if (participantIdentity.isNullOrBlank() || event.speakerSessionId != speakerSessionId ||
             event.receiverSessionId != participantIdentity
-        ) return@synchronized false
+        ) return@synchronized reject(RxReadyAcceptance.REJECTED_SESSION_MISMATCH)
+
         val readyIdentity = if (expectedDevices.isNotEmpty()) {
-            event.receiverDeviceId?.takeIf { it == participantDeviceId && it in expectedDevices }
-        } else participantIdentity.takeIf { it in expected }
-        if (readyIdentity == null || !received.add(readyIdentity)) return@synchronized false
-        val now = wallClockMs()
+            val eventDevice = event.receiverDeviceId
+            if (eventDevice.isNullOrBlank() || eventDevice !in expectedDevices) {
+                return@synchronized reject(RxReadyAcceptance.REJECTED_DEVICE_MISMATCH)
+            }
+            if (participantDeviceId.isNullOrBlank()) {
+                if (received.contains(eventDevice)) return@synchronized reject(RxReadyAcceptance.REJECTED_DUPLICATE)
+                pendingBySession[participantIdentity] = PendingReady(event, eventAt)
+                audit = audit.copy(
+                    rejectedParticipantMetadataMissing = audit.rejectedParticipantMetadataMissing + 1,
+                    pendingMetadataCount = pendingBySession.size,
+                )
+                return@synchronized RxReadyAcceptance.PENDING_PARTICIPANT_METADATA
+            }
+            if (eventDevice != participantDeviceId) {
+                return@synchronized reject(RxReadyAcceptance.REJECTED_DEVICE_MISMATCH)
+            }
+            eventDevice
+        } else {
+            if (participantIdentity !in expected) return@synchronized reject(RxReadyAcceptance.REJECTED_SESSION_MISMATCH)
+            participantIdentity
+        }
+        acceptIdentity(readyIdentity, eventAt)
+    }
+
+    fun reconcileParticipant(participantIdentity: String?, participantDeviceId: String?): Boolean = synchronized(this) {
+        if (cancelled || participantIdentity.isNullOrBlank() || participantDeviceId.isNullOrBlank()) return@synchronized false
+        val pending = pendingBySession.remove(participantIdentity) ?: return@synchronized false
+        audit = audit.copy(pendingMetadataCount = pendingBySession.size)
+        if (wallClockMs() - pending.receivedAtMs > PENDING_METADATA_MAX_MS) {
+            reject(RxReadyAcceptance.REJECTED_SESSION_MISMATCH)
+            return@synchronized false
+        }
+        val eventDevice = pending.event.receiverDeviceId
+        if (eventDevice != participantDeviceId || eventDevice !in expectedDevices) {
+            reject(RxReadyAcceptance.REJECTED_DEVICE_MISMATCH)
+            return@synchronized false
+        }
+        acceptIdentity(eventDevice, wallClockMs()) == RxReadyAcceptance.ACCEPTED
+    }
+
+    fun auditSnapshot(): RxReadyAuditSnapshot = synchronized(this) { audit.copy(pendingMetadataCount = pendingBySession.size) }
+
+    private fun acceptIdentity(readyIdentity: String, now: Long): RxReadyAcceptance {
+        if (!received.add(readyIdentity)) return reject(RxReadyAcceptance.REJECTED_DUPLICATE)
         if (firstReadyAt == null) firstReadyAt = now
         if (received.size == effectiveExpected.size) allReadyAt = now
+        audit = audit.copy(firstAcceptedAtMs = audit.firstAcceptedAtMs ?: now)
         signal.trySend(Unit)
-        true
+        return RxReadyAcceptance.ACCEPTED
+    }
+
+    private fun reject(reason: RxReadyAcceptance): RxReadyAcceptance {
+        audit = audit.copy(
+            rejectedEvents = audit.rejectedEvents + 1,
+            rejectedSessionMismatch = audit.rejectedSessionMismatch + if (reason == RxReadyAcceptance.REJECTED_SESSION_MISMATCH) 1 else 0,
+            rejectedDeviceMismatch = audit.rejectedDeviceMismatch + if (reason == RxReadyAcceptance.REJECTED_DEVICE_MISMATCH) 1 else 0,
+            rejectedLeaseMismatch = audit.rejectedLeaseMismatch + if (reason == RxReadyAcceptance.REJECTED_LEASE_MISMATCH) 1 else 0,
+            rejectedChannelMismatch = audit.rejectedChannelMismatch + if (reason == RxReadyAcceptance.REJECTED_CHANNEL_MISMATCH) 1 else 0,
+            rejectedDuplicate = audit.rejectedDuplicate + if (reason == RxReadyAcceptance.REJECTED_DUPLICATE) 1 else 0,
+        )
+        return reason
     }
 
     fun cancel() = synchronized(this) {
         if (!cancelled) {
             cancelled = true
+            pendingBySession.clear()
+            audit = audit.copy(pendingMetadataCount = 0)
             signal.trySend(Unit)
         }
     }

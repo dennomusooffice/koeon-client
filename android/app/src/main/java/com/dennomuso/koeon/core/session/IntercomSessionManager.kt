@@ -140,6 +140,17 @@ data class SessionDiagnostics(
     val rxReadyStartArmedAt: String? = null,
     val rxReadySenderIdentityPresent: Boolean? = null,
     val rxReadyReceiverDeviceIdPresent: Boolean? = null,
+    val rxReadyReceivedEvents: Int = 0,
+    val rxReadyRejectedCount: Int = 0,
+    val rxReadyRejectedSessionMismatch: Int = 0,
+    val rxReadyRejectedDeviceMismatch: Int = 0,
+    val rxReadyRejectedParticipantMetadataMissing: Int = 0,
+    val rxReadyRejectedLeaseMismatch: Int = 0,
+    val rxReadyRejectedChannelMismatch: Int = 0,
+    val rxReadyRejectedDuplicate: Int = 0,
+    val rxReadyPendingMetadataCount: Int = 0,
+    val rxReadyFirstEventReceivedAt: String? = null,
+    val rxReadyFirstAcceptedAt: String? = null,
     val lastPttInputSource: PttInputSource? = null,
     val appTouchPressed: Boolean = false,
     val appTouchDownCount: Int = 0,
@@ -148,6 +159,12 @@ data class SessionDiagnostics(
     val appTouchLastDownAt: String? = null,
     val appTouchLastUpAt: String? = null,
     val appTouchLastCancelReason: String? = null,
+    val appTouchMoveCount: Int = 0,
+    val appTouchCaptureStartedAt: String? = null,
+    val appTouchCaptureEndedAt: String? = null,
+    val appTouchLastTerminalReason: String? = null,
+    val appTouchScrollSuppressedCount: Int = 0,
+    val appTouchPointerIdPresent: Boolean = false,
     val headsetLatched: Boolean = false,
     val headsetRoutePresent: Boolean = false,
     val hardwareVolumePttMode: HardwareVolumePttMode = HardwareVolumePttMode.OFF,
@@ -341,6 +358,17 @@ class IntercomSessionManager(
                             rxReadyStartArmedAt = liveKit.rxReadyStartArmedAt?.toString(),
                             rxReadySenderIdentityPresent = liveKit.rxReadySenderIdentityPresent,
                             rxReadyReceiverDeviceIdPresent = liveKit.rxReadyReceiverDeviceIdPresent,
+                            rxReadyReceivedEvents = liveKit.rxReadyReceivedEvents,
+                            rxReadyRejectedCount = liveKit.rxReadyRejectedCount,
+                            rxReadyRejectedSessionMismatch = liveKit.rxReadyRejectedSessionMismatch,
+                            rxReadyRejectedDeviceMismatch = liveKit.rxReadyRejectedDeviceMismatch,
+                            rxReadyRejectedParticipantMetadataMissing = liveKit.rxReadyRejectedParticipantMetadataMissing,
+                            rxReadyRejectedLeaseMismatch = liveKit.rxReadyRejectedLeaseMismatch,
+                            rxReadyRejectedChannelMismatch = liveKit.rxReadyRejectedChannelMismatch,
+                            rxReadyRejectedDuplicate = liveKit.rxReadyRejectedDuplicate,
+                            rxReadyPendingMetadataCount = liveKit.rxReadyPendingMetadataCount,
+                            rxReadyFirstEventReceivedAt = liveKit.rxReadyFirstEventReceivedAt?.toString(),
+                            rxReadyFirstAcceptedAt = liveKit.rxReadyFirstAcceptedAt?.toString(),
                             rx = liveKit.rx,
                             connectionLostAt = if (enteredLoss) now else it.diagnostics.connectionLostAt,
                             connectionRestoredAt = if (restored) now else it.diagnostics.connectionRestoredAt,
@@ -890,7 +918,7 @@ class IntercomSessionManager(
         pttInputQueue.up()
     }
 
-    fun appTouchPttDown(): Boolean {
+    fun appTouchPttDown(pointerId: Long? = null): Boolean {
         if (!appTouchPttGate.down()) return false
         if (!pttDown(PttInputSource.APP_TOUCH)) {
             appTouchPttGate.cancel()
@@ -902,11 +930,15 @@ class IntercomSessionManager(
             appTouchPressed = true,
             appTouchDownCount = it.diagnostics.appTouchDownCount + 1,
             appTouchLastDownAt = occurredAt,
+            appTouchCaptureStartedAt = occurredAt,
+            appTouchCaptureEndedAt = null,
+            appTouchLastTerminalReason = null,
+            appTouchPointerIdPresent = pointerId != null,
         )) }
         return true
     }
 
-    fun appTouchPttUp(): Boolean {
+    fun appTouchPttUp(terminalReason: String = "PHYSICAL_UP"): Boolean {
         if (!appTouchPttGate.up()) return false
         val occurredAt = Instant.now().toString()
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
@@ -914,6 +946,9 @@ class IntercomSessionManager(
             appTouchPressed = false,
             appTouchUpCount = it.diagnostics.appTouchUpCount + 1,
             appTouchLastUpAt = occurredAt,
+            appTouchCaptureEndedAt = occurredAt,
+            appTouchLastTerminalReason = terminalReason,
+            appTouchPointerIdPresent = false,
         )) }
         pttUp(PttInputSource.APP_TOUCH)
         return true
@@ -926,9 +961,21 @@ class IntercomSessionManager(
             appTouchPressed = false,
             appTouchCancelCount = it.diagnostics.appTouchCancelCount + 1,
             appTouchLastCancelReason = reason,
+            appTouchCaptureEndedAt = Instant.now().toString(),
+            appTouchLastTerminalReason = reason,
+            appTouchPointerIdPresent = false,
         )) }
         pttUp(PttInputSource.APP_TOUCH)
         return true
+    }
+
+    fun appTouchPttMove(pointerId: Long) {
+        if (!appTouchPttGate.isPressed()) return
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(
+            appTouchMoveCount = it.diagnostics.appTouchMoveCount + 1,
+            appTouchScrollSuppressedCount = it.diagnostics.appTouchScrollSuppressedCount + 1,
+            appTouchPointerIdPresent = true,
+        )) }
     }
 
     fun reportHaptic(snapshot: HapticSnapshot) {
