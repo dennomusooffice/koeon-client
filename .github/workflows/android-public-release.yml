@@ -23,12 +23,12 @@ on:
       version_name:
         description: Android version name
         required: true
-        default: 1.0.1
+        default: 1.0.2
         type: string
       version_code:
         description: Positive Android version code
         required: true
-        default: "2"
+        default: "3"
         type: string
       publish_confirmation:
         description: Publish mode requires the exact value PUBLISH_ANDROID_RELEASE

@@ -142,6 +142,12 @@ data class SessionDiagnostics(
     val rxReadyReceiverDeviceIdPresent: Boolean? = null,
     val lastPttInputSource: PttInputSource? = null,
     val appTouchPressed: Boolean = false,
+    val appTouchDownCount: Int = 0,
+    val appTouchUpCount: Int = 0,
+    val appTouchCancelCount: Int = 0,
+    val appTouchLastDownAt: String? = null,
+    val appTouchLastUpAt: String? = null,
+    val appTouchLastCancelReason: String? = null,
     val headsetLatched: Boolean = false,
     val headsetRoutePresent: Boolean = false,
     val hardwareVolumePttMode: HardwareVolumePttMode = HardwareVolumePttMode.OFF,
@@ -852,7 +858,7 @@ class IntercomSessionManager(
         }
     }
 
-    private fun pttDown(source: PttInputSource) {
+    private fun pttDown(source: PttInputSource): Boolean {
         _state.update { it.copy(diagnostics = it.diagnostics.copy(lastPttInputSource = source)) }
         val remoteTalking = _state.value.currentSpeaker != null &&
             _state.value.ptt.state != PttState.TRANSMITTING
@@ -870,9 +876,9 @@ class IntercomSessionManager(
                 _state.update { it.copy(error = "AUDIO INTERRUPTED: 音声復旧が完了するまでPTTは利用できません") }
                 scope.launch { pttController?.rejectForAudioUnavailable() }
             }
-            return
+            return false
         }
-        pttInputQueue.down(canTransmit)
+        return pttInputQueue.down(canTransmit)
     }
 
     fun retryAudioRecovery() {
@@ -884,22 +890,45 @@ class IntercomSessionManager(
         pttInputQueue.up()
     }
 
-    fun appTouchPttDown() {
-        if (!appTouchPttGate.down()) return
+    fun appTouchPttDown(): Boolean {
+        if (!appTouchPttGate.down()) return false
+        if (!pttDown(PttInputSource.APP_TOUCH)) {
+            appTouchPttGate.cancel()
+            return false
+        }
+        val occurredAt = Instant.now().toString()
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             lastPttInputSource = PttInputSource.APP_TOUCH,
             appTouchPressed = true,
+            appTouchDownCount = it.diagnostics.appTouchDownCount + 1,
+            appTouchLastDownAt = occurredAt,
         )) }
-        pttDown(PttInputSource.APP_TOUCH)
+        return true
     }
 
-    fun appTouchPttUp() {
-        if (!appTouchPttGate.up()) return
+    fun appTouchPttUp(): Boolean {
+        if (!appTouchPttGate.up()) return false
+        val occurredAt = Instant.now().toString()
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             lastPttInputSource = PttInputSource.APP_TOUCH,
             appTouchPressed = false,
+            appTouchUpCount = it.diagnostics.appTouchUpCount + 1,
+            appTouchLastUpAt = occurredAt,
         )) }
         pttUp(PttInputSource.APP_TOUCH)
+        return true
+    }
+
+    fun appTouchPttCancel(reason: String): Boolean {
+        if (!appTouchPttGate.cancel()) return false
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(
+            lastPttInputSource = PttInputSource.APP_TOUCH,
+            appTouchPressed = false,
+            appTouchCancelCount = it.diagnostics.appTouchCancelCount + 1,
+            appTouchLastCancelReason = reason,
+        )) }
+        pttUp(PttInputSource.APP_TOUCH)
+        return true
     }
 
     fun reportHaptic(snapshot: HapticSnapshot) {
@@ -991,11 +1020,13 @@ class IntercomSessionManager(
     }
 
     private suspend fun stopPttForSafetyIfActive(reason: String) {
-        appTouchPttGate.cancel()
+        val touchCancelled = appTouchPttGate.cancel()
         hardwareVolumePttGate.clear()
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             lastPttInputSource = PttInputSource.SYSTEM_SAFETY,
             appTouchPressed = false,
+            appTouchCancelCount = it.diagnostics.appTouchCancelCount + if (touchCancelled) 1 else 0,
+            appTouchLastCancelReason = if (touchCancelled) reason else it.diagnostics.appTouchLastCancelReason,
             headsetLatched = false,
             hardwareVolumePttLatched = false,
         )) }

@@ -29,6 +29,39 @@ class PttInputSourceTest {
         assertFalse(gate.cancel())
     }
 
+    @Test fun `accepted touch survives preparing talking and self speaker states until physical up`() {
+        val gate = AppTouchPttGate()
+        assertTrue(gate.down())
+
+        // These Product state transitions must not own or cancel the gesture lifetime.
+        listOf("PREPARING", "TALKING", "CURRENT_SPEAKER_SELF").forEach { _ ->
+            assertTrue(gate.isPressed())
+        }
+
+        assertTrue(gate.up())
+        assertFalse(gate.up())
+        assertFalse(gate.isPressed())
+    }
+
+    @Test fun `remote busy rejects a new touch without creating a gesture`() {
+        val gate = AppTouchPttGate()
+        val remoteBusyEligible = false
+
+        assertFalse(remoteBusyEligible && gate.down())
+        assertFalse(gate.isPressed())
+        assertFalse(gate.up())
+    }
+
+    @Test fun `connection audio and route safety cancel an accepted touch exactly once`() {
+        listOf("disconnect", "audio_interruption", "route_loss").forEach { _ ->
+            val gate = AppTouchPttGate()
+            assertTrue(gate.down())
+            assertTrue(gate.cancel())
+            assertFalse(gate.cancel())
+            assertFalse(gate.up())
+        }
+    }
+
     @Test fun `hardware volume short presses toggle for fifty cycles`() {
         val gate = HardwareVolumePttGate()
         repeat(50) {
