@@ -122,6 +122,63 @@ struct PttTokenUnregisterRequest: Codable, Equatable, Sendable {
     let sessionId: String
 }
 
+let batv1ProtocolVersion = 1
+let batv1SampleRate = 48_000
+let batv1Channels = 1
+let batv1FrameDurationMilliseconds = 20
+let batv1BytesPerFrame = 1_920
+let batv1MaximumFrames = 300
+let batv1MaximumPlaybackRate: Float = 1.50
+
+struct Batv1Chunk: Codable, Equatable, Sendable {
+    let sequence: Int
+    let payloadBase64: String
+}
+
+struct Batv1PublishRequest: Codable, Sendable {
+    let protocolVersion: Int
+    let sessionId: String
+    let generationId: String
+    let channelId: String
+    let speakerSessionId: String
+    let speakerDeviceId: String
+    let leaseId: String
+    let codec: String
+    let sampleRate: Int
+    let channels: Int
+    let frameDurationMs: Int
+    let chunks: [Batv1Chunk]
+    let finalSequence: Int?
+}
+
+struct Batv1PublishResponse: Codable, Sendable {
+    let outcome: String
+    let acceptedChunks: Int
+    let latestSequence: Int
+}
+
+struct Batv1SubscribeRequest: Codable, Sendable {
+    let sessionId: String
+    let generationId: String
+    let nextSequence: Int
+}
+
+struct Batv1SubscribeResponse: Codable, Sendable {
+    let protocolVersion: Int
+    let generationId: String
+    let codec: String
+    let sampleRate: Int
+    let channels: Int
+    let frameDurationMs: Int
+    let firstAvailableSequence: Int
+    let latestSequence: Int
+    let nextSequence: Int
+    let finalSequence: Int?
+    let bufferHeadExpired: Bool
+    let timelineEnded: Bool
+    let chunks: [Batv1Chunk]
+}
+
 struct LeaseRequest: Codable, Equatable, Sendable {
     let sessionId: String
     let leaseId: String

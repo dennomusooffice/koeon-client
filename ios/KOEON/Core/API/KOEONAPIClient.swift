@@ -25,7 +25,19 @@ protocol KOEONAPIClientProtocol: Sendable {
     func floorStatus(sessionId: String) async throws -> FloorResponse
     func registerPttToken(sessionId: String, channelId: String, token: String) async throws
     func unregisterPttToken(sessionId: String) async throws
+    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse
+    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse
     func logout() async throws
+}
+
+extension KOEONAPIClientProtocol {
+    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
+        throw APIClientError.invalidResponse
+    }
+
+    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
+        throw APIClientError.invalidResponse
+    }
 }
 
 enum RuntimeConfiguration {
@@ -168,6 +180,22 @@ final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
             path: "/api/device/ptt-token",
             method: "DELETE",
             body: try encoder.encode(PttTokenUnregisterRequest(sessionId: sessionId))
+        )
+    }
+
+    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
+        try await send(
+            path: "/api/audio/batv1/publish",
+            method: "POST",
+            body: try encoder.encode(request)
+        )
+    }
+
+    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
+        try await send(
+            path: "/api/audio/batv1/subscribe",
+            method: "POST",
+            body: try encoder.encode(request)
         )
     }
 

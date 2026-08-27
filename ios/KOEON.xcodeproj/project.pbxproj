@@ -34,6 +34,7 @@
 		A0010000000000000000001A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001C /* Assets.xcassets */; };
 		A0010000000000000000001B /* InviteQRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001D /* InviteQRScannerView.swift */; };
 		A0010000000000000000001C /* RuntimeRestorePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001E /* RuntimeRestorePipelineTests.swift */; };
+		A0010000000000000000001D /* BufferedAudioTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001F /* BufferedAudioTimeline.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -77,6 +78,7 @@
 		B0010000000000000000001C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B0010000000000000000001D /* InviteQRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteQRScannerView.swift; sourceTree = "<group>"; };
 		B0010000000000000000001E /* RuntimeRestorePipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeRestorePipelineTests.swift; sourceTree = "<group>"; };
+		B0010000000000000000001F /* BufferedAudioTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BufferedAudioTimeline.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -90,7 +92,7 @@
 		C00100000000000000000012 /* App */ = {isa = PBXGroup; children = (B00100000000000000000001 /* KOEONApp.swift */); path = App; sourceTree = "<group>"; };
 		C00100000000000000000013 /* Core */ = {isa = PBXGroup; children = (B00100000000000000000002 /* Models.swift */, B0010000000000000000001A /* InviteHandoff.swift */, C00100000000000000000014 /* API */, C00100000000000000000015 /* Audio */, C00100000000000000000016 /* Floor */, C00100000000000000000017 /* LiveKit */, C00100000000000000000018 /* Network */, C0010000000000000000001A /* PTT */, C0010000000000000000001B /* Session */); path = Core; sourceTree = "<group>"; };
 		C00100000000000000000014 /* API */ = {isa = PBXGroup; children = (B00100000000000000000003, B00100000000000000000018); path = API; sourceTree = "<group>"; };
-		C00100000000000000000015 /* Audio */ = {isa = PBXGroup; children = (B00100000000000000000005, B00100000000000000000004); path = Audio; sourceTree = "<group>"; };
+		C00100000000000000000015 /* Audio */ = {isa = PBXGroup; children = (B00100000000000000000005, B00100000000000000000004, B0010000000000000000001F); path = Audio; sourceTree = "<group>"; };
 		C00100000000000000000016 /* Floor */ = {isa = PBXGroup; children = (B00100000000000000000006); path = Floor; sourceTree = "<group>"; };
 		C00100000000000000000017 /* LiveKit */ = {isa = PBXGroup; children = (B00100000000000000000007); path = LiveKit; sourceTree = "<group>"; };
 		C00100000000000000000018 /* Network */ = {isa = PBXGroup; children = (B00100000000000000000008); path = Network; sourceTree = "<group>"; };
@@ -116,7 +118,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		H00100000000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000001, A00100000000000000000002, A00100000000000000000003, A00100000000000000000004, A00100000000000000000005, A00100000000000000000006, A00100000000000000000007, A00100000000000000000008, A00100000000000000000009, A0010000000000000000000A, A0010000000000000000000B, A0010000000000000000000C, A00100000000000000000010, A00100000000000000000011, A00100000000000000000012, A00100000000000000000014, A00100000000000000000016, A00100000000000000000018, A0010000000000000000001B); runOnlyForDeploymentPostprocessing = 0; };
+		H00100000000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000001, A00100000000000000000002, A00100000000000000000003, A00100000000000000000004, A00100000000000000000005, A00100000000000000000006, A00100000000000000000007, A00100000000000000000008, A00100000000000000000009, A0010000000000000000000A, A0010000000000000000000B, A0010000000000000000000C, A00100000000000000000010, A00100000000000000000011, A00100000000000000000012, A00100000000000000000014, A00100000000000000000016, A00100000000000000000018, A0010000000000000000001B, A0010000000000000000001D); runOnlyForDeploymentPostprocessing = 0; };
 		H00100000000000000000002 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0010000000000000000000D, A0010000000000000000000E, A00100000000000000000013, A00100000000000000000015, A00100000000000000000017, A00100000000000000000019, A0010000000000000000001C); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 

@@ -358,6 +358,7 @@ final class IntercomSessionController: ObservableObject {
     let network: ConnectionMonitor
     let pushToTalk: ApplePushToTalkController
     let inputGain = InputGainProcessor()
+    private let bufferedCapture = Batv1CaptureBuffer()
 
     private let api: any KOEONAPIClientProtocol
     private let credentialStore: any DeviceCredentialStoring
@@ -368,6 +369,8 @@ final class IntercomSessionController: ObservableObject {
     private let statusCuePlayer: any PttStatusCuePlaying
     private var haptics: PttHapticFeedbackController?
     private var ptt: PTTController?
+    private var bufferedTransmitter: BufferedAudioTransmitter?
+    private var bufferedReceiver: BufferedAudioReceiver?
     private var rx: RxAudioController?
     private var remoteReceive: RemoteReceiveActivationCoordinator?
     private var rxConsistencyGuard = RxConsistencyGuard()
@@ -449,6 +452,10 @@ final class IntercomSessionController: ObservableObject {
         volumeProbeMode = IOSVolumeProbeMode(rawValue: UserDefaults.standard.string(forKey: "field.volumeProbe") ?? "") ?? .off
         audio.setOutputVolumeObservationEnabled(volumeProbeMode == .observeOnly)
         AudioManager.shared.capturePostProcessingDelegate = inputGain
+        let bufferedCapture = self.bufferedCapture
+        inputGain.setPostProcessedPcmConsumer { samples, sampleRate, channels in
+            bufferedCapture.append(samples: samples, sampleRate: sampleRate, channels: channels)
+        }
         audioCancellable = audio.objectWillChange.sink { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -485,6 +492,11 @@ final class IntercomSessionController: ObservableObject {
         }
         room.onPttControl = { [weak self] event, senderSessionId in
             if event.type == "start" { self?.rxReadyStartReceivedAt = Date() }
+            if event.type == "start", let generationId = event.bufferedGenerationId {
+                self?.bufferedReceiver?.start(generationId: generationId, senderSessionId: senderSessionId)
+            } else if event.type == "start" {
+                self?.bufferedReceiver?.stop()
+            }
             self?.rx?.handleControl(event, senderSessionId: senderSessionId)
             if self?.audio.pushToTalkAudioSessionActive == true {
                 self?.rxReadyAppleAudioReadyAt = Date()
@@ -670,6 +682,8 @@ final class IntercomSessionController: ObservableObject {
                 self.appleDidActivateAttemptGeneration = generation
             }
             await self.audio.pushToTalkDidActivate(audioSession)
+            await self.ptt?.appleAudioSessionDidActivate()
+            self.bufferedReceiver?.audioSessionDidActivate()
             self.rxReadyAppleAudioReadyAt = Date()
             self.liveKitEngineReadyAt = self.audio.liveKitEngineAvailability == "DEFAULT" ? Date() : nil
             if self.audio.pushToTalkAudioSessionActive,
@@ -716,6 +730,7 @@ final class IntercomSessionController: ObservableObject {
             guard let self else { return }
             self.appleLastDeactivateAt = Date()
             self.rx?.audioSessionDidDeactivate()
+            self.bufferedReceiver?.audioSessionDidDeactivate()
             await self.audio.pushToTalkDidDeactivate()
             self.audioRearmedAt = Date()
             if shouldSafetyStopForAppleDeactivation(
@@ -953,12 +968,36 @@ final class IntercomSessionController: ObservableObject {
             pendingJoinResponse = nil
             joinedAt = Date()
             sessionUptimeSeconds = 0
+            guard let deviceId = response.deviceId, !deviceId.isEmpty else {
+                throw APIClientError.invalidResponse
+            }
+            let bufferedTransmitter = BufferedAudioTransmitter(
+                api: api,
+                capture: bufferedCapture,
+                channelId: response.channel.id,
+                sessionId: response.sessionId,
+                deviceId: deviceId
+            )
+            self.bufferedTransmitter = bufferedTransmitter
+            bufferedReceiver = BufferedAudioReceiver(
+                api: api,
+                sessionId: response.sessionId,
+                onActivity: { [weak self] senderSessionId, active in
+                    self?.handleRemoteMediaActivity(sessionId: senderSessionId, active: active)
+                },
+                onPcm: { [weak self] timestamp in
+                    guard let self else { return }
+                    self.rx?.handleRemotePcm(at: timestamp)
+                    self.applyRxSnapshot(self.rx?.currentSnapshot() ?? self.rxSnapshot)
+                }
+            )
             let controller = PTTController(
                 role: response.user.role,
                 floor: FloorClient(sessionId: response.sessionId, api: api),
                 microphone: room,
                 cuePlayer: cuePlayer,
-                control: room
+                control: room,
+                bufferedAudio: bufferedTransmitter
             ) { [weak self] snapshot in
                 Task { @MainActor in self?.applyPttSnapshot(snapshot) }
             }
@@ -980,6 +1019,9 @@ final class IntercomSessionController: ObservableObject {
             pendingJoinResponse = nil
             joinedSession = nil
             ptt = nil
+            bufferedReceiver?.stop()
+            bufferedReceiver = nil
+            bufferedTransmitter = nil
             rx?.reset()
             rx = nil
             remoteReceive?.reset()
@@ -1004,6 +1046,9 @@ final class IntercomSessionController: ObservableObject {
         floorStatusTask = nil
         await ptt?.stopForSafety(reason: "Channel left.")
         ptt = nil
+        bufferedReceiver?.stop()
+        bufferedReceiver = nil
+        bufferedTransmitter = nil
         remoteReceive?.reset()
         remoteReceive = nil
         resetRxConsistency()
@@ -1453,6 +1498,9 @@ final class IntercomSessionController: ObservableObject {
         resetPttRequestGate()
         await ptt?.stopForSafety(reason: "Incoming Push is replacing a stale LiveKit runtime.")
         ptt = nil
+        bufferedReceiver?.stop()
+        bufferedReceiver = nil
+        bufferedTransmitter = nil
         rx?.reset()
         rx = nil
         remoteReceive?.resetPreservingSystemRemoteParticipant()
@@ -1567,10 +1615,34 @@ final class IntercomSessionController: ObservableObject {
             pushToTalk.updateBackendSessionId(response.sessionId)
             pendingJoinResponse = nil
             joinedAt = Date()
+            guard let deviceId = response.deviceId, !deviceId.isEmpty else {
+                throw APIClientError.invalidResponse
+            }
+            let bufferedTransmitter = BufferedAudioTransmitter(
+                api: api,
+                capture: bufferedCapture,
+                channelId: response.channel.id,
+                sessionId: response.sessionId,
+                deviceId: deviceId
+            )
+            self.bufferedTransmitter = bufferedTransmitter
+            bufferedReceiver = BufferedAudioReceiver(
+                api: api,
+                sessionId: response.sessionId,
+                onActivity: { [weak self] senderSessionId, active in
+                    self?.handleRemoteMediaActivity(sessionId: senderSessionId, active: active)
+                },
+                onPcm: { [weak self] timestamp in
+                    guard let self else { return }
+                    self.rx?.handleRemotePcm(at: timestamp)
+                    self.applyRxSnapshot(self.rx?.currentSnapshot() ?? self.rxSnapshot)
+                }
+            )
             let controller = PTTController(
                 role: response.user.role,
                 floor: FloorClient(sessionId: response.sessionId, api: api),
-                microphone: room, cuePlayer: cuePlayer, control: room
+                microphone: room, cuePlayer: cuePlayer, control: room,
+                bufferedAudio: bufferedTransmitter
             ) { [weak self] snapshot in Task { @MainActor in self?.applyPttSnapshot(snapshot) } }
             ptt = controller
             pttSnapshot = .initial(role: response.user.role)
@@ -1581,6 +1653,9 @@ final class IntercomSessionController: ObservableObject {
         } catch {
             pendingJoinResponse = nil
             joinedSession = nil
+            bufferedReceiver?.stop()
+            bufferedReceiver = nil
+            bufferedTransmitter = nil
             pttRestoreState = "failed_retryable_join"
             completeReconnectAttempt(result: "failed_retryable_join")
             lastError = "PushToTalk Resume runtime failed: \(safeMessage(error))"
