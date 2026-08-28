@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import LiveKit
 
 func batv1PlaybackRate(backlogMilliseconds: Int) -> Float {
     switch backlogMilliseconds {
@@ -13,8 +14,14 @@ func batv1PlaybackRate(backlogMilliseconds: Int) -> Float {
 
 struct BufferedAudioTxDiagnostics: Equatable, Sendable {
     var generationId: String?
+    var captureSource = "LIVEKIT_START_LOCAL_RECORDING"
+    var captureState = "IDLE"
     var captureArmed = false
     var captureConfirmed = false
+    var captureArmedAt: Date?
+    var firstPcmAt: Date?
+    var captureConfirmedAt: Date?
+    var captureConfirmMilliseconds: Int?
     var preRollBufferedFrames = 0
     var preFloorAudioNetworkEgressFrames = 0
     var canonicalFramesSent = 0
@@ -47,6 +54,7 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     private var generationId: String?
     private var forward: (@Sendable (Data) -> Void)?
     private var dropped = 0
+    private var firstPcmAt: Date?
 
     func arm(generationId: String) {
         lock.withLock {
@@ -55,6 +63,7 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
             self.generationId = generationId
             forward = nil
             dropped = 0
+            firstPcmAt = nil
         }
     }
 
@@ -72,6 +81,7 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
         let bytes = samples.withUnsafeBytes { Data($0) }
         lock.withLock {
             guard generationId != nil else { return }
+            if firstPcmAt == nil { firstPcmAt = Date() }
             partial.append(bytes)
             while partial.count >= batv1BytesPerFrame {
                 let frame = Data(partial.prefix(batv1BytesPerFrame))
@@ -119,6 +129,38 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
 
     var frameCount: Int { lock.withLock { frames.count } }
     var droppedFrames: Int { lock.withLock { dropped } }
+    var firstPcmTimestamp: Date? { lock.withLock { firstPcmAt } }
+}
+
+@MainActor
+protocol Batv1LocalRecordingAuthority: AnyObject {
+    func start() throws
+    func stop()
+    var isRecording: Bool { get }
+}
+
+@MainActor
+final class LiveKitBatv1LocalRecordingAuthority: Batv1LocalRecordingAuthority {
+    private(set) var isRecording = false
+
+    func start() throws {
+        guard !isRecording else { return }
+        try AudioManager.shared.startLocalRecording(
+            audioProcessingOptions: AudioProcessingOptions(
+                echoCancellation: true,
+                autoGainControl: true,
+                noiseSuppression: true,
+                highpassFilter: true
+            )
+        )
+        isRecording = true
+    }
+
+    func stop() {
+        guard isRecording else { return }
+        try? AudioManager.shared.stopLocalRecording()
+        isRecording = false
+    }
 }
 
 private final class Batv1PendingFrames: @unchecked Sendable {
@@ -142,7 +184,7 @@ private final class Batv1PendingFrames: @unchecked Sendable {
 @MainActor
 protocol BufferedAudioTransmitting: AnyObject {
     func prepare(generationId: String)
-    func audioSessionDidActivate()
+    func audioSessionDidActivate() async throws
     func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool
     func authorize(leaseId: String, generationId: String) async throws
     func finish(generationId: String) async throws
@@ -157,6 +199,7 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
     private let channelId: String
     private let sessionId: String
     private let deviceId: String
+    private let recordingAuthority: any Batv1LocalRecordingAuthority
     private let pending = Batv1PendingFrames()
     private var generationId: String?
     private var leaseId: String?
@@ -171,13 +214,15 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
         capture: Batv1CaptureBuffer,
         channelId: String,
         sessionId: String,
-        deviceId: String
+        deviceId: String,
+        recordingAuthority: (any Batv1LocalRecordingAuthority)? = nil
     ) {
         self.api = api
         self.capture = capture
         self.channelId = channelId
         self.sessionId = sessionId
         self.deviceId = deviceId
+        self.recordingAuthority = recordingAuthority ?? LiveKitBatv1LocalRecordingAuthority()
     }
 
     func prepare(generationId: String) {
@@ -186,17 +231,36 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
         diagnostics = BufferedAudioTxDiagnostics(generationId: generationId)
     }
 
-    func audioSessionDidActivate() {
+    func audioSessionDidActivate() async throws {
         guard let generationId, !diagnostics.captureArmed else { return }
         capture.arm(generationId: generationId)
+        diagnostics.captureState = "ARMED"
         diagnostics.captureArmed = true
+        diagnostics.captureArmedAt = Date()
+        do {
+            try recordingAuthority.start()
+            diagnostics.captureState = "RECORDING"
+        } catch {
+            diagnostics.captureState = "ERROR"
+            diagnostics.lastErrorCode = "BATV1_LOCAL_RECORDING_START_FAILED"
+            throw error
+        }
     }
 
     func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool {
         guard self.generationId == generationId, diagnostics.captureArmed else { return false }
         let confirmed = await capture.awaitCapture()
         diagnostics.captureConfirmed = confirmed
-        guard confirmed else { return false }
+        diagnostics.firstPcmAt = capture.firstPcmTimestamp
+        diagnostics.captureConfirmedAt = confirmed ? Date() : nil
+        if let armed = diagnostics.captureArmedAt, let confirmedAt = diagnostics.captureConfirmedAt {
+            diagnostics.captureConfirmMilliseconds = max(0, Int(confirmedAt.timeIntervalSince(armed) * 1_000))
+        }
+        diagnostics.captureState = confirmed ? "ACTIVE" : "ERROR"
+        guard confirmed else {
+            diagnostics.lastErrorCode = "BATV1_CAPTURE_ZERO_FRAMES"
+            return false
+        }
         capture.markCueBoundary()
         return true
     }
@@ -214,6 +278,7 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
 
     func finish(generationId: String) async throws {
         guard self.generationId == generationId, authorized else { throw BufferedAudioError.generationMismatch }
+        defer { stopLocalRecording() }
         capture.stopForwarding()
         authorized = false
         await sendTask?.value
@@ -234,6 +299,7 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
 
     func discard(generationId: String) {
         guard generationId.isEmpty || self.generationId == generationId else { return }
+        stopLocalRecording()
         authorized = false
         sendTask?.cancel()
         sendTask = nil
@@ -243,6 +309,11 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
         leaseId = nil
         nextSequence = 0
         sendError = nil
+    }
+
+    private func stopLocalRecording() {
+        recordingAuthority.stop()
+        if diagnostics.captureState != "ERROR" { diagnostics.captureState = "STOPPED" }
     }
 
     private func sendLoop() async {

@@ -171,6 +171,13 @@ class PttController(
                         return
                     }
                     activeBufferedGenerationId = id
+                    if (!gateway.markCueBoundary(id)) {
+                        held = false
+                        gateway.discard(id)
+                        update(snapshot.copy(state = PttState.ERROR, lastError = "Buffered cue boundary could not be established"))
+                        playStatusCue("ERROR", cuePlayer.playError())
+                        return
+                    }
                     val cueStart = clock.now()
                     val cueResult = cuePlayer.playStart()
                     val cueEnd = clock.now()

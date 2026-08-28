@@ -23,6 +23,34 @@ struct LiveKitIngressDiagnosticSnapshot: Sendable {
     var lastDelegateMainApplyAt: Date?
 }
 
+enum ControlSenderIdentityResolution: String, Equatable, Sendable {
+    case sdkEvent = "SDK_EVENT"
+    case roomSessionMatch = "ROOM_SESSION_MATCH"
+    case rejected = "REJECTED"
+}
+
+struct ResolvedControlSenderIdentity: Equatable, Sendable {
+    let identity: String?
+    let resolution: ControlSenderIdentityResolution
+}
+
+func resolveControlSenderIdentity(
+    eventParticipantIdentity: String?,
+    controlSessionId: String,
+    currentRemoteParticipantIdentities: [String]
+) -> ResolvedControlSenderIdentity {
+    if let eventIdentity = eventParticipantIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !eventIdentity.isEmpty {
+        return eventIdentity == controlSessionId
+            ? ResolvedControlSenderIdentity(identity: eventIdentity, resolution: .sdkEvent)
+            : ResolvedControlSenderIdentity(identity: nil, resolution: .rejected)
+    }
+    let matches = currentRemoteParticipantIdentities.filter { $0 == controlSessionId }
+    return matches.count == 1
+        ? ResolvedControlSenderIdentity(identity: controlSessionId, resolution: .roomSessionMatch)
+        : ResolvedControlSenderIdentity(identity: nil, resolution: .rejected)
+}
+
 private struct LiveKitDelegateEnvelope: Sendable {
     let name: String
     let ingressAt: Date
@@ -37,7 +65,7 @@ private enum LiveKitDelegateEvent: Sendable {
     case participantDisconnected(sessionId: String?, names: [String])
     case participantConnected(sessionId: String?, names: [String])
     case speakingParticipant(name: String?, sessionId: String?)
-    case pttControl(PttControlEvent, senderSessionId: String?)
+    case pttControl(PttControlEvent, senderSessionId: String?, resolution: ControlSenderIdentityResolution)
     case rxReady(PttRxReadyEvent, participantIdentity: String?, participantDeviceId: String?)
 }
 
@@ -77,6 +105,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     private var remoteAudioSubscriptionGate = RemoteAudioSubscriptionGenerationGate()
     private let rxReadyBarrier = PttRxReadyBarrier()
     private var ingressDiagnostics = LiveKitIngressDiagnosticSnapshot()
+    private(set) var controlSenderIdentityResolution = ControlSenderIdentityResolution.rejected
 
     static func expectedRxReadySessions(
         serverExpected: [String],
@@ -157,6 +186,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         deployment = "UNKNOWN"
         endpointHost = nil
         controlSequence = 0
+        controlSenderIdentityResolution = .rejected
         remoteAudioSubscriptionGate.reset()
     }
 
@@ -445,9 +475,20 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         if (topic == pttControlTopic || topic == pttControlFastStartTopic),
            let event = PttControlCodec.decode(data),
            topic != pttControlFastStartTopic || event.type == "start" {
+            let resolved = resolveControlSenderIdentity(
+                eventParticipantIdentity: participant?.identity?.stringValue,
+                controlSessionId: event.sessionId,
+                currentRemoteParticipantIdentities: room.remoteParticipants.values.compactMap {
+                    $0.identity?.stringValue
+                }
+            )
             enqueueDelegateEvent(
                 name: "didReceiveData.pttControl",
-                event: .pttControl(event, senderSessionId: participant?.identity?.stringValue)
+                event: .pttControl(
+                    event,
+                    senderSessionId: resolved.identity,
+                    resolution: resolved.resolution
+                )
             )
             return
         }
@@ -502,7 +543,9 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
             } else {
                 clearRemoteMediaActivity(notify: true)
             }
-        case let .pttControl(event, senderSessionId):
+        case let .pttControl(event, senderSessionId, resolution):
+            controlSenderIdentityResolution = resolution
+            guard let senderSessionId else { return }
             onPttControl?(event, senderSessionId)
         case let .rxReady(event, participantIdentity, participantDeviceId):
             guard event.channelId == channelId, event.speakerSessionId == sessionId else { return }

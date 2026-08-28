@@ -492,11 +492,6 @@ final class IntercomSessionController: ObservableObject {
         }
         room.onPttControl = { [weak self] event, senderSessionId in
             if event.type == "start" { self?.rxReadyStartReceivedAt = Date() }
-            if event.type == "start", let generationId = event.bufferedGenerationId {
-                self?.bufferedReceiver?.start(generationId: generationId, senderSessionId: senderSessionId)
-            } else if event.type == "start" {
-                self?.bufferedReceiver?.stop()
-            }
             self?.rx?.handleControl(event, senderSessionId: senderSessionId)
             if self?.audio.pushToTalkAudioSessionActive == true {
                 self?.rxReadyAppleAudioReadyAt = Date()
@@ -910,7 +905,15 @@ final class IntercomSessionController: ObservableObject {
             rx = RxAudioController(
                 channelId: response.channel.id,
                 cuePlayer: rxCuePlayer,
-                onValidatedStart: { [weak room, weak remoteReceive] event, generation in
+                onValidatedStart: { [weak self, weak room, weak remoteReceive] event, generation in
+                    if let bufferedGenerationId = event.bufferedGenerationId {
+                        self?.bufferedReceiver?.start(
+                            generationId: bufferedGenerationId,
+                            senderSessionId: event.sessionId
+                        )
+                    } else {
+                        self?.bufferedReceiver?.stop()
+                    }
                     Task { [weak room] in try? await room?.activateRemoteAudioSubscription(
                         sessionId: event.sessionId, generation: generation
                     ) }
@@ -1562,7 +1565,15 @@ final class IntercomSessionController: ObservableObject {
         rx = RxAudioController(
             channelId: response.channel.id,
             cuePlayer: rxCuePlayer,
-            onValidatedStart: { [weak room, weak coordinator] event, generation in
+            onValidatedStart: { [weak self, weak room, weak coordinator] event, generation in
+                if let bufferedGenerationId = event.bufferedGenerationId {
+                    self?.bufferedReceiver?.start(
+                        generationId: bufferedGenerationId,
+                        senderSessionId: event.sessionId
+                    )
+                } else {
+                    self?.bufferedReceiver?.stop()
+                }
                 Task { [weak room] in try? await room?.activateRemoteAudioSubscription(
                     sessionId: event.sessionId, generation: generation
                 ) }
@@ -2083,6 +2094,8 @@ final class IntercomSessionController: ObservableObject {
     func copyFieldDiagnosticJSON() {
         let gain = inputGain.snapshot()
         let liveKitIngress = room.ingressDiagnosticSnapshot()
+        let bufferedTx = bufferedTransmitter?.diagnostics ?? BufferedAudioTxDiagnostics()
+        let bufferedRx = bufferedReceiver?.diagnostics ?? BufferedAudioRxDiagnostics()
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unavailable"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unavailable"
         func number(_ value: Int?) -> Any { value.map { $0 as Any } ?? NSNull() }
@@ -2362,6 +2375,28 @@ final class IntercomSessionController: ObservableObject {
                 "rmsDbfs": decimal(gain.rmsDbfs),
                 "peakDbfs": decimal(gain.peakDbfs),
                 "limiterHits": gain.limiterHits,
+            ],
+            "bufferedAudio": [
+                "protocolVersion": batv1ProtocolVersion,
+                "txGenerationPresent": bufferedTx.generationId != nil,
+                "txCaptureSource": bufferedTx.captureSource,
+                "txCaptureState": bufferedTx.captureState,
+                "txCaptureArmedAt": timestamp(bufferedTx.captureArmedAt),
+                "txFirstPcmAt": timestamp(bufferedTx.firstPcmAt),
+                "txCaptureConfirmedAt": timestamp(bufferedTx.captureConfirmedAt),
+                "txCaptureConfirmMs": number(bufferedTx.captureConfirmMilliseconds),
+                "txPreFloorNetworkEgressFrames": bufferedTx.preFloorAudioNetworkEgressFrames,
+                "txCanonicalFramesSent": bufferedTx.canonicalFramesSent,
+                "txCanonicalLastSequence": bufferedTx.canonicalLastSequence,
+                "txDroppedFrames": bufferedTx.canonicalDroppedFrames,
+                "txLastErrorCode": optional(bufferedTx.lastErrorCode),
+                "rxGenerationPresent": bufferedRx.generationId != nil,
+                "rxPlaybackCursor": bufferedRx.playbackCursor,
+                "rxLatestSequence": bufferedRx.latestSequence,
+                "rxBacklogMs": bufferedRx.backlogMilliseconds,
+                "rxPlaybackRate": bufferedRx.playbackRate,
+                "rxTimelineLost": bufferedRx.timelineLost,
+                "controlSenderIdentityResolution": room.controlSenderIdentityResolution.rawValue,
             ],
             "platformSpecific": [
                 "build": "\(version) (\(build))",

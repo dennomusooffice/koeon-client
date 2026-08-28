@@ -18,6 +18,34 @@ class BufferedAudioTimelineTest {
         assertArrayEquals(source.copyOfRange(BATV1_BYTES_PER_FRAME, source.size), frames[1])
     }
 
+    @Test fun `prewarmed local track sink PCM confirms capture without publication`() {
+        val capture = Batv1CaptureBuffer()
+        capture.arm("generation")
+        val tenMilliseconds = ByteArray(BATV1_BYTES_PER_FRAME / 2) { 7 }
+        assertTrue(capture.appendLiveKitPcm(ByteBuffer.wrap(tenMilliseconds), 16, 48_000, 1, 480))
+        assertTrue(capture.appendLiveKitPcm(ByteBuffer.wrap(tenMilliseconds), 16, 48_000, 1, 480))
+        assertEquals(1, capture.frameCount())
+        assertEquals(null, capture.lastErrorCode())
+    }
+
+    @Test fun `unsupported sink format never fabricates canonical PCM`() {
+        val capture = Batv1CaptureBuffer()
+        capture.arm("generation")
+        assertEquals(false, capture.appendLiveKitPcm(ByteBuffer.wrap(ByteArray(960)), 16, 44_100, 1, 441))
+        assertEquals(0, capture.frameCount())
+        assertEquals("BATV1_CAPTURE_FORMAT_UNSUPPORTED", capture.lastErrorCode())
+    }
+
+    @Test fun `cue boundary drops earlier frames and next frame becomes seq0`() {
+        val capture = Batv1CaptureBuffer()
+        capture.arm("generation")
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { 1 }))
+        capture.markCueBoundary()
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { 2 }))
+        assertEquals(1, capture.snapshotFrames().size)
+        assertArrayEquals(ByteArray(BATV1_BYTES_PER_FRAME) { 2 }, capture.snapshotFrames().single())
+    }
+
     @Test fun `sender RAM is bounded to exactly 6000ms`() {
         val capture = Batv1CaptureBuffer()
         capture.arm("generation")
