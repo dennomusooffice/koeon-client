@@ -138,6 +138,16 @@ actor PTTController {
                 clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
                 return false
             }
+            // BATv1 on Apple PushToTalk must wait for Apple's didActivate before
+            // local recording, cue boundary, START, and RX_READY. Floor ownership
+            // is retained, but no audio or START is published from this pre-arm.
+            if deferMicrophoneUntilAppleActivation, activeBufferedGenerationId != nil {
+                preparedResponse = response
+                preparedOperation = operation
+                snapshot.startCueResult = .skipped("Awaiting Apple PushToTalk audio activation")
+                publish()
+                return true
+            }
             let expected = response.rxReadyExpectedSessionIds ?? []
             let expectedDevices = response.rxReadyExpectedDeviceIds ?? []
             snapshot.wakeRecipientCount = response.wakeRecipientCount ?? expectedDevices.count
@@ -307,6 +317,44 @@ actor PTTController {
                     snapshot.startCueResult = .failure(Self.safeMessage(error))
                 }
                 snapshot.cueEndAt = clock.now
+                let expected = response.rxReadyExpectedSessionIds ?? []
+                let expectedDevices = response.rxReadyExpectedDeviceIds ?? []
+                snapshot.wakeRecipientCount = response.wakeRecipientCount ?? expectedDevices.count
+                snapshot.coldWakeBarrierRequired = snapshot.wakeRecipientCount > 0
+                snapshot.rxReadyExpectedCount = Set(expectedDevices.isEmpty ? expected : expectedDevices).count
+                snapshot.rxReadyWaitStartedAt = clock.now
+                snapshot.readyBarrierStartedAt = clock.now
+                await control.prepareRxReady(
+                    leaseId: leaseId,
+                    expectedSessionIds: expected,
+                    expectedDeviceIds: expectedDevices
+                )
+                guard isPressed, operation == generation else { throw BufferedAudioError.generationMismatch }
+                let timing = try await control.publishBufferedStart(
+                    leaseId: leaseId,
+                    generationId: bufferedGenerationId
+                )
+                snapshot.controlStartSentAt = clock.now
+                snapshot.controlStartResult = "Published"
+                snapshot.controlPublishFastStartedAt = timing.fastStartedAt
+                snapshot.controlPublishFastCompletedAt = timing.fastCompletedAt
+                snapshot.controlPublishFastMilliseconds = timing.fastMilliseconds
+                snapshot.controlPublishReliableStartedAt = timing.reliableStartedAt
+                snapshot.controlPublishReliableCompletedAt = timing.reliableCompletedAt
+                snapshot.controlPublishReliableMilliseconds = timing.reliableMilliseconds
+                let ready = await control.awaitRxReady(leaseId: leaseId, maximumWaitMilliseconds: nil)
+                snapshot.rxReadyExpectedCount = ready.expectedCount
+                snapshot.rxReadyReceivedCount = ready.receivedCount
+                snapshot.rxReadyLateCount = ready.lateCount
+                snapshot.rxReadyWaitMilliseconds = ready.waitMilliseconds
+                snapshot.rxReadyTimedOut = ready.timedOut
+                snapshot.readyBarrierResult = ready.timedOut
+                    ? "READY_TIMEOUT"
+                    : ready.expectedCount == 0 ? "NO_EXPECTATIONS" : "READY_ACKNOWLEDGED"
+                snapshot.rxReadyFirstAt = ready.firstReadyAt
+                snapshot.rxReadyAllAt = ready.allReadyAt
+                snapshot.readyBarrierCompletedAt = clock.now
+                guard isPressed, operation == generation else { throw BufferedAudioError.generationMismatch }
                 try await bufferedAudio?.authorize(leaseId: leaseId, generationId: bufferedGenerationId)
             } else {
                 try await microphone.setMicrophoneEnabled(true)
@@ -331,7 +379,11 @@ actor PTTController {
     /// after its didActivate callback and never before activation.
     func appleAudioSessionDidActivate() async {
         guard isPressed, activeBufferedGenerationId != nil else { return }
-        await bufferedAudio?.audioSessionDidActivate()
+        do {
+            try await bufferedAudio?.audioSessionDidActivate()
+        } catch {
+            await stopForSafety(reason: "BATv1 local recording start failed: \(Self.safeMessage(error))")
+        }
     }
 
     func pttUp(playEndCue: Bool = true) async {

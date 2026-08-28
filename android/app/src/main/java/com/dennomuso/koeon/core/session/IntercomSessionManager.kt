@@ -22,6 +22,8 @@ import com.dennomuso.koeon.core.audio.InputGainProcessor
 import com.dennomuso.koeon.core.audio.InputGainSnapshot
 import com.dennomuso.koeon.core.audio.AudioBitratePreset
 import com.dennomuso.koeon.core.audio.AudioBitratePreferenceStore
+import com.dennomuso.koeon.core.audio.BufferedAudioTxDiagnostics
+import com.dennomuso.koeon.core.audio.BufferedAudioRxDiagnostics
 import com.dennomuso.koeon.core.audio.AUDIO_BITRATE_PREFERENCE_KEY
 import com.dennomuso.koeon.core.livekit.IntercomConnectionState
 import com.dennomuso.koeon.core.livekit.AudioFocusEvent
@@ -183,6 +185,9 @@ data class SessionDiagnostics(
     val effectiveAudioBitrateKbps: Int? = null,
     val liveKitDeployment: String = "UNKNOWN",
     val liveKitEndpointHost: String? = null,
+    val bufferedAudioTx: BufferedAudioTxDiagnostics = BufferedAudioTxDiagnostics(),
+    val bufferedAudioRx: BufferedAudioRxDiagnostics = BufferedAudioRxDiagnostics(),
+    val controlSenderIdentityResolution: String = "REJECTED",
 )
 
 data class IntercomUiState(
@@ -258,12 +263,10 @@ class IntercomSessionManager(
         AudioDeviceProfileStore(appContext.getSharedPreferences("koeon_audio_profiles", Context.MODE_PRIVATE)),
         initialMode = productionAudioCaptureProfile.koeonGainMode,
     )
-    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer().also { capture ->
-        gainProcessor.postProcessedPcmConsumer = capture::appendPostProcessedPcm
-    }
+    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer()
     private var batv1Transmitter: com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter? = null
     private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
-    private val room = LiveKitRoomController(appContext, scope, gainProcessor) { event ->
+    private val room = LiveKitRoomController(appContext, scope, gainProcessor, batv1Capture) { event ->
         when (event) {
             is AudioFocusEvent.Lost -> handleAudioInterruption(event.reason)
             AudioFocusEvent.Gained -> handleAudioFocusRegained()
@@ -381,6 +384,9 @@ class IntercomSessionManager(
                             liveKitDeployment = liveKit.deployment,
                             liveKitEndpointHost = liveKit.endpointHost,
                             effectiveAudioBitrateKbps = liveKit.effectiveAudioBitrateKbps,
+                            bufferedAudioTx = batv1Transmitter?.diagnostics() ?: it.diagnostics.bufferedAudioTx,
+                            bufferedAudioRx = batv1Receiver?.diagnostics() ?: it.diagnostics.bufferedAudioRx,
+                            controlSenderIdentityResolution = liveKit.controlSenderIdentityResolution,
                         ),
                         error = liveKit.lastError ?: it.error,
                     )
@@ -1080,7 +1086,11 @@ class IntercomSessionManager(
             while (true) {
                 val uptime = (android.os.SystemClock.elapsedRealtime() - sessionStartedAt).coerceAtLeast(0L) / 1_000L
                 audioRouteMonitor.refresh()
-                _state.update { it.copy(diagnostics = it.diagnostics.copy(sessionUptimeSeconds = uptime)) }
+                _state.update { it.copy(diagnostics = it.diagnostics.copy(
+                    sessionUptimeSeconds = uptime,
+                    bufferedAudioTx = batv1Transmitter?.diagnostics() ?: it.diagnostics.bufferedAudioTx,
+                    bufferedAudioRx = batv1Receiver?.diagnostics() ?: it.diagnostics.bufferedAudioRx,
+                )) }
                 delay(1_000)
             }
         }

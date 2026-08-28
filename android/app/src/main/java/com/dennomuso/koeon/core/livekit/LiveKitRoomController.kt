@@ -8,6 +8,7 @@ import com.dennomuso.koeon.core.audio.TonePttCuePlayer
 import com.dennomuso.koeon.core.audio.CueRole
 import com.dennomuso.koeon.core.audio.InputGainProcessor
 import com.dennomuso.koeon.core.audio.AudioBitratePreset
+import com.dennomuso.koeon.core.audio.Batv1CaptureBuffer
 import com.dennomuso.koeon.core.ptt.PTT_CONTROL_TOPIC
 import com.dennomuso.koeon.core.ptt.PTT_CONTROL_FAST_START_TOPIC
 import com.dennomuso.koeon.core.ptt.PttControlEvent
@@ -49,6 +50,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.time.Instant
+import java.nio.ByteBuffer
+import livekit.org.webrtc.AudioTrackSink
 
 enum class IntercomConnectionState {
     DISCONNECTED,
@@ -113,6 +116,7 @@ data class LiveKitSnapshot(
     val rxReadyTimeoutReason: String? = null,
     val rxReadyFirstEventReceivedAt: Instant? = null,
     val rxReadyFirstAcceptedAt: Instant? = null,
+    val controlSenderIdentityResolution: String = ControlSenderIdentityResolution.REJECTED.name,
     val rx: RxSnapshot = RxSnapshot(),
     val lastError: String? = null,
     val deployment: String = "UNKNOWN",
@@ -177,6 +181,38 @@ internal fun rxReadyCapableDeviceId(metadata: String?): String? = runCatching {
 internal fun rxReadyPublishFailureClass(error: Throwable): String =
     error.javaClass.simpleName.take(80).ifBlank { "Throwable" }
 
+enum class ControlSenderIdentityResolution {
+    SDK_EVENT,
+    ROOM_SESSION_MATCH,
+    REJECTED,
+}
+
+internal data class ResolvedControlSenderIdentity(
+    val identity: String?,
+    val resolution: ControlSenderIdentityResolution,
+)
+
+internal fun resolveControlSenderIdentity(
+    eventParticipantIdentity: String?,
+    controlSessionId: String,
+    currentRemoteParticipantIdentities: List<String>,
+): ResolvedControlSenderIdentity {
+    val eventIdentity = eventParticipantIdentity?.trim()?.takeIf(String::isNotEmpty)
+    if (eventIdentity != null) {
+        return if (eventIdentity == controlSessionId) {
+            ResolvedControlSenderIdentity(eventIdentity, ControlSenderIdentityResolution.SDK_EVENT)
+        } else {
+            ResolvedControlSenderIdentity(null, ControlSenderIdentityResolution.REJECTED)
+        }
+    }
+    val matches = currentRemoteParticipantIdentities.count { it == controlSessionId }
+    return if (matches == 1) {
+        ResolvedControlSenderIdentity(controlSessionId, ControlSenderIdentityResolution.ROOM_SESSION_MATCH)
+    } else {
+        ResolvedControlSenderIdentity(null, ControlSenderIdentityResolution.REJECTED)
+    }
+}
+
 /**
  * Owns one LiveKit Room for the whole intercom session. PTT only mutes/unmutes
  * the microphone publication and never reconnects this Room.
@@ -185,6 +221,7 @@ class LiveKitRoomController(
     context: Context,
     private val scope: CoroutineScope,
     private val inputGainProcessor: InputGainProcessor? = null,
+    private val batv1CaptureBuffer: Batv1CaptureBuffer? = null,
     private val onAudioFocusEvent: (AudioFocusEvent) -> Unit = {},
 ) : MicrophoneGateway, PttControlGateway {
     private var audioCaptureProfile = productionAudioCaptureProfile
@@ -219,6 +256,24 @@ class LiveKitRoomController(
     private var room: Room? = null
     private var eventJob: Job? = null
     private var prewarmedTrack: io.livekit.android.room.track.LocalAudioTrack? = null
+    private val batv1TrackSink = object : AudioTrackSink {
+        override fun onData(
+            audioData: ByteBuffer,
+            bitsPerSample: Int,
+            sampleRate: Int,
+            numberOfChannels: Int,
+            numberOfFrames: Int,
+            absoluteCaptureTimestampMs: Long,
+        ) {
+            batv1CaptureBuffer?.appendLiveKitPcm(
+                audioData,
+                bitsPerSample,
+                sampleRate,
+                numberOfChannels,
+                numberOfFrames,
+            )
+        }
+    }
     private var microphoneEnabled = false
     private var channelId: String? = null
     private var userId: String? = null
@@ -287,7 +342,10 @@ class LiveKitRoomController(
             if (canPublish) {
                 // Prepare capture without publishing. The first actual publish occurs only
                 // after the floor grant and start cue have completed.
-                prewarmedTrack = nextRoom.localParticipant.getOrCreateDefaultAudioTrack().also { it.prewarm() }
+                prewarmedTrack = nextRoom.localParticipant.getOrCreateDefaultAudioTrack().also {
+                    it.prewarm()
+                    it.addSink(batv1TrackSink)
+                }
                 _snapshot.value = _snapshot.value.copy(microphoneTrackState = "prepared_muted")
             }
             refreshParticipants(nextRoom)
@@ -460,6 +518,7 @@ class LiveKitRoomController(
     }
 
     fun disconnect() {
+        runCatching { prewarmedTrack?.removeSink(batv1TrackSink) }
         runCatching { prewarmedTrack?.stopPrewarm() }
         prewarmedTrack = null
         microphoneEnabled = false
@@ -540,7 +599,13 @@ class LiveKitRoomController(
                             pttControlJson.decodeFromString<PttControlEvent>(event.data.decodeToString())
                         }.getOrNull() ?: return
                         if (event.topic != PTT_CONTROL_FAST_START_TOPIC || control.type == "start") {
-                            val participantIdentity = event.participant?.identity?.value
+                            val resolvedSender = resolveControlSenderIdentity(
+                                eventParticipantIdentity = event.participant?.identity?.value,
+                                controlSessionId = control.sessionId,
+                                currentRemoteParticipantIdentities = event.room.remoteParticipants.values
+                                    .mapNotNull { it.identity?.value },
+                            )
+                            val participantIdentity = resolvedSender.identity
                             if (control.type == "start") {
                                 if (rxReadyStartLeaseId != control.leaseId) {
                                     rxReadyStartLeaseId = control.leaseId
@@ -548,6 +613,7 @@ class LiveKitRoomController(
                                         rxReadyStartReceivedAt = Instant.now(),
                                         rxReadyStartArmedAt = null,
                                         rxReadySenderIdentityPresent = participantIdentity != null,
+                                        controlSenderIdentityResolution = resolvedSender.resolution.name,
                                         rxReadyReceiverDeviceIdPresent = deviceId != null,
                                         rxReadyPublishAttemptedAt = null,
                                         rxReadyPublishedAt = null,
@@ -558,13 +624,14 @@ class LiveKitRoomController(
                                     _snapshot.value = _snapshot.value.copy(
                                         rxReadySenderIdentityPresent =
                                             _snapshot.value.rxReadySenderIdentityPresent == true || participantIdentity != null,
+                                        controlSenderIdentityResolution = resolvedSender.resolution.name,
                                         rxReadyReceiverDeviceIdPresent = deviceId != null,
                                     )
                                 }
                             }
-                            val startArmed = rxAudio?.handleControl(control, participantIdentity) == true
-                            if (control.type == "start") control.bufferedGenerationId?.let(onBufferedAudioStart)
-                            if (startArmed && participantIdentity != null) {
+                            val startArmed = participantIdentity != null && rxAudio?.handleControl(control, participantIdentity) == true
+                            if (startArmed && control.type == "start") control.bufferedGenerationId?.let(onBufferedAudioStart)
+                            if (startArmed) {
                                 _snapshot.value = _snapshot.value.copy(rxReadyStartArmedAt = Instant.now())
                                 publishReceiverReady(control, participantIdentity)
                             }

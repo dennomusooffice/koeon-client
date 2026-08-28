@@ -414,6 +414,38 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertEqual(snapshot.state, .idle)
     }
 
+    func testBufferedApplePrearmDefersStartUntilDidActivateCaptureAndCue() async throws {
+        let events = EventLog()
+        let buffered = BufferedAudioMock(events: events)
+        let controller = PTTController(
+            role: .staff,
+            floor: FloorMock(events: events),
+            microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events),
+            control: ControlMock(events: events),
+            bufferedAudio: buffered,
+            clock: ControlledClock(),
+            onUpdate: { _ in }
+        )
+
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        var values = await events.values()
+        XCTAssertTrue(values.contains("acquire"))
+        XCTAssertFalse(values.contains("control:start"))
+        XCTAssertFalse(values.contains("buffer:capture-start"))
+
+        await controller.appleAudioSessionDidActivate()
+        await controller.activatePrearmedTransmission()
+        values = await events.values()
+        XCTAssertLessThan(values.firstIndex(of: "buffer:capture-start")!, values.firstIndex(of: "buffer:capture-confirmed")!)
+        XCTAssertLessThan(values.firstIndex(of: "buffer:capture-confirmed")!, values.firstIndex(of: "cue:start")!)
+        XCTAssertLessThan(values.firstIndex(of: "cue:start")!, values.firstIndex(of: "control:start")!)
+        XCTAssertLessThan(values.firstIndex(of: "control:start")!, values.firstIndex(of: "buffer:authorize")!)
+        XCTAssertFalse(values.contains("mic:on"), "BATv1 generation must not enable LiveKit microphone publication")
+        await controller.pttUp(playEndCue: false)
+    }
+
     private func makeController(
         role: KOEONRole = .staff,
         floor: FloorMock,
@@ -499,6 +531,68 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(batv1PlaybackRate(backlogMilliseconds: 4_000), 1.45)
         XCTAssertLessThanOrEqual(batv1PlaybackRate(backlogMilliseconds: Int.max), 1.50)
     }
+
+    func testSenderIdentityResolutionRequiresSDKMatchOrCurrentRoomMatch() {
+        XCTAssertEqual(
+            resolveControlSenderIdentity(
+                eventParticipantIdentity: "session-a",
+                controlSessionId: "session-a",
+                currentRemoteParticipantIdentities: ["session-a"]
+            ),
+            ResolvedControlSenderIdentity(identity: "session-a", resolution: .sdkEvent)
+        )
+        XCTAssertEqual(
+            resolveControlSenderIdentity(
+                eventParticipantIdentity: "attacker",
+                controlSessionId: "session-a",
+                currentRemoteParticipantIdentities: ["session-a"]
+            ).resolution,
+            .rejected
+        )
+        XCTAssertEqual(
+            resolveControlSenderIdentity(
+                eventParticipantIdentity: nil,
+                controlSessionId: "session-a",
+                currentRemoteParticipantIdentities: ["session-a", "session-b"]
+            ),
+            ResolvedControlSenderIdentity(identity: "session-a", resolution: .roomSessionMatch)
+        )
+        XCTAssertEqual(
+            resolveControlSenderIdentity(
+                eventParticipantIdentity: nil,
+                controlSessionId: "session-a",
+                currentRemoteParticipantIdentities: ["session-a", "session-a"]
+            ).resolution,
+            .rejected
+        )
+    }
+
+    @MainActor
+    func testLocalRecordingStartsOnlyAfterDidActivateAndStopsIdempotently() async throws {
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let transmitter = BufferedAudioTransmitter(
+            api: Batv1APIStub(),
+            capture: capture,
+            channelId: "channel-a",
+            sessionId: "session-a",
+            deviceId: "device-a",
+            recordingAuthority: authority
+        )
+        transmitter.prepare(generationId: "generation-a")
+        XCTAssertEqual(authority.startCount, 0)
+        try await transmitter.audioSessionDidActivate()
+        XCTAssertEqual(authority.startCount, 1)
+        capture.append(
+            samples: Array(repeating: Int16(5), count: batv1BytesPerFrame / 2),
+            sampleRate: batv1SampleRate,
+            channels: batv1Channels
+        )
+        XCTAssertTrue(await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "generation-a"))
+        transmitter.discard(generationId: "generation-a")
+        authority.stop()
+        XCTAssertEqual(authority.stopCount, 1, "Repeated stop is safe and does not invoke SDK twice")
+    }
 }
 
 final class FieldLabSafetyTests: XCTestCase {
@@ -581,6 +675,31 @@ private actor EventLog {
     func values() -> [String] { events }
 }
 
+@MainActor
+private final class BufferedAudioMock: BufferedAudioTransmitting {
+    let events: EventLog
+    var diagnostics = BufferedAudioTxDiagnostics()
+    init(events: EventLog) { self.events = events }
+    func prepare(generationId: String) {
+        diagnostics.generationId = generationId
+        Task { await events.append("buffer:prepare") }
+    }
+    func audioSessionDidActivate() async throws {
+        diagnostics.captureArmed = true
+        await events.append("buffer:capture-start")
+    }
+    func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool {
+        await events.append("buffer:capture-confirmed")
+        diagnostics.captureConfirmed = true
+        return true
+    }
+    func authorize(leaseId: String, generationId: String) async throws {
+        await events.append("buffer:authorize")
+    }
+    func finish(generationId: String) async throws { await events.append("buffer:finish") }
+    func discard(generationId: String) { Task { await events.append("buffer:discard") } }
+}
+
 private final class SnapshotRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var snapshots: [PTTSnapshot] = []
@@ -588,6 +707,43 @@ private final class SnapshotRecorder: @unchecked Sendable {
 }
 
 private enum MockError: Error { case expected }
+
+@MainActor
+private final class RecordingAuthorityMock: Batv1LocalRecordingAuthority {
+    private(set) var isRecording = false
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    func start() throws {
+        guard !isRecording else { return }
+        isRecording = true
+        startCount += 1
+    }
+    func stop() {
+        guard isRecording else { return }
+        isRecording = false
+        stopCount += 1
+    }
+}
+
+private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
+    func fixture() async throws -> FixtureResponse { throw MockError.expected }
+    func enroll(_ request: EnrollmentRequest) async throws -> EnrollmentResponse { throw MockError.expected }
+    func me() async throws -> MeResponse { throw MockError.expected }
+    func join(_ request: JoinRequest) async throws -> JoinResponse { throw MockError.expected }
+    func resume(_ request: ResumeRequest) async throws -> JoinResponse { throw MockError.expected }
+    func leave(sessionId: String) async throws { throw MockError.expected }
+    func acquireFloor(sessionId: String) async throws -> FloorResponse { throw MockError.expected }
+    func renewFloor(sessionId: String, leaseId: String) async throws -> FloorResponse { throw MockError.expected }
+    func releaseFloor(sessionId: String, leaseId: String) async throws -> FloorReleaseResponse { throw MockError.expected }
+    func floorStatus(sessionId: String) async throws -> FloorResponse { throw MockError.expected }
+    func registerPttToken(sessionId: String, channelId: String, token: String) async throws { throw MockError.expected }
+    func unregisterPttToken(sessionId: String) async throws { throw MockError.expected }
+    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
+        Batv1PublishResponse(outcome: "accepted", acceptedChunks: request.chunks.count, latestSequence: request.chunks.last?.sequence ?? -1)
+    }
+    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse { throw MockError.expected }
+    func logout() async throws { throw MockError.expected }
+}
 
 private actor FloorMock: FloorControlling {
     enum AcquireResult { case granted, busy }
