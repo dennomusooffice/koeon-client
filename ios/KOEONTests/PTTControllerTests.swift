@@ -588,7 +588,8 @@ final class BufferedAudioTimelineTests: XCTestCase {
             sampleRate: batv1SampleRate,
             channels: batv1Channels
         )
-        XCTAssertTrue(await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "generation-a"))
+        let captureConfirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "generation-a")
+        XCTAssertTrue(captureConfirmed)
         transmitter.discard(generationId: "generation-a")
         authority.stop()
         XCTAssertEqual(authority.stopCount, 1, "Repeated stop is safe and does not invoke SDK twice")
