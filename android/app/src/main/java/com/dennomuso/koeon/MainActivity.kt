@@ -123,6 +123,13 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        if (isFinishing) {
+            com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.markCleanExit()
+        }
+        super.onDestroy()
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         val manager = (application as KoeonApplication).intercomSession
         if (manager.onHardwareVolumeKey(keyCode, event)) return true

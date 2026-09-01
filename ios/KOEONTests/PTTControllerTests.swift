@@ -579,7 +579,7 @@ final class BufferedAudioTimelineTests: XCTestCase {
             deviceId: "device-a",
             recordingAuthority: authority
         )
-        transmitter.prepare(generationId: "generation-a")
+        await transmitter.prepare(generationId: "generation-a")
         XCTAssertEqual(authority.startCount, 0)
         try await transmitter.audioSessionDidActivate()
         XCTAssertEqual(authority.startCount, 1)
@@ -590,9 +590,96 @@ final class BufferedAudioTimelineTests: XCTestCase {
         )
         let captureConfirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "generation-a")
         XCTAssertTrue(captureConfirmed)
-        transmitter.discard(generationId: "generation-a")
-        authority.stop()
+        await transmitter.discard(generationId: "generation-a")
+        try authority.stop()
         XCTAssertEqual(authority.stopCount, 1, "Repeated stop is safe and does not invoke SDK twice")
+    }
+
+    @MainActor
+    func testTxLifecycleStressRunsOneHundredGenerationsWithoutDoubleStop() async throws {
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let transmitter = BufferedAudioTransmitter(
+            api: Batv1APIStub(), capture: capture, channelId: "channel-a",
+            sessionId: "session-a", deviceId: "device-a", recordingAuthority: authority
+        )
+        let frame = Array(repeating: Int16(5), count: batv1BytesPerFrame / 2)
+
+        for index in 0..<100 {
+            let generation = "tx-stress-\(index)"
+            await transmitter.prepare(generationId: generation)
+            try await transmitter.audioSessionDidActivate()
+            capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels)
+            let captureConfirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: generation)
+            XCTAssertTrue(captureConfirmed)
+            try await transmitter.authorize(leaseId: "lease-a", generationId: generation)
+            capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels)
+            try await transmitter.finish(generationId: generation)
+        }
+
+        XCTAssertEqual(authority.startCount, 100)
+        XCTAssertEqual(authority.stopCount, 100)
+        XCTAssertFalse(authority.isRecording)
+    }
+
+    @MainActor
+    func testRxLifecycleStressSerializesOneHundredGenerationsOnPersistentPlayer() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion,
+                generationId: request.generationId,
+                codec: "pcm16le",
+                sampleRate: batv1SampleRate,
+                channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds,
+                firstAvailableSequence: 0,
+                latestSequence: 0,
+                nextSequence: 1,
+                finalSequence: 0,
+                bufferHeadExpired: false,
+                timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())]
+            )
+        }
+        let player = Batv1PcmPlayerMock()
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "session-a", player: player)
+        receiver.audioSessionDidActivate()
+
+        for index in 0..<100 {
+            receiver.start(generationId: "rx-stress-\(index)", senderSessionId: "speaker")
+            await receiver.awaitCurrentGenerationTermination()
+        }
+        await receiver.shutdownAndAwait()
+
+        XCTAssertEqual(player.beginCount, 100)
+        XCTAssertEqual(player.endCount, 100)
+        XCTAssertEqual(player.enqueueCount, 100)
+        XCTAssertEqual(player.shutdownCount, 1)
+    }
+
+    @MainActor
+    func testOldGenerationCompletionIsFencedAfterReplacement() {
+        let fence = Batv1GenerationCompletionFence()
+        fence.begin(1)
+        XCTAssertTrue(fence.accepts(1))
+        fence.begin(2)
+        XCTAssertFalse(fence.accepts(1))
+        XCTAssertTrue(fence.accepts(2))
+        fence.end(1)
+        XCTAssertTrue(fence.accepts(2))
+        fence.end(2)
+        XCTAssertNil(fence.activeToken)
+    }
+
+    func testPersistentBreadcrumbCapacityIsBoundedToSixtyFour() {
+        let store = Batv1CrashBreadcrumbStore.shared
+        store.startRun(build: "test")
+        for index in 0..<100 {
+            store.record(role: "TX", stage: "STRESS_\(index)", generationId: "generation-\(index)")
+        }
+        XCTAssertEqual(store.snapshot().count, 64)
+        XCTAssertEqual(store.snapshot().last?.stage, "STRESS_99")
     }
 }
 
@@ -681,7 +768,7 @@ private final class BufferedAudioMock: BufferedAudioTransmitting {
     let events: EventLog
     var diagnostics = BufferedAudioTxDiagnostics()
     init(events: EventLog) { self.events = events }
-    func prepare(generationId: String) {
+    func prepare(generationId: String) async {
         diagnostics.generationId = generationId
         Task { await events.append("buffer:prepare") }
     }
@@ -698,7 +785,7 @@ private final class BufferedAudioMock: BufferedAudioTransmitting {
         await events.append("buffer:authorize")
     }
     func finish(generationId: String) async throws { await events.append("buffer:finish") }
-    func discard(generationId: String) { Task { await events.append("buffer:discard") } }
+    func discard(generationId: String) async { await events.append("buffer:discard") }
 }
 
 private final class SnapshotRecorder: @unchecked Sendable {
@@ -719,14 +806,42 @@ private final class RecordingAuthorityMock: Batv1LocalRecordingAuthority {
         isRecording = true
         startCount += 1
     }
-    func stop() {
+    func stop() throws {
         guard isRecording else { return }
         isRecording = false
         stopCount += 1
     }
 }
 
+@MainActor
+private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
+    private(set) var pendingFrames = 0
+    private(set) var completedFrames = 0
+    private(set) var beginCount = 0
+    private(set) var endCount = 0
+    private(set) var enqueueCount = 0
+    private(set) var shutdownCount = 0
+    private var activeToken: Int?
+
+    func beginGeneration(token: Int) throws { activeToken = token; beginCount += 1 }
+    func setRate(_ rate: Float) {}
+    func enqueue(_ data: Data, generationToken: Int) throws {
+        guard activeToken == generationToken else { throw BufferedAudioError.generationMismatch }
+        enqueueCount += 1
+        completedFrames += 1
+    }
+    func drain(generationToken: Int) async {}
+    func endGeneration(token: Int) {
+        guard activeToken == token else { return }
+        activeToken = nil
+        endCount += 1
+    }
+    func resumeIfNeeded() throws {}
+    func shutdown() { shutdownCount += 1 }
+}
+
 private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
+    var subscribeHandler: ((Batv1SubscribeRequest) throws -> Batv1SubscribeResponse)?
     func fixture() async throws -> FixtureResponse { throw MockError.expected }
     func enroll(_ request: EnrollmentRequest) async throws -> EnrollmentResponse { throw MockError.expected }
     func me() async throws -> MeResponse { throw MockError.expected }
@@ -742,7 +857,10 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
         Batv1PublishResponse(outcome: "accepted", acceptedChunks: request.chunks.count, latestSequence: request.chunks.last?.sequence ?? -1)
     }
-    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse { throw MockError.expected }
+    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
+        guard let subscribeHandler else { throw MockError.expected }
+        return try subscribeHandler(request)
+    }
     func logout() async throws { throw MockError.expected }
 }
 
