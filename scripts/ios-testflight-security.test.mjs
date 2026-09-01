@@ -35,10 +35,10 @@ test("binds every secret reference to the single protected Environment job", () 
     "${{ secrets.KOEON_API_BASE_URL }}",
     "${{ secrets.IOS_APP }}",
   ]));
-  const privilegedJob = workflow.match(/^  build-sign-validate:\n([\s\S]*)$/mu)?.[1] ?? "";
+  const privilegedJob = workflow.match(/^  build-sign-validate:\r?\n([\s\S]*)$/mu)?.[1] ?? "";
   assert.match(privilegedJob, /environment:\s*\n\s+name:\s*testflight-internal/u);
   assert.equal((privilegedJob.match(/\$\{\{\s*secrets\./gu) ?? []).length, secretReferences.length);
-  const unprivilegedJob = workflow.match(/^  trust-gate:\n([\s\S]*?)^  build-sign-validate:/mu)?.[1] ?? "";
+  const unprivilegedJob = workflow.match(/^  trust-gate:\r?\n([\s\S]*?)^  build-sign-validate:/mu)?.[1] ?? "";
   assert.doesNotMatch(unprivilegedJob, /\$\{\{\s*secrets\./u);
 });
 

@@ -927,7 +927,7 @@ final class IntercomSessionController: ObservableObject {
                 },
                 onDrainCompleted: { [weak self, weak remoteReceive] generation, sessionId, leaseId, reason in
                     self?.bufferedReceiver?.noteEndCue()
-                    remoteReceive?.completeDrain(
+                    return remoteReceive?.completeDrain(
                         generation: generation, sessionId: sessionId, leaseId: leaseId, reason: reason
                     ) ?? false
                 },
@@ -1600,7 +1600,7 @@ final class IntercomSessionController: ObservableObject {
             },
             onDrainCompleted: { [weak self, weak coordinator] generation, sessionId, leaseId, reason in
                 self?.bufferedReceiver?.noteEndCue()
-                coordinator?.completeDrain(
+                return coordinator?.completeDrain(
                     generation: generation, sessionId: sessionId, leaseId: leaseId, reason: reason
                 ) ?? false
             },

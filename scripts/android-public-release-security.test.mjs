@@ -4,8 +4,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const workflow = await readFile(new URL("../.github/workflows/android-public-release.yml", import.meta.url), "utf8");
-const gradle = await readFile(new URL("../android/app/build.gradle.kts", import.meta.url), "utf8");
+const workflow = (await readFile(new URL("../.github/workflows/android-public-release.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+const gradle = (await readFile(new URL("../android/app/build.gradle.kts", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 const inviteHandoff = await readFile(new URL("../android/app/src/main/java/com/dennomuso/koeon/core/enrollment/InviteHandoff.kt", import.meta.url), "utf8");
 const releaseScript = await readFile(new URL("./android-public-release.sh", import.meta.url), "utf8");
 const originScript = new URL("./android-placeholder-origin.py", import.meta.url);
@@ -58,8 +58,8 @@ test("uses exact protected main attestation and disposable signing material", ()
 test("locks official identity, release signing seam, version, and fail-closed debug endpoint", () => {
   assert.match(gradle, /namespace = "com\.dennomuso\.koeon"/u);
   assert.match(gradle, /applicationId = "com\.dennomuso\.koeon"/u);
-  assert.match(gradle, /versionName = "1\.0\.6"/u);
-  assert.match(gradle, /versionCode = 7/u);
+  assert.match(gradle, /versionName = "1\.0\.7"/u);
+  assert.match(gradle, /versionCode = 8/u);
   assert.match(gradle, /create\("release"\)/u);
   assert.match(gradle, /signingConfig = signingConfigs\.getByName\("release"\)/u);
   assert.match(gradle, /https:\/\/example\.invalid/u);
