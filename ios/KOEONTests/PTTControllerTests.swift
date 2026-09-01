@@ -949,7 +949,7 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     func unregisterPttToken(sessionId: String) async throws { throw MockError.expected }
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
         publishedRequests.append(request)
-        Batv1PublishResponse(outcome: "accepted", acceptedChunks: request.chunks.count, latestSequence: request.chunks.last?.sequence ?? -1)
+        return Batv1PublishResponse(outcome: "accepted", acceptedChunks: request.chunks.count, latestSequence: request.chunks.last?.sequence ?? -1)
     }
     func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
         guard let subscribeHandler else { throw MockError.expected }

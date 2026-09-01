@@ -5,8 +5,10 @@ import com.dennomuso.koeon.core.api.KoeonApiException
 import com.dennomuso.koeon.core.ptt.TX_RELEASE_HANG_MS
 import com.dennomuso.koeon.core.model.*
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -132,11 +134,14 @@ class BufferedAudioLifecycleStressTest {
 
         repeat(100) { index ->
             val generation = "publish-error-$index"
-            launch {
-                delay(1)
-                capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
+            val captureConfirmation = async(start = CoroutineStart.UNDISPATCHED) {
+                transmitter.armAndConfirmCapture(generation)
             }
-            assertTrue(transmitter.armAndConfirmCapture(generation))
+            withTimeout(2_000) {
+                while (transmitter.diagnostics().generationId != generation) delay(1)
+            }
+            capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
+            assertTrue("capture must be confirmed for generation $index", captureConfirmation.await())
             assertTrue(transmitter.markCueBoundary(generation))
             assertTrue(transmitter.authorize("lease", generation))
             capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
@@ -161,11 +166,14 @@ class BufferedAudioLifecycleStressTest {
 
         repeat(100) { index ->
             val generation = "final-error-$index"
-            launch {
-                delay(1)
-                capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
+            val captureConfirmation = async(start = CoroutineStart.UNDISPATCHED) {
+                transmitter.armAndConfirmCapture(generation)
             }
-            assertTrue(transmitter.armAndConfirmCapture(generation))
+            withTimeout(2_000) {
+                while (transmitter.diagnostics().generationId != generation) delay(1)
+            }
+            capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
+            assertTrue("capture must be confirmed for generation $index", captureConfirmation.await())
             assertTrue(transmitter.markCueBoundary(generation))
             assertTrue(transmitter.authorize("lease", generation))
             capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
