@@ -58,8 +58,8 @@ test("uses exact protected main attestation and disposable signing material", ()
 test("locks official identity, release signing seam, version, and fail-closed debug endpoint", () => {
   assert.match(gradle, /namespace = "com\.dennomuso\.koeon"/u);
   assert.match(gradle, /applicationId = "com\.dennomuso\.koeon"/u);
-  assert.match(gradle, /versionName = "1\.0\.7"/u);
-  assert.match(gradle, /versionCode = 8/u);
+  assert.match(gradle, /versionName = "1\.0\.8"/u);
+  assert.match(gradle, /versionCode = 9/u);
   assert.match(gradle, /create\("release"\)/u);
   assert.match(gradle, /signingConfig = signingConfigs\.getByName\("release"\)/u);
   assert.match(gradle, /https:\/\/example\.invalid/u);
