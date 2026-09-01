@@ -1033,11 +1033,15 @@ class IntercomSessionManager(
             scope = scope,
             api = api,
             sessionId = join.sessionId,
+            onActivity = { active -> room.handleBufferedAudioActivity(active) },
+            onTimelineDrained = { room.completeBufferedAudioTimelineDrain() },
             onFailure = { code ->
                 scope.launch { _state.update { it.copy(error = "Buffered RX failed safely: $code") } }
             },
         )
         room.onBufferedAudioStart = { generationId -> batv1Receiver?.start(generationId) }
+        room.onBufferedAudioEnd = { batv1Receiver?.noteControlEnd() }
+        room.onBufferedAudioEndCue = { batv1Receiver?.noteEndCue() }
         batv1Transmitter = if (join.canPublish && !deviceId.isNullOrBlank()) {
             com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter(
                 scope = scope,

@@ -37,6 +37,7 @@ import io.livekit.android.room.track.LocalAudioTrackOptions
 import io.livekit.android.room.track.DataPublishReliability
 import io.livekit.android.room.participant.AudioTrackPublishDefaults
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -44,6 +45,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.jsonObject
@@ -287,9 +289,23 @@ class LiveKitRoomController(
     private var rxReadyPublishLeaseId: String? = null
     private var rxReadyStartLeaseId: String? = null
     var onBufferedAudioStart: (String) -> Unit = {}
+    var onBufferedAudioEnd: () -> Unit = {}
+    var onBufferedAudioEndCue: () -> Unit = {}
 
     private val _snapshot = MutableStateFlow(LiveKitSnapshot())
     val snapshot: StateFlow<LiveKitSnapshot> = _snapshot.asStateFlow()
+
+    /** BATv1 owns media playout for its generation; Control END only begins RX drain. */
+    fun handleBufferedAudioActivity(active: Boolean) {
+        scope.launch { rxAudio?.handleRemoteAudioActivity(senderSessionId = null, active = active) }
+    }
+
+    suspend fun completeBufferedAudioTimelineDrain() {
+        withContext(Dispatchers.Main.immediate) {
+            rxAudio?.handleRemoteAudioActivity(senderSessionId = null, active = false)
+            rxAudio?.completeBufferedTimelineDrain()
+        }
+    }
 
     suspend fun connect(
         url: String,
@@ -312,6 +328,8 @@ class LiveKitRoomController(
             scope = scope,
             channelId = channelId,
             cuePlayer = TonePttCuePlayer(appContext, CueRole.RX),
+            onValidatedEnd = { onBufferedAudioEnd() },
+            onEndCueCompleted = { onBufferedAudioEndCue() },
             onSnapshot = { rx -> _snapshot.value = _snapshot.value.copy(rx = rx) },
         )
         val nextRoom = LiveKit.create(

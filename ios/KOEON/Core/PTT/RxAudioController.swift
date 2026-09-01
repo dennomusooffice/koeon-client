@@ -761,6 +761,15 @@ final class RxAudioController {
         }
     }
 
+    /// BATv1 finalSequence is media truth; PCM playout has already drained.
+    func completeBufferedTimelineDrain() async {
+        guard snapshot.state != .idle,
+              snapshot.sessionId != nil,
+              snapshot.leaseId != nil else { return }
+        if snapshot.state != .draining { beginDrain(reason: "batv1_final_sequence") }
+        await completeDrain(reason: "batv1_final_sequence")
+    }
+
     func handleRemotePcm(at timestamp: Date) {
         guard snapshot.state != .idle, snapshot.sessionId != nil else { return }
         snapshot.rxLastAudioAt = timestamp

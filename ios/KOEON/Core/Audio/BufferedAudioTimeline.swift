@@ -3,6 +3,7 @@ import Foundation
 import LiveKit
 
 private let batv1BreadcrumbMaximumEvents = 64
+let batv1ReleaseHangoverMilliseconds = 180
 
 struct Batv1CrashBreadcrumb: Codable, Equatable, Sendable {
     let timestamp: Date
@@ -121,6 +122,14 @@ struct BufferedAudioTxDiagnostics: Equatable, Sendable {
     var canonicalLastSequence = -1
     var canonicalDroppedFrames = 0
     var lastErrorCode: String?
+    var pttUpAt: Date?
+    var hangoverStartedAt: Date?
+    var hangoverCompletedAt: Date?
+    var hangoverMilliseconds: Int?
+    var framesAcceptedAfterPttUp = 0
+    var lastAudioSequence = -1
+    var finalMarkerSequence: Int?
+    var finalMarkerAt: Date?
 }
 
 struct BufferedAudioRxDiagnostics: Equatable, Sendable {
@@ -135,6 +144,12 @@ struct BufferedAudioRxDiagnostics: Equatable, Sendable {
     var bufferHeadExpired = false
     var timelineLost = false
     var finalSequence: Int?
+    var controlEndReceivedAt: Date?
+    var finalSequenceObservedAt: Date?
+    var cursorAtFinalObservation: Int?
+    var finalFrameWrittenAt: Date?
+    var playerDrainCompletedAt: Date?
+    var endCueAt: Date?
 }
 
 /// Realtime capture only copies post-processed PCM into bounded RAM.
@@ -258,8 +273,9 @@ final class LiveKitBatv1LocalRecordingAuthority: Batv1LocalRecordingAuthority {
 private final class Batv1PendingFrames: @unchecked Sendable {
     private let lock = NSLock()
     private var frames: [Data] = []
+    private var appendedCount = 0
 
-    func append(_ frame: Data) { lock.withLock { frames.append(frame) } }
+    func append(_ frame: Data) { lock.withLock { frames.append(frame); appendedCount += 1 } }
     func take(maximum: Int) -> [Data] {
         lock.withLock {
             let count = min(maximum, frames.count)
@@ -270,7 +286,8 @@ private final class Batv1PendingFrames: @unchecked Sendable {
         }
     }
     var isEmpty: Bool { lock.withLock { frames.isEmpty } }
-    func removeAll() { lock.withLock { frames.removeAll(keepingCapacity: false) } }
+    var totalAppended: Int { lock.withLock { appendedCount } }
+    func removeAll() { lock.withLock { frames.removeAll(keepingCapacity: false); appendedCount = 0 } }
 }
 
 @MainActor
@@ -279,6 +296,7 @@ protocol BufferedAudioTransmitting: AnyObject {
     func audioSessionDidActivate() async throws
     func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool
     func authorize(leaseId: String, generationId: String) async throws
+    func performReleaseHangover(generationId: String) async -> Bool
     func finish(generationId: String) async throws
     func discard(generationId: String) async
     var diagnostics: BufferedAudioTxDiagnostics { get }
@@ -302,6 +320,7 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
     private var sendError: Error?
     private var lifecycleState: Batv1LifecycleState = .idle
     private var lifecycleToken = 0
+    private var releaseHangoverStartAppendCount = 0
     private(set) var diagnostics = BufferedAudioTxDiagnostics()
 
     init(
@@ -386,6 +405,29 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
         sendTask = Task { @MainActor [weak self] in await self?.sendLoop(token: token, generationId: generationId) }
     }
 
+    func performReleaseHangover(generationId: String) async -> Bool {
+        guard self.generationId == generationId, authorized, lifecycleState == .active else { return false }
+        let token = lifecycleToken
+        let startedAt = Date()
+        releaseHangoverStartAppendCount = pending.totalAppended
+        diagnostics.pttUpAt = startedAt
+        diagnostics.hangoverStartedAt = startedAt
+        diagnostics.hangoverCompletedAt = nil
+        diagnostics.hangoverMilliseconds = nil
+        diagnostics.framesAcceptedAfterPttUp = 0
+        do { try await Task.sleep(for: .milliseconds(batv1ReleaseHangoverMilliseconds)) }
+        catch { return false }
+        guard token == lifecycleToken,
+              self.generationId == generationId,
+              authorized,
+              lifecycleState == .active else { return false }
+        let completedAt = Date()
+        diagnostics.hangoverCompletedAt = completedAt
+        diagnostics.hangoverMilliseconds = max(0, Int(completedAt.timeIntervalSince(startedAt) * 1_000))
+        diagnostics.framesAcceptedAfterPttUp = max(0, pending.totalAppended - releaseHangoverStartAppendCount)
+        return true
+    }
+
     func finish(generationId: String) async throws {
         guard self.generationId == generationId, authorized, lifecycleState == .active else {
             throw BufferedAudioError.generationMismatch
@@ -416,6 +458,8 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
                 firstSequence: nextSequence,
                 finalSequence: finalSequence
             ))
+            diagnostics.finalMarkerSequence = finalSequence
+            diagnostics.finalMarkerAt = Date()
             Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_FINAL_MARKER_END", generationId: generationId)
             await cleanup(generationId: generationId, state: .stopped)
         } catch {
@@ -476,6 +520,7 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
                 diagnostics.canonicalFramesSent = nextSequence
                 diagnostics.canonicalBytesSent = nextSequence * batv1BytesPerFrame
                 diagnostics.canonicalLastSequence = nextSequence - 1
+                diagnostics.lastAudioSequence = nextSequence - 1
                 diagnostics.canonicalDroppedFrames = capture.droppedFrames
                 Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_BATCH_END", generationId: generationId)
             } catch {
@@ -670,6 +715,7 @@ final class BufferedAudioReceiver {
     private let sessionId: String
     private let onActivity: (String?, Bool) -> Void
     private let onPcm: (Date) -> Void
+    private let onTimelineDrained: @MainActor () async -> Void
     private let onFailure: (String) -> Void
     private let player: any IOSBatv1PcmPlaying
     private var task: Task<Void, Never>?
@@ -682,6 +728,7 @@ final class BufferedAudioReceiver {
         sessionId: String,
         onActivity: @escaping (String?, Bool) -> Void = { _, _ in },
         onPcm: @escaping (Date) -> Void = { _ in },
+        onTimelineDrained: @escaping @MainActor () async -> Void = {},
         onFailure: @escaping (String) -> Void = { _ in },
         player: (any IOSBatv1PcmPlaying)? = nil
     ) {
@@ -689,6 +736,7 @@ final class BufferedAudioReceiver {
         self.sessionId = sessionId
         self.onActivity = onActivity
         self.onPcm = onPcm
+        self.onTimelineDrained = onTimelineDrained
         self.onFailure = onFailure
         self.player = player ?? IOSBatv1PcmPlayer()
     }
@@ -715,6 +763,16 @@ final class BufferedAudioReceiver {
         }
     }
     func audioSessionDidDeactivate() { audioSessionActive = false }
+
+    func noteControlEnd(at: Date = Date()) {
+        guard diagnostics.generationId != nil else { return }
+        diagnostics.controlEndReceivedAt = at
+    }
+
+    func noteEndCue(at: Date = Date()) {
+        guard diagnostics.generationId != nil else { return }
+        diagnostics.endCueAt = at
+    }
 
     func stop() {
         generationToken += 1
@@ -779,6 +837,11 @@ final class BufferedAudioReceiver {
                     diagnostics.bufferHeadExpired = true
                     throw BufferedAudioError.timelineHeadExpired
                 }
+                if let final = response.finalSequence, diagnostics.finalSequenceObservedAt == nil {
+                    diagnostics.finalSequence = final
+                    diagnostics.finalSequenceObservedAt = Date()
+                    diagnostics.cursorAtFinalObservation = cursor
+                }
                 for chunk in response.chunks {
                     guard chunk.sequence == cursor else {
                         if chunk.sequence < cursor { diagnostics.duplicateSequenceCount += 1 }
@@ -794,6 +857,7 @@ final class BufferedAudioReceiver {
                     let rate = batv1PlaybackRate(backlogMilliseconds: backlog)
                     player.setRate(rate)
                     try player.enqueue(data, generationToken: generationToken)
+                    if response.finalSequence == chunk.sequence { diagnostics.finalFrameWrittenAt = Date() }
                     onPcm(Date())
                     lastSequence = chunk.sequence
                     cursor = chunk.sequence + 1
@@ -809,7 +873,11 @@ final class BufferedAudioReceiver {
                     diagnostics.playbackCursor = cursor
                     diagnostics.backlogMilliseconds = 0
                     diagnostics.playbackRate = 1
+                    diagnostics.playerDrainCompletedAt = Date()
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_DRAIN_END", generationId: generationId)
+                    onActivity(senderSessionId, false)
+                    await onTimelineDrained()
+                    diagnostics.endCueAt = Date()
                     break
                 }
                 if response.chunks.isEmpty || player.pendingFrames > 75 {
@@ -824,6 +892,6 @@ final class BufferedAudioReceiver {
         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_STOP_BEGIN", generationId: generationId)
         player.endGeneration(token: generationToken)
         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_STOP_END", generationId: generationId)
-        onActivity(senderSessionId, false)
+        if diagnostics.playerDrainCompletedAt == nil { onActivity(senderSessionId, false) }
     }
 }
