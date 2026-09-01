@@ -171,6 +171,10 @@ struct BufferedAudioRxDiagnostics: Equatable, Sendable {
 /// It never performs network I/O and never writes audio to disk.
 final class Batv1CaptureBuffer: @unchecked Sendable {
     private let lock = NSLock()
+    private let normalizationQueue = DispatchQueue(
+        label: "com.dennomuso.koeon.batv1.capture-normalization",
+        qos: .userInteractive
+    )
     private var frames: [Data] = []
     private var partial = Data()
     private var generationId: String?
@@ -212,32 +216,56 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
 
     func append(samples: [Int16], sampleRate: Int, channels: Int) {
         guard !samples.isEmpty else { return }
-        let normalized: [Int16]
-        if sampleRate == batv1SampleRate, channels == batv1Channels {
-            normalized = samples
-        } else if channels == 1, sampleRate > 0,
-                  let converted = try? Batv1CaptureNormalizer.normalizeMono(
-                    samples: samples, sourceSampleRate: sampleRate
-                  ) {
-            normalized = converted
-        } else {
-            lock.withLock {
-                callbackCount += 1
-                callbackSampleRate = sampleRate
-                callbackChannels = channels
-                callbackFrameCount = samples.count
-                unsupportedFormatFrames += samples.count
-            }
-            return
-        }
-        let bytes = normalized.withUnsafeBytes { Data($0) }
-        lock.withLock {
-            guard generationId != nil else { return }
+        let expectedGeneration = lock.withLock { () -> String? in
+            guard let generationId else { return nil }
             callbackCount += 1
             callbackSampleRate = sampleRate
             callbackChannels = channels
             callbackFrameCount = samples.count
-            if sampleRate != batv1SampleRate { normalizedFrames += normalized.count }
+            return generationId
+        }
+        guard let expectedGeneration else { return }
+        if sampleRate == batv1SampleRate, channels == batv1Channels {
+            appendNormalized(samples, expectedGeneration: expectedGeneration, wasNormalized: false)
+            return
+        }
+        guard channels == 1, sampleRate > 0 else {
+            lock.withLock {
+                unsupportedFormatFrames += samples.count
+            }
+            return
+        }
+
+        // AVAudioConverter can allocate and block. Never run it on LiveKit's
+        // realtime capture callback; a serial queue preserves callback order.
+        normalizationQueue.async { [weak self] in
+            guard let self else { return }
+            guard let normalized = try? Batv1CaptureNormalizer.normalizeMono(
+                samples: samples, sourceSampleRate: sampleRate
+            ) else {
+                self.lock.withLock {
+                    guard self.generationId == expectedGeneration else { return }
+                    self.unsupportedFormatFrames += samples.count
+                }
+                return
+            }
+            self.appendNormalized(
+                normalized,
+                expectedGeneration: expectedGeneration,
+                wasNormalized: true
+            )
+        }
+    }
+
+    private func appendNormalized(
+        _ normalized: [Int16],
+        expectedGeneration: String,
+        wasNormalized: Bool
+    ) {
+        let bytes = normalized.withUnsafeBytes { Data($0) }
+        lock.withLock {
+            guard generationId == expectedGeneration else { return }
+            if wasNormalized { normalizedFrames += normalized.count }
             if firstPcmAt == nil { firstPcmAt = Date() }
             partial.append(bytes)
             while partial.count >= batv1BytesPerFrame {

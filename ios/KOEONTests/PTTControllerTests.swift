@@ -924,6 +924,25 @@ final class BufferedAudioTimelineTests: XCTestCase {
         }
     }
 
+    func testC5Non48kCaptureIsNormalizedAsynchronouslyAndGenerationFenced() async {
+        let capture = Batv1CaptureBuffer()
+        capture.arm(generationId: "hfp-16k")
+        capture.append(
+            samples: Array(repeating: Int16(1_024), count: 16_000 * 20 / 1_000),
+            sampleRate: 16_000,
+            channels: 1
+        )
+        let captureConfirmed = await capture.awaitCapture(timeoutMilliseconds: 750)
+        XCTAssertTrue(captureConfirmed)
+        XCTAssertEqual(capture.frameCount, 1)
+        XCTAssertGreaterThan(capture.callbackDiagnostics.normalized, 0)
+
+        capture.arm(generationId: "next-generation")
+        capture.discard()
+        try? await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(capture.frameCount, 0, "Queued conversion from an old generation must be fenced")
+    }
+
     func testC7ZeroCallbackCannotBeMisreportedAsCaptureConfirmed() async {
         let capture = Batv1CaptureBuffer()
         capture.arm(generationId: "zero-callback")
