@@ -524,6 +524,27 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertTrue(values.contains("release"))
     }
 
+    func testA10HundredBufferedReleaseGenerationsCompleteWithoutLeaseLeakOrError() async {
+        for generation in 0 ..< 100 {
+            let events = EventLog()
+            let controller = PTTController(
+                role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
+                cuePlayer: CueMock(events: events), control: ControlMock(events: events),
+                bufferedAudio: BufferedAudioMock(events: events), clock: ControlledClock(), onUpdate: { _ in }
+            )
+            let prepared = await controller.preArmForAppleActivation()
+            XCTAssertTrue(prepared, "generation \(generation)")
+            await controller.appleAudioSessionDidActivate()
+            await controller.activatePrearmedTransmission()
+            await controller.pttUp(playEndCue: false)
+            let snapshot = await controller.currentSnapshot()
+            XCTAssertEqual(snapshot.state, .idle, "generation \(generation)")
+            XCTAssertNil(snapshot.leaseId, "generation \(generation)")
+            XCTAssertEqual(snapshot.txReleaseResult, "PASS", "generation \(generation)")
+            XCTAssertTrue(snapshot.txTerminalCleanupComplete, "generation \(generation)")
+        }
+    }
+
     private func makeController(
         role: KOEONRole = .staff,
         floor: FloorMock,
