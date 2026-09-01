@@ -242,6 +242,7 @@ enum PTTState: String, Sendable {
     case idle = "IDLE"
     case requestingFloor = "REQUESTING_FLOOR"
     case transmitting = "TRANSMITTING"
+    case releasing = "RELEASING"
     case busy = "BUSY"
     case rxOnly = "RX_ONLY"
     case error = "ERROR"
@@ -443,6 +444,15 @@ struct RemoteReceiveActivationSnapshot: Equatable, Sendable {
     var rxFirstPcmGeneration = 0
     var rxStaleMediaDropped = 0
     var rxLateCompletionIgnored = 0
+    var wakeId: String?
+    var participantPresentBeforeWake: Bool?
+    var participantRebindStartedAt: Date?
+    var participantRebindAttemptCount = 0
+    var participantRebindResolvedAt: Date?
+    var participantRebindResult = "NOT_STARTED"
+    var rxPathViableAt: Date?
+    var noPcmRecoveryStartedAt: Date?
+    var noPcmRecoveryResult = "NOT_STARTED"
 }
 
 struct RxConsistencySnapshot: Equatable, Sendable {
@@ -455,10 +465,12 @@ struct RxConsistencySnapshot: Equatable, Sendable {
     var remotePcmObserved = false
     var participantResolved = false
     var trackSubscribed = false
+    var batv1TimelineActive = false
+    var rxPathReconciliationActive = false
     var recoveryAttempts = 0
 
     var remoteBusyBlocksLocalPtt: Bool {
-        remoteMediaSpeakerActive || validatedRemoteRxActive
+        remoteMediaSpeakerActive || validatedRemoteRxActive || rxPathReconciliationActive
     }
 }
 
@@ -543,6 +555,19 @@ struct PTTSnapshot: Sendable {
     var controlPublishReliableStartedAt: Date?
     var controlPublishReliableCompletedAt: Date?
     var controlPublishReliableMilliseconds: Int?
+    var txReleasePhase: String
+    var txReleaseAttemptGeneration: Int?
+    var txReleaseEventSequence: Int
+    var txReleaseEnteredSequence: Int?
+    var txFloorRenewDuringReleaseCount: Int
+    var txFinalMarkerAcceptedSequence: Int?
+    var txControlEndPublishedSequence: Int?
+    var txFloorReleaseRequestedSequence: Int?
+    var txFloorReleaseCompletedSequence: Int?
+    var txReleaseCompletedSequence: Int?
+    var txReleaseResult: String
+    var txTerminalCleanupComplete: Bool
+    var txErrorRecoverable: Bool?
 
     static func initial(role: KOEONRole) -> PTTSnapshot {
         PTTSnapshot(
@@ -596,7 +621,20 @@ struct PTTSnapshot: Sendable {
             controlPublishFastMilliseconds: nil,
             controlPublishReliableStartedAt: nil,
             controlPublishReliableCompletedAt: nil,
-            controlPublishReliableMilliseconds: nil
+            controlPublishReliableMilliseconds: nil,
+            txReleasePhase: "IDLE",
+            txReleaseAttemptGeneration: nil,
+            txReleaseEventSequence: 0,
+            txReleaseEnteredSequence: nil,
+            txFloorRenewDuringReleaseCount: 0,
+            txFinalMarkerAcceptedSequence: nil,
+            txControlEndPublishedSequence: nil,
+            txFloorReleaseRequestedSequence: nil,
+            txFloorReleaseCompletedSequence: nil,
+            txReleaseCompletedSequence: nil,
+            txReleaseResult: "NOT_STARTED",
+            txTerminalCleanupComplete: true,
+            txErrorRecoverable: nil
         )
     }
 

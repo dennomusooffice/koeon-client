@@ -267,6 +267,14 @@ final class AudioSessionController: ObservableObject {
     private var outputVolumeObservation: NSKeyValueObservation?
     private var interruptionState = AudioInterruptionStateMachine()
 
+    var diagnosticCategory: String { audioSession.category.rawValue }
+    var diagnosticMode: String { audioSession.mode.rawValue }
+    var diagnosticSampleRate: Double { audioSession.sampleRate }
+    var diagnosticIoBufferDuration: Double { audioSession.ioBufferDuration }
+    var diagnosticInputPortTypes: [String] { audioSession.currentRoute.inputs.map { $0.portType.rawValue } }
+    var diagnosticOutputPortTypes: [String] { audioSession.currentRoute.outputs.map { $0.portType.rawValue } }
+    var diagnosticAvailableInputPortTypes: [String] { audioSession.availableInputs?.map { $0.portType.rawValue } ?? [] }
+
     init(center: NotificationCenter = .default, audioSession: AVAudioSession = .sharedInstance()) {
         self.center = center
         self.audioSession = audioSession
@@ -297,7 +305,8 @@ final class AudioSessionController: ObservableObject {
 
     func prepareForIntercom(canPublish: Bool) async {
         // LiveKit remains the sole AVAudioSession category/activation owner.
-        AudioManager.shared.isSpeakerOutputPreferred = true
+        updateRoute()
+        applyLiveKitOutputPreference()
         guard canPublish else { return }
         do {
             try await AudioManager.shared.setRecordingAlwaysPreparedMode(true)
@@ -341,6 +350,7 @@ final class AudioSessionController: ObservableObject {
             audioSessionState = "Apple PushToTalk active / LiveKit engine available"
             lastError = nil
             updateRoute()
+            applyLiveKitOutputPreference()
             if interruption.state == .recovering {
                 completeRecovery(generation: interruption.generation)
             }
@@ -495,6 +505,7 @@ final class AudioSessionController: ObservableObject {
         let reason = rawReason.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
         previousRoute = oldRoute
         updateRoute()
+        applyLiveKitOutputPreference()
         routeChangeReason = Self.routeReasonLabel(reason)
         let lostExternal = reason == .oldDeviceUnavailable && (oldRoute == .bluetooth || oldRoute == .wired || oldRoute == .usb)
         onRouteChanged?(AudioRouteChangeSnapshot(
@@ -518,6 +529,15 @@ final class AudioSessionController: ObservableObject {
         case nil: "unavailable"
         @unknown default: "unknown"
         }
+    }
+
+    static func speakerOutputPreferred(for route: AudioRouteKind) -> Bool {
+        // Never force built-in speaker over an actively selected HFP route.
+        route != .bluetooth
+    }
+
+    private func applyLiveKitOutputPreference() {
+        AudioManager.shared.isSpeakerOutputPreferred = Self.speakerOutputPreferred(for: route)
     }
 
     private static func mapRoute(_ description: AVAudioSessionRouteDescription) -> AudioRouteKind {

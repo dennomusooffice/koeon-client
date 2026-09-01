@@ -389,29 +389,32 @@ actor PTTController {
     func pttUp(playEndCue: Bool = true) async {
         guard isPressed else { return }
         snapshot.pttUpAt = clock.now
-        publish()
         isPressed = false
-        generation += 1
 
         if let leaseId = snapshot.leaseId { await control.cancelRxReady(leaseId: leaseId) }
         if snapshot.state == .transmitting, let leaseId = snapshot.leaseId {
             snapshot.lastStopReason = "user_release"
+            enterReleasing()
             if let bufferedGenerationId = activeBufferedGenerationId {
-                guard await bufferedAudio?.performReleaseHangover(generationId: bufferedGenerationId) == true,
-                      snapshot.state == .transmitting,
-                      snapshot.leaseId == leaseId,
-                      activeBufferedGenerationId == bufferedGenerationId else { return }
+                let completed = await bufferedAudio?.performReleaseHangover(generationId: bufferedGenerationId) == true
+                if !completed {
+                    snapshot.lastError = "BATv1 release hangover was interrupted."
+                    snapshot.txErrorRecoverable = true
+                }
             }
             await finishTransmission(leaseId: leaseId, playEndCue: playEndCue, nextState: .idle, error: nil)
         } else if snapshot.state == .requestingFloor, let leaseId = snapshot.leaseId {
+            generation += 1
             await discardActiveBuffered()
             try? await control.publishEnd(leaseId: leaseId)
             try? await floor.release(leaseId: leaseId)
             clearLease(nextState: .idle)
         } else if snapshot.state == .requestingFloor {
+            generation += 1
             await discardActiveBuffered()
             clearLease(nextState: .idle)
         } else if snapshot.state == .busy {
+            generation += 1
             snapshot.state = .idle
             snapshot.ownerName = nil
             publish()
@@ -479,8 +482,12 @@ actor PTTController {
 
     private func renew(leaseId: String, operation: Int) async {
         guard operation == generation,
-              isPressed,
-              (snapshot.state == .requestingFloor || snapshot.state == .transmitting) else { return }
+              snapshot.leaseId == leaseId,
+              ((isPressed && (snapshot.state == .requestingFloor || snapshot.state == .transmitting)) ||
+               snapshot.state == .releasing) else { return }
+        if snapshot.state == .releasing {
+            snapshot.txFloorRenewDuringReleaseCount += 1
+        }
         snapshot.floorRenewAttemptCount += 1
         snapshot.floorLastRenewStartedAt = clock.now
         snapshot.floorLastRenewResult = "in_progress"
@@ -505,14 +512,20 @@ actor PTTController {
             snapshot.floorLastRenewResult = "failed"
             snapshot.floorLastRenewError = Self.safeMessage(error)
             snapshot.lastStopReason = "floor_renew_failed"
-            isPressed = false
-            generation += 1
-            await finishTransmission(
-                leaseId: leaseId,
-                playEndCue: false,
-                nextState: .error,
-                error: "Floor renew failed: \(Self.safeMessage(error))"
-            )
+            if snapshot.state == .releasing {
+                snapshot.lastError = "Floor renew failed during release: \(Self.safeMessage(error))"
+                snapshot.txErrorRecoverable = true
+                publish()
+            } else {
+                isPressed = false
+                generation += 1
+                await finishTransmission(
+                    leaseId: leaseId,
+                    playEndCue: false,
+                    nextState: .error,
+                    error: "Floor renew failed: \(Self.safeMessage(error))"
+                )
+            }
         }
     }
 
@@ -536,13 +549,19 @@ actor PTTController {
         nextState: PTTState,
         error: String?
     ) async {
-        cancelTimers()
+        cancelMaxTxTimer()
+        if snapshot.state != .releasing { enterReleasing() }
         var microphoneIsOff = false
         let wasBuffered = activeBufferedGenerationId != nil
+        var terminalError = error
         do {
             if let bufferedGenerationId = activeBufferedGenerationId {
+                snapshot.txReleasePhase = "FINALIZING_BUFFERED_AUDIO"
+                publish()
                 try await bufferedAudio?.finish(generationId: bufferedGenerationId)
                 activeBufferedGenerationId = nil
+                snapshot.txFinalMarkerAcceptedSequence = nextReleaseSequence()
+                snapshot.txReleasePhase = "FINAL_MARKER_ACCEPTED"
             } else {
                 try await microphone.setMicrophoneEnabled(false)
             }
@@ -554,22 +573,22 @@ actor PTTController {
                 microphoneIsOff = true
             }
             snapshot.lastError = "TX OFF failed: \(Self.safeMessage(error))"
+            terminalError = snapshot.lastError
+            snapshot.txErrorRecoverable = microphoneIsOff
         }
 
-        // Never risk routing the local end cue to a still-published microphone.
-        snapshot.floorReleaseRequestedAt = clock.now
-        publish()
-        let releaseTask = Task { () -> String? in
-            do { try await floor.release(leaseId: leaseId); return nil }
-            catch { return Self.safeMessage(error) }
-        }
+        // Terminal authority order is strict: final marker, control END, then Floor release.
         if microphoneIsOff {
+            snapshot.txReleasePhase = "PUBLISHING_CONTROL_END"
             do {
                 try await control.publishEnd(leaseId: leaseId)
                 snapshot.controlEndResult = "Published"
                 snapshot.controlEndPublishedAt = clock.now
+                snapshot.txControlEndPublishedSequence = nextReleaseSequence()
             } catch {
                 snapshot.controlEndResult = "Failed: \(Self.safeMessage(error))"
+                terminalError = "Control END failed: \(Self.safeMessage(error))"
+                snapshot.txErrorRecoverable = true
             }
         }
         if playEndCue, microphoneIsOff, localCueEnabled {
@@ -581,13 +600,51 @@ actor PTTController {
             }
         }
 
-        if let releaseError = await releaseTask.value {
-            snapshot.lastError = "Floor release failed: \(releaseError)"
+        snapshot.txReleasePhase = "RELEASING_FLOOR"
+        snapshot.floorReleaseRequestedAt = clock.now
+        snapshot.txFloorReleaseRequestedSequence = nextReleaseSequence()
+        publish()
+        do {
+            try await floor.release(leaseId: leaseId)
+        } catch {
+            terminalError = "Floor release failed: \(Self.safeMessage(error))"
+            snapshot.lastError = terminalError
+            snapshot.txErrorRecoverable = false
         }
         snapshot.floorReleaseCompletedAt = clock.now
-        clearLease(nextState: nextState)
-        if let error { snapshot.lastError = error }
+        snapshot.txFloorReleaseCompletedSequence = nextReleaseSequence()
+        cancelRenewTimer()
+        generation += 1
+        let safeNextState: PTTState = snapshot.txErrorRecoverable == false ? .error : nextState
+        clearLease(nextState: safeNextState)
+        snapshot.txReleasePhase = "COMPLETE"
+        snapshot.txReleaseCompletedSequence = nextReleaseSequence()
+        snapshot.txTerminalCleanupComplete = true
+        snapshot.txReleaseResult = terminalError == nil ? "PASS" : "RECOVERED_WITH_ERROR"
+        if let terminalError { snapshot.lastError = terminalError }
         publish()
+    }
+
+    private func enterReleasing() {
+        snapshot.state = .releasing
+        snapshot.txReleasePhase = "RELEASING"
+        snapshot.txReleaseAttemptGeneration = generation
+        snapshot.txReleaseEnteredSequence = nextReleaseSequence()
+        snapshot.txFloorRenewDuringReleaseCount = 0
+        snapshot.txFinalMarkerAcceptedSequence = nil
+        snapshot.txControlEndPublishedSequence = nil
+        snapshot.txFloorReleaseRequestedSequence = nil
+        snapshot.txFloorReleaseCompletedSequence = nil
+        snapshot.txReleaseCompletedSequence = nil
+        snapshot.txReleaseResult = "IN_PROGRESS"
+        snapshot.txTerminalCleanupComplete = false
+        snapshot.txErrorRecoverable = nil
+        publish()
+    }
+
+    private func nextReleaseSequence() -> Int {
+        snapshot.txReleaseEventSequence += 1
+        return snapshot.txReleaseEventSequence
     }
 
     private func clearLease(nextState: PTTState) {
@@ -619,6 +676,16 @@ actor PTTController {
         renewTask?.cancel()
         maxTxTask?.cancel()
         renewTask = nil
+        maxTxTask = nil
+    }
+
+    private func cancelRenewTimer() {
+        renewTask?.cancel()
+        renewTask = nil
+    }
+
+    private func cancelMaxTxTimer() {
+        maxTxTask?.cancel()
         maxTxTask = nil
     }
 

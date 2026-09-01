@@ -4,6 +4,14 @@ import XCTest
 
 @MainActor
 final class PTTControllerTests: XCTestCase {
+    func testC1C2C8SpeakerBluetoothSpeakerPolicySurvivesFiftySwitches() {
+        for _ in 0 ..< 50 {
+            XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: .speaker))
+            XCTAssertFalse(AudioSessionController.speakerOutputPreferred(for: .bluetooth))
+            XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: .speaker))
+        }
+    }
+
     func testNormalAppleActivationDoesNotResetActiveRequestGate() {
         XCTAssertFalse(shouldFinishPostCallRecovery(onAppleActivation: .ready))
         XCTAssertTrue(shouldFinishPostCallRecovery(onAppleActivation: .recovering))
@@ -447,6 +455,97 @@ final class PTTControllerTests: XCTestCase {
         await controller.pttUp(playEndCue: false)
     }
 
+    func testA1BufferedFinalMarkerPrecedesControlEndAndFloorRelease() async {
+        let events = EventLog()
+        let buffered = BufferedAudioMock(events: events)
+        let controller = PTTController(
+            role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events), control: ControlMock(events: events), bufferedAudio: buffered,
+            clock: ControlledClock(), onUpdate: { _ in }
+        )
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        await controller.appleAudioSessionDidActivate()
+        await controller.activatePrearmedTransmission()
+        await controller.pttUp(playEndCue: false)
+
+        let values = await events.values()
+        XCTAssertLessThan(values.firstIndex(of: "buffer:finish")!, values.firstIndex(of: "control:end")!)
+        XCTAssertLessThan(values.firstIndex(of: "control:end")!, values.firstIndex(of: "release")!)
+        let snapshot = await controller.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .idle)
+        XCTAssertEqual(snapshot.txReleaseResult, "PASS")
+        XCTAssertTrue(snapshot.txTerminalCleanupComplete)
+        XCTAssertLessThan(snapshot.txFinalMarkerAcceptedSequence!, snapshot.txFloorReleaseRequestedSequence!)
+    }
+
+    func testA2A3RenewContinuesWhileBufferedFinalizationExceedsLeaseTtl() async {
+        let events = EventLog()
+        let buffered = BlockingFinishBufferedAudioMock(events: events)
+        let controller = PTTController(
+            role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events), control: ControlMock(events: events), bufferedAudio: buffered,
+            clock: SystemPTTClock(), onUpdate: { _ in }
+        )
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        await controller.appleAudioSessionDidActivate()
+        await controller.activatePrearmedTransmission()
+        let release = Task { await controller.pttUp(playEndCue: false) }
+        await waitUntil { buffered.finishStarted }
+        try? await Task.sleep(for: .milliseconds(3_200))
+        let releasing = await controller.currentSnapshot()
+        XCTAssertEqual(releasing.state, .releasing)
+        XCTAssertGreaterThanOrEqual(releasing.txFloorRenewDuringReleaseCount, 3)
+        buffered.completeFinish()
+        await release.value
+        let snapshot = await controller.currentSnapshot()
+        XCTAssertGreaterThanOrEqual(snapshot.txFloorRenewDuringReleaseCount, 3)
+        XCTAssertEqual(snapshot.state, .idle)
+    }
+
+    func testA7FatalFinalMarkerFailureStillReleasesFloorAndRecoversReady() async {
+        let events = EventLog()
+        let buffered = BufferedAudioMock(events: events, failFinish: true)
+        let controller = PTTController(
+            role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events), control: ControlMock(events: events), bufferedAudio: buffered,
+            clock: ControlledClock(), onUpdate: { _ in }
+        )
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        await controller.appleAudioSessionDidActivate()
+        await controller.activatePrearmedTransmission()
+        await controller.pttUp(playEndCue: false)
+        let snapshot = await controller.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .idle)
+        XCTAssertTrue(snapshot.txTerminalCleanupComplete)
+        XCTAssertEqual(snapshot.txErrorRecoverable, true)
+        let values = await events.values()
+        XCTAssertTrue(values.contains("release"))
+    }
+
+    func testA10HundredBufferedReleaseGenerationsCompleteWithoutLeaseLeakOrError() async {
+        for generation in 0 ..< 100 {
+            let events = EventLog()
+            let controller = PTTController(
+                role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
+                cuePlayer: CueMock(events: events), control: ControlMock(events: events),
+                bufferedAudio: BufferedAudioMock(events: events), clock: ControlledClock(), onUpdate: { _ in }
+            )
+            let prepared = await controller.preArmForAppleActivation()
+            XCTAssertTrue(prepared, "generation \(generation)")
+            await controller.appleAudioSessionDidActivate()
+            await controller.activatePrearmedTransmission()
+            await controller.pttUp(playEndCue: false)
+            let snapshot = await controller.currentSnapshot()
+            XCTAssertEqual(snapshot.state, .idle, "generation \(generation)")
+            XCTAssertNil(snapshot.leaseId, "generation \(generation)")
+            XCTAssertEqual(snapshot.txReleaseResult, "PASS", "generation \(generation)")
+            XCTAssertTrue(snapshot.txTerminalCleanupComplete, "generation \(generation)")
+        }
+    }
+
     private func makeController(
         role: KOEONRole = .staff,
         floor: FloorMock,
@@ -847,6 +946,45 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(receiver.diagnostics.controlEndReceivedAt, Date(timeIntervalSince1970: 2))
     }
 
+    func testC4Canonical48kMonoCaptureRemainsAccepted() async {
+        let capture = Batv1CaptureBuffer()
+        capture.arm(generationId: "canonical-48k")
+        capture.append(
+            samples: Array(repeating: Int16(1_024), count: 48_000 * 20 / 1_000),
+            sampleRate: 48_000,
+            channels: 1
+        )
+        let captureConfirmed = await capture.awaitCapture(timeoutMilliseconds: 750)
+        XCTAssertTrue(captureConfirmed)
+        XCTAssertEqual(capture.frameCount, 1)
+        XCTAssertEqual(capture.callbackDiagnostics.unsupported, 0)
+        XCTAssertEqual(capture.callbackDiagnostics.normalized, 0)
+    }
+
+    func testC5C6Non48kCaptureIsDiagnosedWithoutUnprovenNormalization() {
+        for sourceRate in [16_000, 32_000] {
+            let capture = Batv1CaptureBuffer()
+            capture.arm(generationId: "diagnostic-\(sourceRate)")
+            let samples = Array(repeating: Int16(1_024), count: sourceRate * 20 / 1_000)
+            capture.append(samples: samples, sampleRate: sourceRate, channels: 1)
+            XCTAssertEqual(capture.callbackDiagnostics.count, 1)
+            XCTAssertEqual(capture.callbackDiagnostics.sampleRate, sourceRate)
+            XCTAssertEqual(capture.callbackDiagnostics.channels, 1)
+            XCTAssertEqual(capture.callbackDiagnostics.unsupported, samples.count)
+            XCTAssertEqual(capture.callbackDiagnostics.normalized, 0)
+            XCTAssertEqual(capture.frameCount, 0)
+        }
+    }
+
+    func testC7ZeroCallbackCannotBeMisreportedAsCaptureConfirmed() async {
+        let capture = Batv1CaptureBuffer()
+        capture.arm(generationId: "zero-callback")
+        let confirmed = await capture.awaitCapture(timeoutMilliseconds: 1)
+        XCTAssertFalse(confirmed)
+        XCTAssertEqual(capture.callbackDiagnostics.count, 0)
+        XCTAssertEqual(capture.frameCount, 0)
+    }
+
     @MainActor
     func testReceiverMissingFinalUsesControlEndFloorTerminalAndStableLatestSequence() async {
         let api = Batv1APIStub()
@@ -1063,7 +1201,8 @@ private actor EventLog {
 private final class BufferedAudioMock: BufferedAudioTransmitting {
     let events: EventLog
     var diagnostics = BufferedAudioTxDiagnostics()
-    init(events: EventLog) { self.events = events }
+    let failFinish: Bool
+    init(events: EventLog, failFinish: Bool = false) { self.events = events; self.failFinish = failFinish }
     func prepare(generationId: String) async {
         diagnostics.generationId = generationId
         Task { await events.append("buffer:prepare") }
@@ -1084,8 +1223,32 @@ private final class BufferedAudioMock: BufferedAudioTransmitting {
         await events.append("buffer:hangover")
         return true
     }
-    func finish(generationId: String) async throws { await events.append("buffer:finish") }
+    func finish(generationId: String) async throws {
+        await events.append("buffer:finish")
+        if failFinish { throw MockError.expected }
+    }
     func discard(generationId: String) async { await events.append("buffer:discard") }
+}
+
+@MainActor
+private final class BlockingFinishBufferedAudioMock: BufferedAudioTransmitting {
+    let events: EventLog
+    var diagnostics = BufferedAudioTxDiagnostics()
+    private var finishContinuation: CheckedContinuation<Void, Never>?
+    private(set) var finishStarted = false
+    init(events: EventLog) { self.events = events }
+    func prepare(generationId: String) async { diagnostics.generationId = generationId }
+    func audioSessionDidActivate() async throws { diagnostics.captureArmed = true }
+    func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool { diagnostics.captureConfirmed = true; return true }
+    func authorize(leaseId: String, generationId: String) async throws {}
+    func performReleaseHangover(generationId: String) async -> Bool { true }
+    func finish(generationId: String) async throws {
+        finishStarted = true
+        await events.append("buffer:finish")
+        await withCheckedContinuation { finishContinuation = $0 }
+    }
+    func completeFinish() { finishContinuation?.resume(); finishContinuation = nil }
+    func discard(generationId: String) async { finishContinuation?.resume(); finishContinuation = nil }
 }
 
 private final class SnapshotRecorder: @unchecked Sendable {
