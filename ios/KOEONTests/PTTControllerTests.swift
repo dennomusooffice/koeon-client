@@ -848,6 +848,113 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testReceiverMissingFinalUsesControlEndFloorTerminalAndStableLatestSequence() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: nil,
+                bufferHeadExpired: false, timelineEnded: false,
+                chunks: request.nextSequence == 0
+                    ? [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())]
+                    : []
+            )
+        }
+        api.floorStatusHandler = {
+            FloorResponse(
+                outcome: .available, owner: nil, leaseId: nil, acquiredAt: nil,
+                leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false
+            )
+        }
+        var uptime: TimeInterval = 0
+        let receiver = BufferedAudioReceiver(
+            api: api, sessionId: "receiver", player: Batv1PcmPlayerMock(),
+            monotonicNow: { uptime += 0.25; return uptime }
+        )
+        receiver.audioSessionDidActivate()
+        receiver.start(
+            generationId: "missing-final", senderSessionId: "speaker-session",
+            leaseId: "lease-a", senderUserId: "staff-a"
+        )
+        receiver.noteControlEnd()
+        await receiver.awaitCurrentGenerationTermination()
+
+        XCTAssertNil(receiver.diagnostics.finalSequence)
+        XCTAssertEqual(receiver.diagnostics.playbackCursor, 1)
+        XCTAssertEqual(receiver.diagnostics.terminalReason, "missing_final_floor_terminal_stable")
+        XCTAssertNotNil(receiver.diagnostics.missingFinalFallbackEligibleAt)
+        XCTAssertNotNil(receiver.diagnostics.missingFinalFallbackCompletedAt)
+        XCTAssertNotNil(receiver.diagnostics.playerDrainCompletedAt)
+    }
+
+    @MainActor
+    func testReceiverMissingFinalDoesNotCloseWhileSenderStillOwnsFloor() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: -1, nextSequence: 0, finalSequence: nil,
+                bufferHeadExpired: false, timelineEnded: false, chunks: []
+            )
+        }
+        api.floorStatusHandler = {
+            FloorResponse(
+                outcome: .busy, owner: FloorOwner(id: "staff-a", name: "Staff A"), leaseId: "lease-a",
+                acquiredAt: nil, leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false
+            )
+        }
+        var uptime: TimeInterval = 0
+        let receiver = BufferedAudioReceiver(
+            api: api, sessionId: "receiver", player: Batv1PcmPlayerMock(),
+            monotonicNow: { uptime += 0.5; return uptime }
+        )
+        receiver.audioSessionDidActivate()
+        receiver.start(
+            generationId: "still-owned", senderSessionId: "speaker-session",
+            leaseId: "lease-a", senderUserId: "staff-a"
+        )
+        receiver.noteControlEnd()
+        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertNil(receiver.diagnostics.missingFinalFallbackCompletedAt)
+        XCTAssertNil(receiver.diagnostics.playerDrainCompletedAt)
+        await receiver.stopAndAwait()
+    }
+
+    @MainActor
+    func testReceiverFatalTerminalPathClearsActivityAndGeneration() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "unsupported", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: -1, nextSequence: 0, finalSequence: nil,
+                bufferHeadExpired: false, timelineEnded: false, chunks: []
+            )
+        }
+        var activity: [Bool] = []
+        var terminalCallbacks = 0
+        let receiver = BufferedAudioReceiver(
+            api: api,
+            sessionId: "receiver",
+            onActivity: { _, active in activity.append(active) },
+            onTimelineDrained: { terminalCallbacks += 1 },
+            player: Batv1PcmPlayerMock()
+        )
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "fatal", senderSessionId: "speaker")
+        await receiver.awaitCurrentGenerationTermination()
+
+        XCTAssertEqual(activity, [true, false])
+        XCTAssertEqual(terminalCallbacks, 1)
+        XCTAssertNil(receiver.diagnostics.generationId)
+    }
+
+    @MainActor
     func testOldGenerationCompletionIsFencedAfterReplacement() {
         let fence = Batv1GenerationCompletionFence()
         fence.begin(1)
@@ -1035,6 +1142,7 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
 
 private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     var subscribeHandler: ((Batv1SubscribeRequest) throws -> Batv1SubscribeResponse)?
+    var floorStatusHandler: (() throws -> FloorResponse)?
     private(set) var publishedRequests: [Batv1PublishRequest] = []
     func fixture() async throws -> FixtureResponse { throw MockError.expected }
     func enroll(_ request: EnrollmentRequest) async throws -> EnrollmentResponse { throw MockError.expected }
@@ -1045,7 +1153,10 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     func acquireFloor(sessionId: String) async throws -> FloorResponse { throw MockError.expected }
     func renewFloor(sessionId: String, leaseId: String) async throws -> FloorResponse { throw MockError.expected }
     func releaseFloor(sessionId: String, leaseId: String) async throws -> FloorReleaseResponse { throw MockError.expected }
-    func floorStatus(sessionId: String) async throws -> FloorResponse { throw MockError.expected }
+    func floorStatus(sessionId: String) async throws -> FloorResponse {
+        guard let floorStatusHandler else { throw MockError.expected }
+        return try floorStatusHandler()
+    }
     func registerPttToken(sessionId: String, channelId: String, token: String) async throws { throw MockError.expected }
     func unregisterPttToken(sessionId: String) async throws { throw MockError.expected }
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {

@@ -73,6 +73,12 @@ data class BufferedAudioTxDiagnostics(
     val lastAudioSequence: Int = -1,
     val finalMarkerSequence: Int? = null,
     val finalMarkerAtEpochMs: Long? = null,
+    val captureForwardingStoppedAtEpochMs: Long? = null,
+    val pendingFramesAtPttUp: Int = 0,
+    val pendingFramesBeforeFinalMarker: Int = 0,
+    val finalMarkerAttemptedAtEpochMs: Long? = null,
+    val finalMarkerAcceptedAtEpochMs: Long? = null,
+    val finalMarkerResult: String = "NOT_ATTEMPTED",
 )
 
 data class BufferedAudioRxDiagnostics(
@@ -214,6 +220,10 @@ interface BufferedAudioTxGateway {
     fun completeReleaseHangover(generationId: String, atEpochMs: Long = System.currentTimeMillis()): Boolean = true
     suspend fun finish(generationId: String): Boolean
     fun discard(generationId: String)
+    suspend fun abortAndAwait(generationId: String): Boolean {
+        discard(generationId)
+        return true
+    }
     fun diagnostics(): BufferedAudioTxDiagnostics
 }
 
@@ -333,6 +343,7 @@ class HttpBufferedAudioTransmitter(
             hangoverCompletedAtEpochMs = null,
             hangoverMs = null,
             framesAcceptedAfterPttUp = 0,
+            pendingFramesAtPttUp = synchronized(pending) { pending.size },
         )
         return true
     }
@@ -352,6 +363,7 @@ class HttpBufferedAudioTransmitter(
         diagnostics = diagnostics.copy(captureState = "FINISHING")
         Batv1CrashBreadcrumbs.record("TX", "TX_FINISH_BEGIN", generationId)
         capture.stopForwarding()
+        diagnostics = diagnostics.copy(captureForwardingStoppedAtEpochMs = System.currentTimeMillis())
         releaseHangoverActive = false
         authorized = false
         signal.trySend(Unit)
@@ -369,21 +381,30 @@ class HttpBufferedAudioTransmitter(
                 publishBatch(requireNotNull(leaseId), generationId, batch, diagnostics.preRollBufferedFrames)
             }
             val finalSequence = nextSequence - 1
+            diagnostics = diagnostics.copy(
+                pendingFramesBeforeFinalMarker = synchronized(pending) { pending.size },
+                finalMarkerAttemptedAtEpochMs = System.currentTimeMillis(),
+                finalMarkerResult = "ATTEMPTED",
+            )
             if (finalSequence >= 0) {
                 Batv1CrashBreadcrumbs.record("TX", "TX_FINAL_MARKER_BEGIN", generationId)
                 api.publishBufferedAudio(request(requireNotNull(leaseId), generationId, emptyList(), nextSequence, finalSequence))
                 diagnostics = diagnostics.copy(
                     finalMarkerSequence = finalSequence,
                     finalMarkerAtEpochMs = System.currentTimeMillis(),
+                    finalMarkerAcceptedAtEpochMs = System.currentTimeMillis(),
+                    finalMarkerResult = "ACCEPTED",
                 )
                 Batv1CrashBreadcrumbs.record("TX", "TX_FINAL_MARKER_END", generationId)
             }
             boundedCleanup(generationId, "STOPPED")
             true
         } catch (cancelled: CancellationException) {
+            diagnostics = diagnostics.copy(finalMarkerResult = "CANCELLED")
             boundedCleanup(generationId, "STOPPED")
             throw cancelled
         } catch (error: Throwable) {
+            diagnostics = diagnostics.copy(finalMarkerResult = "FAILED")
             recordApiFailure("BATV1_FINAL_MARKER_FAILED", error)
             Batv1CrashBreadcrumbs.record("TX", "TX_FINAL_MARKER_FAILED", generationId, resultClass = error.javaClass.simpleName)
             boundedCleanup(generationId, "FAILED")
@@ -408,6 +429,12 @@ class HttpBufferedAudioTransmitter(
                 }
             }
         }
+    }
+
+    override suspend fun abortAndAwait(generationId: String): Boolean {
+        discard(generationId)
+        teardownJob?.join()
+        return this.generationId == null && !authorized
     }
 
     override fun diagnostics() = diagnostics.copy(

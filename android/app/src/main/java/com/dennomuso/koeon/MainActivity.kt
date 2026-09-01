@@ -347,7 +347,8 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         onDispose { hapticController.cancel() }
     }
     val audioReady = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY
-    val remoteTalking = state.currentSpeaker != null && state.ptt.state != PttState.TRANSMITTING
+    val remoteTalking = state.currentSpeaker != null &&
+        state.ptt.state !in setOf(PttState.TRANSMITTING, PttState.RELEASING)
     val canTransmit = localPttEligible(
         operationallyActive = state.operationalState == OperationalState.ACTIVE,
         canPublish = joined.canPublish,

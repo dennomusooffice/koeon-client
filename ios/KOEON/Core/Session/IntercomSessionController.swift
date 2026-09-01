@@ -912,7 +912,9 @@ final class IntercomSessionController: ObservableObject {
                     if let bufferedGenerationId = event.bufferedGenerationId {
                         self?.bufferedReceiver?.start(
                             generationId: bufferedGenerationId,
-                            senderSessionId: event.sessionId
+                            senderSessionId: event.sessionId,
+                            leaseId: event.leaseId,
+                            senderUserId: event.speakerUserId
                         )
                     } else {
                         self?.bufferedReceiver?.stop()
@@ -1585,7 +1587,9 @@ final class IntercomSessionController: ObservableObject {
                 if let bufferedGenerationId = event.bufferedGenerationId {
                     self?.bufferedReceiver?.start(
                         generationId: bufferedGenerationId,
-                        senderSessionId: event.sessionId
+                        senderSessionId: event.sessionId,
+                        leaseId: event.leaseId,
+                        senderUserId: event.speakerUserId
                     )
                 } else {
                     self?.bufferedReceiver?.stop()
@@ -2439,6 +2443,10 @@ final class IntercomSessionController: ObservableObject {
                 "rxFinalFrameWrittenAt": timestamp(bufferedRx.finalFrameWrittenAt),
                 "rxPlayerDrainCompletedAt": timestamp(bufferedRx.playerDrainCompletedAt),
                 "rxEndCueAt": timestamp(bufferedRx.endCueAt),
+                "rxMissingFinalFallbackEligibleAt": timestamp(bufferedRx.missingFinalFallbackEligibleAt),
+                "rxMissingFinalFallbackCompletedAt": timestamp(bufferedRx.missingFinalFallbackCompletedAt),
+                "rxMissingFinalFallbackStableMs": number(bufferedRx.missingFinalFallbackStableMilliseconds),
+                "rxTerminalReason": optional(bufferedRx.terminalReason),
                 "controlSenderIdentityResolution": room.controlSenderIdentityResolution.rawValue,
             ],
             "crashBreadcrumbs": [

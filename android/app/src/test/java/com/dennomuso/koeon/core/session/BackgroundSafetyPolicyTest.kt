@@ -9,6 +9,7 @@ class BackgroundSafetyPolicyTest {
     @Test fun `network or focus loss stops only an active floor operation`() {
         assertTrue(shouldStopPttForSafety(PttState.REQUESTING_FLOOR))
         assertTrue(shouldStopPttForSafety(PttState.TRANSMITTING))
+        assertTrue(shouldStopPttForSafety(PttState.RELEASING))
         assertFalse(shouldStopPttForSafety(PttState.IDLE))
         assertFalse(shouldStopPttForSafety(PttState.RX_ONLY))
         assertFalse(shouldStopPttForSafety(PttState.BUSY))

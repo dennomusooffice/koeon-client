@@ -3,10 +3,18 @@ package com.dennomuso.koeon.core.ptt
 import com.dennomuso.koeon.core.model.FloorResponse
 import com.dennomuso.koeon.core.audio.BufferedAudioTxGateway
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.onTimeout
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,15 +26,32 @@ const val FLOOR_RENEW_INTERVAL_MS = 1_000L
 const val MAX_CONTINUOUS_TX_MS = 60_000L
 const val TX_RELEASE_HANG_MS = 180L
 const val TX_POST_MUTE_FLUSH_MS = 80L
+const val TX_TERMINAL_FINALIZATION_TIMEOUT_MS = 6_000L
 
 enum class PttState {
     IDLE,
     REQUESTING_FLOOR,
     TRANSMITTING,
+    RELEASING,
     BUSY,
     RX_ONLY,
     ERROR,
 }
+
+data class PttReleaseDiagnostics(
+    val state: String = "IDLE",
+    val enteredAt: Instant? = null,
+    val completedAt: Instant? = null,
+    val elapsedMs: Long? = null,
+    val exitReason: String? = null,
+    val floorRenewDuringReleaseCount: Int = 0,
+    val floorLastRenewAt: Instant? = null,
+    val controlEndAttemptedAt: Instant? = null,
+    val controlEndPublishedAt: Instant? = null,
+    val floorReleaseRequestedAt: Instant? = null,
+    val floorReleaseCompletedAt: Instant? = null,
+    val terminalRecoveryResult: String = "NOT_RUN",
+)
 
 data class PttTiming(
     val pttDownAt: Instant? = null,
@@ -65,6 +90,7 @@ data class PttSnapshot(
     val rxReadyLateCount: Int = 0,
     val rxReadyTimedOut: Boolean = false,
     val timing: PttTiming = PttTiming(),
+    val release: PttReleaseDiagnostics = PttReleaseDiagnostics(),
 )
 
 interface FloorGateway {
@@ -147,7 +173,11 @@ class PttController(
         }
         transitionMutex.withLock {
             safetyStopSignal.tryReceive().getOrNull()
-            if (held || snapshot.state == PttState.REQUESTING_FLOOR || snapshot.state == PttState.TRANSMITTING) return
+            if (held || snapshot.state in setOf(
+                    PttState.REQUESTING_FLOOR,
+                    PttState.TRANSMITTING,
+                    PttState.RELEASING,
+                )) return
             held = true
             generation += 1
             val requestGeneration = generation
@@ -159,6 +189,7 @@ class PttController(
                     leaseId = null,
                     lastError = null,
                     timing = PttTiming(pttDownAt = downAt, localUiFeedbackAt = clock.now()),
+                    release = PttReleaseDiagnostics(),
                 ),
             )
             val bufferedGenerationId = bufferedAudio?.let { gateway ->
@@ -328,80 +359,181 @@ class PttController(
 
     suspend fun pressUp() {
         held = false
-        generation += 1
         control.cancelRxReady()
         transitionMutex.withLock {
             val leaseId = snapshot.leaseId
-            cancelTimers()
             if (snapshot.state == PttState.TRANSMITTING) {
-                val generationId = activeBufferedGenerationId
-                if (generationId != null && bufferedAudio?.beginReleaseHangover(generationId) != true) {
-                    return@withLock
-                }
-                val muted = if (generationId != null) {
-                    if (withTimeoutOrNull(TX_RELEASE_HANG_MS) { safetyStopSignal.receive() } != null) {
-                        return@withLock
-                    }
-                    if (bufferedAudio?.completeReleaseHangover(generationId) != true) return@withLock
-                    runCatching { bufferedAudio?.finish(generationId) == true }.getOrDefault(false)
-                } else {
-                    if (withTimeoutOrNull(TX_RELEASE_HANG_MS) { safetyStopSignal.receive() } != null) {
-                        return@withLock
-                    }
-                    runCatching { microphone.setEnabled(false) }.getOrDefault(false)
-                }
-                activeBufferedGenerationId = null
-                if (muted && leaseId != null) {
-                    if (withTimeoutOrNull(TX_POST_MUTE_FLUSH_MS) { safetyStopSignal.receive() } != null) {
-                        return@withLock
-                    }
-                    val controlResult = control.publishEnd(leaseId)
-                    update(snapshot.copy(controlEndResult = controlResult.fold(
-                        { "Sent" },
-                        { "Failed: ${it.message ?: "unknown"}" },
-                    )))
-                    playEndCue()
-                } else if (!muted) {
-                    update(snapshot.copy(endCueResult = "Skipped: TX OFF failed"))
-                }
-                if (leaseId != null) runCatching { floor.release(leaseId) }
-                update(
-                    snapshot.copy(
-                        state = if (muted) PttState.IDLE else PttState.ERROR,
-                        leaseId = null,
-                        currentSpeaker = null,
-                        lastError = if (muted) null else "Microphone TX stop failed; Room was disconnected",
-                    ),
+                cancelMaxTxGuard()
+                finalizeActiveTransmission(
+                    leaseId = leaseId,
+                    releaseGeneration = generation,
+                    includeHangover = true,
+                    requestedExitReason = "PTT_UP",
                 )
             } else if (leaseId != null) {
-                runCatching { floor.release(leaseId) }
-                update(snapshot.copy(state = PttState.IDLE, leaseId = null, currentSpeaker = null))
+                boundedAbortFinalization(leaseId, "PTT_UP_BEFORE_TX")
             } else if (snapshot.state == PttState.BUSY) {
                 update(snapshot.copy(state = PttState.IDLE, currentSpeaker = null))
             }
         }
     }
 
+    private suspend fun finalizeActiveTransmission(
+        leaseId: String?,
+        releaseGeneration: Long,
+        includeHangover: Boolean,
+        requestedExitReason: String,
+    ) {
+        val enteredAt = clock.now()
+        update(snapshot.copy(
+            state = PttState.RELEASING,
+            release = PttReleaseDiagnostics(state = "RELEASING", enteredAt = enteredAt),
+        ))
+        var normalFinalization = false
+        var exitReason = requestedExitReason
+        var terminalError: String? = null
+        var controlEndPublished = false
+        try {
+            val bufferedGenerationId = activeBufferedGenerationId
+            val audioStopped = if (bufferedGenerationId != null) {
+                if (includeHangover) {
+                    check(bufferedAudio?.beginReleaseHangover(bufferedGenerationId) == true) {
+                        "BATV1_RELEASE_HANGOVER_START_FAILED"
+                    }
+                    if (withTimeoutOrNull(TX_RELEASE_HANG_MS) { safetyStopSignal.receive() } != null) {
+                        throw ReleaseInterruptedException("SAFETY_DURING_HANGOVER")
+                    }
+                    check(bufferedAudio?.completeReleaseHangover(bufferedGenerationId) == true) {
+                        "BATV1_RELEASE_HANGOVER_COMPLETE_FAILED"
+                    }
+                }
+                finishBufferedWithSafety(bufferedGenerationId)
+            } else {
+                if (includeHangover && withTimeoutOrNull(TX_RELEASE_HANG_MS) { safetyStopSignal.receive() } != null) {
+                    throw ReleaseInterruptedException("SAFETY_DURING_HANGOVER")
+                }
+                runCatching { microphone.setEnabled(false) }.getOrDefault(false)
+            }
+            check(audioStopped) { "BATV1_TERMINAL_AUDIO_STOP_FAILED" }
+            activeBufferedGenerationId = null
+            if (includeHangover && withTimeoutOrNull(TX_POST_MUTE_FLUSH_MS) { safetyStopSignal.receive() } != null) {
+                throw ReleaseInterruptedException("SAFETY_AFTER_FINAL_MARKER")
+            }
+            if (leaseId != null) {
+                update(snapshot.copy(release = snapshot.release.copy(controlEndAttemptedAt = clock.now())))
+                val controlResult = control.publishEnd(leaseId)
+                controlEndPublished = controlResult.isSuccess
+                update(snapshot.copy(
+                    controlEndResult = controlResult.fold(
+                        { "Sent" },
+                        { "Failed: ${it.message ?: "unknown"}" },
+                    ),
+                    release = snapshot.release.copy(
+                        controlEndPublishedAt = if (controlResult.isSuccess) clock.now() else null,
+                    ),
+                ))
+                check(controlEndPublished) { "CONTROL_END_PUBLISH_FAILED" }
+            }
+            playEndCue()
+            normalFinalization = true
+        } catch (cancelled: CancellationException) {
+            exitReason = "TASK_CANCELLED"
+            terminalError = "PTT release cancelled; bounded cleanup completed"
+            throw cancelled
+        } catch (error: Throwable) {
+            exitReason = (error as? ReleaseInterruptedException)?.reason ?: error.message ?: "TERMINAL_FAILURE"
+            terminalError = "PTT release recovered safely: $exitReason"
+            update(snapshot.copy(endCueResult = "Skipped: terminal finalization aborted"))
+        } finally {
+            withContext(NonCancellable) {
+                if (!normalFinalization) {
+                    val bufferedGenerationId = activeBufferedGenerationId
+                    if (bufferedGenerationId != null) {
+                        runCatching { bufferedAudio?.abortAndAwait(bufferedGenerationId) }
+                    } else {
+                        runCatching { microphone.setEnabled(false) }
+                    }
+                    activeBufferedGenerationId = null
+                    if (leaseId != null && !controlEndPublished) {
+                        update(snapshot.copy(release = snapshot.release.copy(controlEndAttemptedAt = clock.now())))
+                        val result = runCatching { control.publishEnd(leaseId) }
+                            .getOrElse { Result.failure(it) }
+                        controlEndPublished = result.isSuccess
+                        update(snapshot.copy(
+                            controlEndResult = result.fold(
+                                { "Sent (abort)" },
+                                { "Failed (abort): ${it.message ?: "unknown"}" },
+                            ),
+                            release = snapshot.release.copy(
+                                controlEndPublishedAt = if (result.isSuccess) clock.now() else null,
+                            ),
+                        ))
+                    }
+                }
+                if (leaseId != null) {
+                    update(snapshot.copy(release = snapshot.release.copy(floorReleaseRequestedAt = clock.now())))
+                    val floorRelease = runCatching { floor.release(leaseId) }
+                    if (floorRelease.isSuccess) {
+                        update(snapshot.copy(release = snapshot.release.copy(floorReleaseCompletedAt = clock.now())))
+                    } else {
+                        normalFinalization = false
+                        exitReason = "FLOOR_RELEASE_FAILED"
+                        terminalError = "PTT release recovered locally; Floor release request failed"
+                    }
+                }
+                cancelTimers()
+                if (generation == releaseGeneration) generation += 1
+                val completedAt = clock.now()
+                update(snapshot.copy(
+                    state = PttState.IDLE,
+                    leaseId = null,
+                    currentSpeaker = null,
+                    lastError = terminalError,
+                    release = snapshot.release.copy(
+                        state = "IDLE",
+                        completedAt = completedAt,
+                        elapsedMs = (completedAt.toEpochMilli() - enteredAt.toEpochMilli()).coerceAtLeast(0),
+                        exitReason = exitReason,
+                        terminalRecoveryResult = if (normalFinalization) "NORMAL_COMPLETE" else "BOUNDED_ABORT_COMPLETE",
+                    ),
+                ))
+            }
+        }
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private suspend fun finishBufferedWithSafety(generationId: String): Boolean = coroutineScope {
+        val operation = async { bufferedAudio?.finish(generationId) == true }
+        val result = select<Boolean> {
+            operation.onAwait { it }
+            safetyStopSignal.onReceive {
+                operation.cancel()
+                false
+            }
+            onTimeout(TX_TERMINAL_FINALIZATION_TIMEOUT_MS) {
+                operation.cancel()
+                false
+            }
+        }
+        operation.cancelAndJoin()
+        result
+    }
+
+    private class ReleaseInterruptedException(val reason: String) : IllegalStateException(reason)
+
     suspend fun stopForSafety(reason: String) {
         held = false
-        generation += 1
         safetyStopSignal.trySend(Unit)
         control.cancelRxReady()
         transitionMutex.withLock {
             val leaseId = snapshot.leaseId
-            cancelTimers()
-            discardActiveBuffered()
-            val muted = runCatching { microphone.setEnabled(false) }.getOrDefault(false)
-            val release = leaseId?.let { scope.launch { runCatching { floor.release(it) } } }
-            if (leaseId != null && muted) {
-                val controlResult = control.publishEnd(leaseId)
-                update(snapshot.copy(controlEndResult = controlResult.fold(
-                    { "Sent" },
-                    { "Failed: ${it.message ?: "unknown"}" },
-                )))
+            if (leaseId != null || activeBufferedGenerationId != null) {
+                boundedAbortFinalization(leaseId, reason)
+            } else {
+                cancelTimers()
+                generation += 1
+                update(snapshot.copy(state = PttState.IDLE, leaseId = null, currentSpeaker = null, lastError = reason))
             }
-            release?.join()
-            update(snapshot.copy(state = PttState.ERROR, leaseId = null, lastError = reason))
             playStatusCue("ERROR", cuePlayer.playError())
         }
     }
@@ -411,12 +543,20 @@ class PttController(
         renewJob = scope.launch {
             while (true) {
                 delay(FLOOR_RENEW_INTERVAL_MS)
-                if (!held || generation != expectedGeneration || snapshot.leaseId != leaseId) return@launch
+                if (generation != expectedGeneration ||
+                    snapshot.leaseId != leaseId ||
+                    snapshot.state !in setOf(PttState.REQUESTING_FLOOR, PttState.TRANSMITTING, PttState.RELEASING)
+                ) return@launch
                 val renewed = runCatching { floor.renew(leaseId) }
                 if (renewed.isFailure || renewed.getOrNull()?.outcome != "renewed") {
                     scope.launch { failLease("Floor lease renewal failed", leaseId, expectedGeneration) }
                     return@launch
                 }
+                val duringRelease = snapshot.state == PttState.RELEASING
+                update(snapshot.copy(release = snapshot.release.copy(
+                    floorRenewDuringReleaseCount = snapshot.release.floorRenewDuringReleaseCount + if (duringRelease) 1 else 0,
+                    floorLastRenewAt = clock.now(),
+                )))
             }
         }
     }
@@ -435,40 +575,17 @@ class PttController(
     }
 
     private suspend fun finishMaxTx(leaseId: String, expectedGeneration: Long) {
-        safetyStopSignal.trySend(Unit)
         transitionMutex.withLock {
             if (generation != expectedGeneration || snapshot.leaseId != leaseId) return
             held = false
-            generation += 1
             control.cancelRxReady()
-            cancelTimers()
-            val bufferedGeneration = activeBufferedGenerationId
-            val muted = if (bufferedGeneration != null) {
-                runCatching { bufferedAudio?.finish(bufferedGeneration) == true }.getOrDefault(false)
-            } else {
-                runCatching { microphone.setEnabled(false) }.getOrDefault(false)
-            }
-            activeBufferedGenerationId = null
-            update(
-                snapshot.copy(
-                    state = if (muted) PttState.IDLE else PttState.ERROR,
-                    leaseId = null,
-                    currentSpeaker = null,
-                    lastError = if (muted) null else "Microphone TX stop failed; Room was disconnected",
-                ),
+            cancelMaxTxGuard()
+            finalizeActiveTransmission(
+                leaseId = leaseId,
+                releaseGeneration = expectedGeneration,
+                includeHangover = false,
+                requestedExitReason = "MAX_TX_COMPLETE",
             )
-            val release = scope.launch { runCatching { floor.release(leaseId) } }
-            if (muted) {
-                val controlResult = control.publishEnd(leaseId)
-                update(snapshot.copy(controlEndResult = controlResult.fold(
-                    { "Sent" },
-                    { "Failed: ${it.message ?: "unknown"}" },
-                )))
-                playEndCue()
-            } else {
-                update(snapshot.copy(endCueResult = "Skipped: TX OFF failed"))
-            }
-            release.join()
         }
     }
 
@@ -477,23 +594,57 @@ class PttController(
         transitionMutex.withLock {
             if (generation != expectedGeneration || snapshot.leaseId != leaseId) return
             held = false
-            generation += 1
             control.cancelRxReady()
-            cancelTimers()
-            discardActiveBuffered()
-            val muted = runCatching { microphone.setEnabled(false) }.getOrDefault(false)
-            update(snapshot.copy(state = PttState.ERROR, leaseId = null, lastError = reason))
+            boundedAbortFinalization(leaseId, reason)
             playStatusCue("ERROR", cuePlayer.playError())
-            val release = scope.launch { runCatching { floor.release(leaseId) } }
-            if (muted) {
-                val controlResult = control.publishEnd(leaseId)
-                update(snapshot.copy(controlEndResult = controlResult.fold(
-                    { "Sent" },
-                    { "Failed: ${it.message ?: "unknown"}" },
-                )))
-            }
-            release.join()
         }
+    }
+
+    private suspend fun boundedAbortFinalization(leaseId: String?, reason: String) {
+        val enteredAt = snapshot.release.enteredAt ?: clock.now()
+        update(snapshot.copy(
+            state = PttState.RELEASING,
+            release = snapshot.release.copy(state = "RELEASING", enteredAt = enteredAt),
+        ))
+        val generationId = activeBufferedGenerationId
+        if (generationId != null) {
+            runCatching { bufferedAudio?.abortAndAwait(generationId) }
+        } else {
+            runCatching { microphone.setEnabled(false) }
+        }
+        activeBufferedGenerationId = null
+        if (leaseId != null) {
+            update(snapshot.copy(release = snapshot.release.copy(controlEndAttemptedAt = clock.now())))
+            val controlResult = runCatching { control.publishEnd(leaseId) }.getOrElse { Result.failure(it) }
+            update(snapshot.copy(
+                controlEndResult = controlResult.fold(
+                    { "Sent (abort)" },
+                    { "Failed (abort): ${it.message ?: "unknown"}" },
+                ),
+                release = snapshot.release.copy(
+                    controlEndPublishedAt = if (controlResult.isSuccess) clock.now() else null,
+                    floorReleaseRequestedAt = clock.now(),
+                ),
+            ))
+            runCatching { floor.release(leaseId) }
+            update(snapshot.copy(release = snapshot.release.copy(floorReleaseCompletedAt = clock.now())))
+        }
+        cancelTimers()
+        generation += 1
+        val completedAt = clock.now()
+        update(snapshot.copy(
+            state = PttState.IDLE,
+            leaseId = null,
+            currentSpeaker = null,
+            lastError = reason,
+            release = snapshot.release.copy(
+                state = "IDLE",
+                completedAt = completedAt,
+                elapsedMs = (completedAt.toEpochMilli() - enteredAt.toEpochMilli()).coerceAtLeast(0),
+                exitReason = reason,
+                terminalRecoveryResult = "BOUNDED_ABORT_COMPLETE",
+            ),
+        ))
     }
 
     private suspend fun playEndCue() {
@@ -511,6 +662,11 @@ class PttController(
     private fun cancelTimers() {
         renewJob?.cancel()
         renewJob = null
+        maxTxJob?.cancel()
+        maxTxJob = null
+    }
+
+    private fun cancelMaxTxGuard() {
         maxTxJob?.cancel()
         maxTxJob = null
     }

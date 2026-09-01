@@ -234,7 +234,7 @@ internal fun enrollmentFailureDiagnostic(source: String, error: Throwable): Stri
     return "Device enrollment failed ($source, $transport): $detail"
 }
 internal fun shouldStopPttForSafety(state: PttState): Boolean =
-    state == PttState.TRANSMITTING || state == PttState.REQUESTING_FLOOR
+    state in setOf(PttState.TRANSMITTING, PttState.RELEASING, PttState.REQUESTING_FLOOR)
 
 /**
  * Application-scoped session owner. Activity/ViewModel lifecycle changes do not tear down
@@ -906,7 +906,7 @@ class IntercomSessionManager(
     private fun pttDown(source: PttInputSource): Boolean {
         _state.update { it.copy(diagnostics = it.diagnostics.copy(lastPttInputSource = source)) }
         val remoteTalking = _state.value.currentSpeaker != null &&
-            _state.value.ptt.state != PttState.TRANSMITTING
+            _state.value.ptt.state !in setOf(PttState.TRANSMITTING, PttState.RELEASING)
         val canTransmit = localPttEligible(
             operationallyActive = _state.value.operationalState == OperationalState.ACTIVE,
             canPublish = _state.value.join?.canPublish == true,
@@ -1067,14 +1067,15 @@ class IntercomSessionManager(
             bufferedAudio = batv1Transmitter,
             clock = SystemPttClock(),
             onSnapshot = { ptt ->
-                if (ptt.state == PttState.TRANSMITTING && previousPttState != PttState.TRANSMITTING) {
+                val txLifecycle = setOf(PttState.TRANSMITTING, PttState.RELEASING)
+                if (ptt.state in txLifecycle && previousPttState !in txLifecycle) {
                     gainProcessor.beginTransmission()
-                } else if (ptt.state != PttState.TRANSMITTING && previousPttState == PttState.TRANSMITTING) {
+                } else if (ptt.state !in txLifecycle && previousPttState in txLifecycle) {
                     gainProcessor.endTransmission()
                 }
                 previousPttState = ptt.state
                 refreshInputGainDiagnostics()
-                if (ptt.state !in setOf(PttState.REQUESTING_FLOOR, PttState.TRANSMITTING)) {
+                if (ptt.state !in setOf(PttState.REQUESTING_FLOOR, PttState.TRANSMITTING, PttState.RELEASING)) {
                     IntercomForegroundService.resetHeadsetLatch()
                 }
                 _state.update { it.copy(ptt = ptt, error = ptt.lastError ?: it.error) }
