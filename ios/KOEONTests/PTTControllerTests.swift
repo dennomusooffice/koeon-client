@@ -636,13 +636,15 @@ final class BufferedAudioTimelineTests: XCTestCase {
         await transmitter.prepare(generationId: generation)
         try await transmitter.audioSessionDidActivate()
         capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels)
-        XCTAssertTrue(await transmitter.awaitCaptureAndMarkCueBoundary(generationId: generation))
+        let captureConfirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: generation)
+        XCTAssertTrue(captureConfirmed)
         try await transmitter.authorize(leaseId: "lease-a", generationId: generation)
         capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels)
         let tail50 = Task { try? await Task.sleep(for: .milliseconds(50)); capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels) }
         let tail150 = Task { try? await Task.sleep(for: .milliseconds(150)); capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels) }
         let excluded300 = Task { try? await Task.sleep(for: .milliseconds(300)); capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels) }
-        XCTAssertTrue(await transmitter.performReleaseHangover(generationId: generation))
+        let hangoverCompleted = await transmitter.performReleaseHangover(generationId: generation)
+        XCTAssertTrue(hangoverCompleted)
         try await transmitter.finish(generationId: generation)
         _ = await tail50.value
         _ = await tail150.value
