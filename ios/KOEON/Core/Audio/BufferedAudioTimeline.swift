@@ -134,6 +134,10 @@ struct BufferedAudioTxDiagnostics: Equatable, Sendable {
 
 struct BufferedAudioRxDiagnostics: Equatable, Sendable {
     var generationId: String?
+    var graphWireFormat = "PCM16LE_48000_MONO"
+    var graphPlaybackFormat = "FLOAT32_48000_MONO_STANDARD"
+    var graphPrepared = false
+    var graphLastErrorCode: String?
     var playbackCursor = 0
     var latestSequence = -1
     var backlogMilliseconds = 0
@@ -587,6 +591,59 @@ enum BufferedAudioError: Error {
     case sequenceGap
     case timelineHeadExpired
     case illegalLifecycle
+    case invalidAudioGraphFormat
+}
+
+func makeBatv1PlaybackGraphFormat() -> AVAudioFormat? {
+    AVAudioFormat(
+        standardFormatWithSampleRate: Double(batv1SampleRate),
+        channels: AVAudioChannelCount(batv1Channels)
+    )
+}
+
+func isValidBatv1PlaybackGraphFormat(_ format: AVAudioFormat) -> Bool {
+    format.sampleRate == Double(batv1SampleRate)
+        && format.channelCount == AVAudioChannelCount(batv1Channels)
+        && format.commonFormat == .pcmFormatFloat32
+        && !format.isInterleaved
+        && format.isStandard
+}
+
+enum Batv1Pcm16LEConverter {
+    static let samplesPerFrame = batv1SampleRate * batv1FrameDurationMilliseconds / 1_000
+
+    static func floatSamples(from data: Data) throws -> [Float] {
+        guard data.count == batv1BytesPerFrame else {
+            throw BufferedAudioError.invalidWireFormat
+        }
+        return data.withUnsafeBytes { bytes in
+            (0..<samplesPerFrame).map { index in
+                let byteOffset = index * MemoryLayout<Int16>.size
+                let bits = UInt16(bytes[byteOffset]) | (UInt16(bytes[byteOffset + 1]) << 8)
+                return Float(Int16(bitPattern: bits)) / 32_768
+            }
+        }
+    }
+
+    static func playbackBuffer(from data: Data, format: AVAudioFormat) throws -> AVAudioPCMBuffer {
+        guard isValidBatv1PlaybackGraphFormat(format),
+              let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(samplesPerFrame)
+              ),
+              let destination = buffer.floatChannelData?[0] else {
+            throw BufferedAudioError.invalidAudioGraphFormat
+        }
+        let samples = try floatSamples(from: data)
+        guard samples.count == samplesPerFrame else {
+            throw BufferedAudioError.invalidWireFormat
+        }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        for index in samples.indices {
+            destination[index] = samples[index]
+        }
+        return buffer
+    }
 }
 
 @MainActor
@@ -611,38 +668,61 @@ final class Batv1GenerationCompletionFence {
 }
 
 @MainActor
-private final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
+final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let timePitch = AVAudioUnitTimePitch()
-    private let format = AVAudioFormat(
-        commonFormat: .pcmFormatInt16,
-        sampleRate: Double(batv1SampleRate),
-        channels: AVAudioChannelCount(batv1Channels),
-        interleaved: false
-    )!
-    private var graphPrepared = false
+    let playbackGraphFormat: AVAudioFormat?
+    private(set) var graphPrepared = false
+    private(set) var graphPreparationCount = 0
     private let completionFence = Batv1GenerationCompletionFence()
     private(set) var pendingFrames = 0
     private(set) var completedFrames = 0
 
+    init(playbackGraphFormat: AVAudioFormat? = makeBatv1PlaybackGraphFormat()) {
+        self.playbackGraphFormat = playbackGraphFormat
+    }
+
     func beginGeneration(token: Int) throws {
-        if !graphPrepared {
-            engine.attach(player)
-            engine.attach(timePitch)
-            engine.connect(player, to: timePitch, format: format)
-            engine.connect(timePitch, to: engine.mainMixerNode, format: format)
-            engine.prepare()
-            graphPrepared = true
+        try beginGeneration(token: token, startEngine: true)
+    }
+
+    func prepareGraphIfNeeded() throws {
+        guard !graphPrepared else { return }
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_GRAPH_FORMAT_VALIDATE")
+        guard let playbackGraphFormat,
+              isValidBatv1PlaybackGraphFormat(playbackGraphFormat) else {
+            Batv1CrashBreadcrumbStore.shared.record(
+                role: "RX", stage: "RX_GRAPH_FORMAT_INVALID", resultClass: "RX_AUDIO_GRAPH_FORMAT_INVALID"
+            )
+            throw BufferedAudioError.invalidAudioGraphFormat
         }
-        if !engine.isRunning { try engine.start() }
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_GRAPH_ATTACH_BEGIN")
+        engine.attach(player)
+        engine.attach(timePitch)
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_GRAPH_ATTACH_END")
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_GRAPH_CONNECT_PLAYER_TIMEPITCH_BEGIN")
+        engine.connect(player, to: timePitch, format: playbackGraphFormat)
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_GRAPH_CONNECT_PLAYER_TIMEPITCH_END")
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_GRAPH_CONNECT_MIXER_BEGIN")
+        engine.connect(timePitch, to: engine.mainMixerNode, format: playbackGraphFormat)
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_GRAPH_CONNECT_MIXER_END")
+        engine.prepare()
+        graphPrepared = true
+        graphPreparationCount += 1
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_GRAPH_PREPARE_END")
+    }
+
+    func beginGeneration(token: Int, startEngine: Bool) throws {
+        try prepareGraphIfNeeded()
+        if startEngine, !engine.isRunning { try engine.start() }
         player.stop()
         player.reset()
         pendingFrames = 0
         completedFrames = 0
         completionFence.begin(token)
         setRate(1)
-        player.play()
+        if startEngine { player.play() }
     }
 
     func setRate(_ rate: Float) {
@@ -652,16 +732,10 @@ private final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
 
     func enqueue(_ data: Data, generationToken: Int) throws {
         guard completionFence.accepts(generationToken),
-              data.count == batv1BytesPerFrame,
-              let buffer = AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: AVAudioFrameCount(batv1SampleRate * batv1FrameDurationMilliseconds / 1_000)
-              ),
-              let destination = buffer.int16ChannelData?[0] else {
+              let playbackGraphFormat else {
             throw BufferedAudioError.invalidWireFormat
         }
-        buffer.frameLength = buffer.frameCapacity
-        data.copyBytes(to: UnsafeMutableRawBufferPointer(start: destination, count: data.count))
+        let buffer = try Batv1Pcm16LEConverter.playbackBuffer(from: data, format: playbackGraphFormat)
         pendingFrames += 1
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -801,8 +875,13 @@ final class BufferedAudioReceiver {
         guard !Task.isCancelled else { return }
         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_START", generationId: generationId)
         do {
+            diagnostics.graphWireFormat = "PCM16LE_48000_MONO"
+            diagnostics.graphPlaybackFormat = "FLOAT32_48000_MONO_STANDARD"
+            diagnostics.graphPrepared = false
+            diagnostics.graphLastErrorCode = nil
             Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_PREPARE", generationId: generationId)
             try player.beginGeneration(token: generationToken)
+            diagnostics.graphPrepared = true
             Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_START", generationId: generationId)
             onActivity(senderSessionId, true)
             var cursor = 0
@@ -886,6 +965,13 @@ final class BufferedAudioReceiver {
             }
         } catch {
             diagnostics.timelineLost = true
+            if !diagnostics.graphPrepared {
+                if case BufferedAudioError.invalidAudioGraphFormat = error {
+                    diagnostics.graphLastErrorCode = "RX_AUDIO_GRAPH_FORMAT_INVALID"
+                } else {
+                    diagnostics.graphLastErrorCode = "RX_AUDIO_GRAPH_PREPARE_FAILED"
+                }
+            }
             Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_FAILED", generationId: generationId, resultClass: String(describing: type(of: error)))
             onFailure("BATV1_RX_\(String(describing: type(of: error)).uppercased())")
         }

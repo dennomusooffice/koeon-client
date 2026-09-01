@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import KOEON
 
@@ -499,6 +500,106 @@ final class InputGainProcessorTests: XCTestCase {
 }
 
 final class BufferedAudioTimelineTests: XCTestCase {
+    func testPlaybackGraphUsesStandardFloat32Format() throws {
+        let format = try XCTUnwrap(makeBatv1PlaybackGraphFormat())
+        XCTAssertTrue(format.isStandard)
+        XCTAssertEqual(format.commonFormat, .pcmFormatFloat32)
+        XCTAssertEqual(format.sampleRate, 48_000)
+        XCTAssertEqual(format.channelCount, 1)
+        XCTAssertFalse(format.isInterleaved)
+        XCTAssertTrue(isValidBatv1PlaybackGraphFormat(format))
+    }
+
+    func testPcm16LittleEndianConversionUsesExactScale() throws {
+        let knownSamples = Data([
+            0x00, 0x00,
+            0xff, 0x7f,
+            0x00, 0x80,
+            0x00, 0x40,
+            0x00, 0xc0
+        ] + Array(repeating: 0, count: batv1BytesPerFrame - 10))
+        let converted = try Batv1Pcm16LEConverter.floatSamples(from: knownSamples)
+        XCTAssertEqual(converted.count, 960)
+        XCTAssertEqual(converted[0], 0, accuracy: 0.000_001)
+        XCTAssertEqual(converted[1], 32_767.0 / 32_768.0, accuracy: 0.000_001)
+        XCTAssertEqual(converted[2], -1, accuracy: 0.000_001)
+        XCTAssertEqual(converted[3], 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(converted[4], -0.5, accuracy: 0.000_001)
+        XCTAssertTrue(converted.allSatisfy { $0.isFinite })
+    }
+
+    func testExactWireFrameCreatesNineHundredSixtyFrameFloatBuffer() throws {
+        let format = try XCTUnwrap(makeBatv1PlaybackGraphFormat())
+        let buffer = try Batv1Pcm16LEConverter.playbackBuffer(
+            from: Data(count: batv1BytesPerFrame),
+            format: format
+        )
+        XCTAssertEqual(buffer.frameCapacity, 960)
+        XCTAssertEqual(buffer.frameLength, 960)
+        XCTAssertNotNil(buffer.floatChannelData)
+        XCTAssertNil(buffer.int16ChannelData)
+    }
+
+    func testInvalidWireByteCountsAreRejected() throws {
+        let format = try XCTUnwrap(makeBatv1PlaybackGraphFormat())
+        XCTAssertThrowsError(try Batv1Pcm16LEConverter.playbackBuffer(from: Data(count: 1_919), format: format))
+        XCTAssertThrowsError(try Batv1Pcm16LEConverter.playbackBuffer(from: Data(count: 1_921), format: format))
+    }
+
+    @MainActor
+    func testNonstandardGraphFormatFailsBeforeAttachOrConnect() throws {
+        let int16Format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        XCTAssertFalse(isValidBatv1PlaybackGraphFormat(int16Format))
+        let player = IOSBatv1PcmPlayer(playbackGraphFormat: int16Format)
+        XCTAssertThrowsError(try player.prepareGraphIfNeeded()) { error in
+            guard case BufferedAudioError.invalidAudioGraphFormat = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(player.graphPrepared)
+        XCTAssertEqual(player.graphPreparationCount, 0)
+        player.shutdown()
+    }
+
+    @MainActor
+    func testRealAudioEngineGraphConnectsWithStandardPlaybackFormat() throws {
+        let player = IOSBatv1PcmPlayer()
+        XCTAssertNoThrow(try player.prepareGraphIfNeeded())
+        XCTAssertTrue(player.graphPrepared)
+        XCTAssertEqual(player.graphPreparationCount, 1)
+        player.shutdown()
+    }
+
+    @MainActor
+    func testRealAudioEngineGraphIsReusedAcrossGenerations() throws {
+        let player = IOSBatv1PcmPlayer()
+        try player.beginGeneration(token: 1, startEngine: false)
+        player.endGeneration(token: 1)
+        try player.beginGeneration(token: 2, startEngine: false)
+        player.endGeneration(token: 2)
+        XCTAssertEqual(player.graphPreparationCount, 1)
+        player.shutdown()
+    }
+
+    @MainActor
+    func testRealAudioEnginePlayerReusesGraphForOneHundredGenerations() throws {
+        let player = IOSBatv1PcmPlayer()
+        let frame = Data(count: batv1BytesPerFrame)
+        for token in 1...100 {
+            try player.beginGeneration(token: token, startEngine: false)
+            try player.enqueue(frame, generationToken: token)
+            player.endGeneration(token: token)
+        }
+        XCTAssertEqual(player.graphPreparationCount, 1)
+        XCTAssertEqual(player.pendingFrames, 0)
+        player.shutdown()
+    }
+
     func testCaptureIsMemoryBoundedToSixSeconds() {
         let capture = Batv1CaptureBuffer()
         capture.arm(generationId: UUID().uuidString)
