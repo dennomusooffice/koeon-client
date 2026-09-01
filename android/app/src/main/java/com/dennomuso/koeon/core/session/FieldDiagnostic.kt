@@ -21,7 +21,8 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
         canPublish = state.join?.canPublish == true,
         connected = state.connectionState == IntercomConnectionState.CONNECTED,
         recovering = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING,
-        remoteTalking = state.currentSpeaker != null && state.ptt.state != PttState.TRANSMITTING,
+        remoteTalking = state.currentSpeaker != null &&
+            state.ptt.state !in setOf(PttState.TRANSMITTING, PttState.RELEASING),
         pttState = state.ptt.state,
     )
     val eligible = semantic == PttSemanticState.READY
@@ -113,6 +114,24 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             put("txLastAudioSequence", JsonPrimitive(tx.lastAudioSequence))
             put("txFinalMarkerSequence", nullable(tx.finalMarkerSequence?.toLong()))
             put("txFinalMarkerAt", nullable(tx.finalMarkerAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
+            put("txReleaseState", JsonPrimitive(state.ptt.release.state))
+            put("txReleaseEnteredAt", nullable(state.ptt.release.enteredAt?.toString()))
+            put("txReleaseCompletedAt", nullable(state.ptt.release.completedAt?.toString()))
+            put("txReleaseElapsedMs", nullable(state.ptt.release.elapsedMs))
+            put("txReleaseExitReason", nullable(state.ptt.release.exitReason))
+            put("txFloorRenewDuringReleaseCount", JsonPrimitive(state.ptt.release.floorRenewDuringReleaseCount))
+            put("txFloorLastRenewAt", nullable(state.ptt.release.floorLastRenewAt?.toString()))
+            put("txCaptureForwardingStoppedAt", nullable(tx.captureForwardingStoppedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
+            put("txPendingFramesAtPttUp", JsonPrimitive(tx.pendingFramesAtPttUp))
+            put("txPendingFramesBeforeFinalMarker", JsonPrimitive(tx.pendingFramesBeforeFinalMarker))
+            put("txFinalMarkerAttemptedAt", nullable(tx.finalMarkerAttemptedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
+            put("txFinalMarkerAcceptedAt", nullable(tx.finalMarkerAcceptedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
+            put("txFinalMarkerResult", JsonPrimitive(tx.finalMarkerResult))
+            put("txControlEndAttemptedAt", nullable(state.ptt.release.controlEndAttemptedAt?.toString()))
+            put("txControlEndPublishedAt", nullable(state.ptt.release.controlEndPublishedAt?.toString()))
+            put("txFloorReleaseRequestedAt", nullable(state.ptt.release.floorReleaseRequestedAt?.toString()))
+            put("txFloorReleaseCompletedAt", nullable(state.ptt.release.floorReleaseCompletedAt?.toString()))
+            put("txTerminalRecoveryResult", JsonPrimitive(state.ptt.release.terminalRecoveryResult))
             put("rxGenerationPresent", JsonPrimitive(bufferedRx.generationId != null))
             put("rxPlaybackCursor", JsonPrimitive(bufferedRx.playbackCursor))
             put("rxLatestSequence", JsonPrimitive(bufferedRx.latestSequence))

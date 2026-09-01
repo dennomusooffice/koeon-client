@@ -18,6 +18,7 @@ class PttSemanticStateTest {
         assertEquals(PttSemanticState.OFFLINE, pttSemanticState(true, false, false, false, PttState.IDLE))
         assertEquals(PttSemanticState.TALKING, pttSemanticState(true, true, false, false, PttState.TRANSMITTING))
         assertEquals(PttSemanticState.PREPARING, pttSemanticState(true, true, false, false, PttState.REQUESTING_FLOOR))
+        assertEquals(PttSemanticState.PREPARING, pttSemanticState(true, true, false, false, PttState.RELEASING))
         assertEquals(PttSemanticState.BUSY_REMOTE, pttSemanticState(true, true, false, false, PttState.BUSY))
     }
 

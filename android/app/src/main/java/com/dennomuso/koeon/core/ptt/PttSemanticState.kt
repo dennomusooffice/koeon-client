@@ -23,8 +23,8 @@ fun pttSemanticState(
     pttState == PttState.ERROR -> PttSemanticState.ERROR
     !connected -> PttSemanticState.OFFLINE
     recovering -> PttSemanticState.RECOVERING
-    remoteTalking || pttState == PttState.BUSY -> PttSemanticState.BUSY_REMOTE
     pttState == PttState.TRANSMITTING -> PttSemanticState.TALKING
-    pttState == PttState.REQUESTING_FLOOR -> PttSemanticState.PREPARING
+    pttState == PttState.REQUESTING_FLOOR || pttState == PttState.RELEASING -> PttSemanticState.PREPARING
+    remoteTalking || pttState == PttState.BUSY -> PttSemanticState.BUSY_REMOTE
     else -> PttSemanticState.READY
 }

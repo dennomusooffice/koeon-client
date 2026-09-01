@@ -154,6 +154,10 @@ struct BufferedAudioRxDiagnostics: Equatable, Sendable {
     var finalFrameWrittenAt: Date?
     var playerDrainCompletedAt: Date?
     var endCueAt: Date?
+    var missingFinalFallbackEligibleAt: Date?
+    var missingFinalFallbackCompletedAt: Date?
+    var missingFinalFallbackStableMilliseconds: Int?
+    var terminalReason: String?
 }
 
 /// Realtime capture only copies post-processed PCM into bounded RAM.
@@ -785,6 +789,8 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
 
 @MainActor
 final class BufferedAudioReceiver {
+    private static let missingFinalStableGraceSeconds: TimeInterval = 0.75
+    private static let floorStatusPollIntervalSeconds: TimeInterval = 0.25
     private let api: any KOEONAPIClientProtocol
     private let sessionId: String
     private let onActivity: (String?, Bool) -> Void
@@ -792,9 +798,18 @@ final class BufferedAudioReceiver {
     private let onTimelineDrained: @MainActor () async -> Void
     private let onFailure: (String) -> Void
     private let player: any IOSBatv1PcmPlaying
+    private let monotonicNow: () -> TimeInterval
     private var task: Task<Void, Never>?
     private var audioSessionActive = false
     private var generationToken = 0
+    private var expectedLeaseId: String?
+    private var senderUserId: String?
+    private var controlEndUptime: TimeInterval?
+    private var floorTerminalUptime: TimeInterval?
+    private var lastFloorStatusPollUptime: TimeInterval?
+    private var latestSequenceStableSinceUptime: TimeInterval?
+    private var observedLatestSequence = -1
+    private var activeSenderSessionId: String?
     private(set) var diagnostics = BufferedAudioRxDiagnostics()
 
     init(
@@ -804,7 +819,8 @@ final class BufferedAudioReceiver {
         onPcm: @escaping (Date) -> Void = { _ in },
         onTimelineDrained: @escaping @MainActor () async -> Void = {},
         onFailure: @escaping (String) -> Void = { _ in },
-        player: (any IOSBatv1PcmPlaying)? = nil
+        player: (any IOSBatv1PcmPlaying)? = nil,
+        monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.api = api
         self.sessionId = sessionId
@@ -813,14 +829,23 @@ final class BufferedAudioReceiver {
         self.onTimelineDrained = onTimelineDrained
         self.onFailure = onFailure
         self.player = player ?? IOSBatv1PcmPlayer()
+        self.monotonicNow = monotonicNow
     }
 
-    func start(generationId: String, senderSessionId: String?) {
+    func start(generationId: String, senderSessionId: String?, leaseId: String? = nil, senderUserId: String? = nil) {
         let previous = task
         previous?.cancel()
         generationToken += 1
         let token = generationToken
         diagnostics = BufferedAudioRxDiagnostics(generationId: generationId)
+        expectedLeaseId = leaseId
+        self.senderUserId = senderUserId
+        controlEndUptime = nil
+        floorTerminalUptime = nil
+        lastFloorStatusPollUptime = nil
+        latestSequenceStableSinceUptime = nil
+        observedLatestSequence = -1
+        activeSenderSessionId = senderSessionId
         task = Task { @MainActor [weak self] in
             await previous?.value
             guard let self, self.generationToken == token else { return }
@@ -839,8 +864,9 @@ final class BufferedAudioReceiver {
     func audioSessionDidDeactivate() { audioSessionActive = false }
 
     func noteControlEnd(at: Date = Date()) {
-        guard diagnostics.generationId != nil else { return }
+        guard diagnostics.generationId != nil || diagnostics.terminalReason != nil else { return }
         diagnostics.controlEndReceivedAt = at
+        controlEndUptime = monotonicNow()
     }
 
     func noteEndCue(at: Date = Date()) {
@@ -851,6 +877,9 @@ final class BufferedAudioReceiver {
     func stop() {
         generationToken += 1
         task?.cancel()
+        if let activeSenderSessionId { onActivity(activeSenderSessionId, false) }
+        activeSenderSessionId = nil
+        diagnostics.generationId = nil
     }
 
     func stopAndAwait() async {
@@ -859,6 +888,9 @@ final class BufferedAudioReceiver {
         previous?.cancel()
         await previous?.value
         task = nil
+        if let activeSenderSessionId { onActivity(activeSenderSessionId, false) }
+        activeSenderSessionId = nil
+        diagnostics.generationId = nil
     }
 
     func awaitCurrentGenerationTermination() async { await task?.value }
@@ -874,6 +906,7 @@ final class BufferedAudioReceiver {
         }
         guard !Task.isCancelled else { return }
         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_START", generationId: generationId)
+        var terminalDrainPublished = false
         do {
             diagnostics.graphWireFormat = "PCM16LE_48000_MONO"
             diagnostics.graphPlaybackFormat = "FLOAT32_48000_MONO_STANDARD"
@@ -916,6 +949,13 @@ final class BufferedAudioReceiver {
                     diagnostics.bufferHeadExpired = true
                     throw BufferedAudioError.timelineHeadExpired
                 }
+                let now = monotonicNow()
+                if response.latestSequence != observedLatestSequence {
+                    observedLatestSequence = response.latestSequence
+                    latestSequenceStableSinceUptime = now
+                } else if latestSequenceStableSinceUptime == nil {
+                    latestSequenceStableSinceUptime = now
+                }
                 if let final = response.finalSequence, diagnostics.finalSequenceObservedAt == nil {
                     diagnostics.finalSequence = final
                     diagnostics.finalSequenceObservedAt = Date()
@@ -956,6 +996,29 @@ final class BufferedAudioReceiver {
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_DRAIN_END", generationId: generationId)
                     onActivity(senderSessionId, false)
                     await onTimelineDrained()
+                    terminalDrainPublished = true
+                    diagnostics.endCueAt = Date()
+                    diagnostics.terminalReason = "final_sequence"
+                    break
+                }
+                if response.finalSequence == nil,
+                   await missingFinalFallbackEligible(response: response, cursor: cursor, now: now) {
+                    diagnostics.missingFinalFallbackEligibleAt = Date()
+                    diagnostics.missingFinalFallbackStableMilliseconds = latestSequenceStableSinceUptime.map {
+                        max(0, Int((now - $0) * 1_000))
+                    }
+                    Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_MISSING_FINAL_DRAIN_BEGIN", generationId: generationId)
+                    await player.drain(generationToken: generationToken)
+                    diagnostics.playbackCursor = cursor
+                    diagnostics.backlogMilliseconds = 0
+                    diagnostics.playbackRate = 1
+                    diagnostics.playerDrainCompletedAt = Date()
+                    diagnostics.missingFinalFallbackCompletedAt = Date()
+                    diagnostics.terminalReason = "missing_final_floor_terminal_stable"
+                    Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_MISSING_FINAL_DRAIN_END", generationId: generationId)
+                    onActivity(senderSessionId, false)
+                    await onTimelineDrained()
+                    terminalDrainPublished = true
                     diagnostics.endCueAt = Date()
                     break
                 }
@@ -978,6 +1041,41 @@ final class BufferedAudioReceiver {
         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_STOP_BEGIN", generationId: generationId)
         player.endGeneration(token: generationToken)
         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_STOP_END", generationId: generationId)
-        if diagnostics.playerDrainCompletedAt == nil { onActivity(senderSessionId, false) }
+        guard self.generationToken == generationToken else { return }
+        if !terminalDrainPublished {
+            onActivity(senderSessionId, false)
+            await onTimelineDrained()
+            diagnostics.endCueAt = diagnostics.endCueAt ?? Date()
+        }
+        diagnostics.generationId = nil
+        activeSenderSessionId = nil
+    }
+
+    private func missingFinalFallbackEligible(
+        response: Batv1SubscribeResponse,
+        cursor: Int,
+        now: TimeInterval
+    ) async -> Bool {
+        guard diagnostics.controlEndReceivedAt != nil,
+              controlEndUptime != nil,
+              cursor > response.latestSequence,
+              let stableSince = latestSequenceStableSinceUptime else { return false }
+        if floorTerminalUptime == nil,
+           lastFloorStatusPollUptime.map({ now - $0 >= Self.floorStatusPollIntervalSeconds }) ?? true {
+            lastFloorStatusPollUptime = now
+            if let floor = try? await api.floorStatus(sessionId: sessionId), senderNoLongerOwnsFloor(floor) {
+                floorTerminalUptime = monotonicNow()
+            }
+        }
+        guard let floorTerminalUptime else { return false }
+        let evidenceSince = max(stableSince, max(controlEndUptime ?? now, floorTerminalUptime))
+        return now - evidenceSince >= Self.missingFinalStableGraceSeconds
+    }
+
+    private func senderNoLongerOwnsFloor(_ floor: FloorResponse) -> Bool {
+        if floor.outcome == .available || floor.outcome == .released { return true }
+        if let expectedLeaseId, let actualLeaseId = floor.leaseId, actualLeaseId != expectedLeaseId { return true }
+        if let senderUserId, let ownerId = floor.owner?.id, ownerId != senderUserId { return true }
+        return false
     }
 }
