@@ -131,6 +131,7 @@ struct RxConsistencyGuard: Sendable {
         generation: Int,
         participantResolved: Bool,
         trackSubscribed: Bool,
+        batv1TimelineActive: Bool = false,
         at: Date
     ) {
         guard active, let sessionId, generation > 0 else {
@@ -140,6 +141,8 @@ struct RxConsistencyGuard: Sendable {
             snapshot.remotePcmObserved = false
             snapshot.participantResolved = false
             snapshot.trackSubscribed = false
+            snapshot.batv1TimelineActive = false
+            snapshot.rxPathReconciliationActive = false
             validatedRxStartedAt = nil
             pcmTimeoutEmitted = false
             return
@@ -150,11 +153,14 @@ struct RxConsistencyGuard: Sendable {
             validatedRxStartedAt = at
             pcmTimeoutEmitted = false
         }
-        snapshot.validatedRemoteRxActive = true
+        let pathViable = participantResolved || trackSubscribed || batv1TimelineActive
+        snapshot.validatedRemoteRxActive = pathViable
+        snapshot.rxPathReconciliationActive = !pathViable
         snapshot.validatedRxSessionId = sessionId
         snapshot.validatedRxGeneration = generation
         snapshot.participantResolved = participantResolved
         snapshot.trackSubscribed = trackSubscribed
+        snapshot.batv1TimelineActive = batv1TimelineActive
     }
 
     @discardableResult
@@ -177,17 +183,18 @@ struct RxConsistencyGuard: Sendable {
     ) -> RxDivergenceEvaluation {
         var evaluation = RxDivergenceEvaluation()
 
-        if snapshot.validatedRemoteRxActive,
+        if (snapshot.validatedRemoteRxActive || snapshot.rxPathReconciliationActive),
            !snapshot.remotePcmObserved,
-           !pcmTimeoutEmitted,
            let startedAt = validatedRxStartedAt {
             let elapsed = milliseconds(from: startedAt, to: at)
-            if elapsed >= thresholdMilliseconds {
+            if elapsed >= thresholdMilliseconds, !pcmTimeoutEmitted {
                 pcmTimeoutEmitted = true
-                if (!snapshot.participantResolved || !snapshot.trackSubscribed), snapshot.recoveryAttempts < 1 {
+                if (!snapshot.participantResolved || !snapshot.trackSubscribed), snapshot.recoveryAttempts < 16 {
                     snapshot.recoveryAttempts += 1
                     evaluation.recoverySessionId = snapshot.validatedRxSessionId
                     evaluation.recoveryGeneration = snapshot.validatedRxGeneration
+                    validatedRxStartedAt = at
+                    pcmTimeoutEmitted = false
                 }
                 evaluation.signals.append(RxDivergenceSignal(
                     event: "rx_pcm_timeout",
@@ -235,9 +242,8 @@ struct RxConsistencyGuard: Sendable {
         if snapshot.remoteMediaSpeakerActive, let mediaEvidenceAt {
             deadlines.append(mediaEvidenceAt.addingTimeInterval(Double(thresholdMilliseconds) / 1_000))
         }
-        if snapshot.validatedRemoteRxActive,
+        if (snapshot.validatedRemoteRxActive || snapshot.rxPathReconciliationActive),
            !snapshot.remotePcmObserved,
-           !pcmTimeoutEmitted,
            let validatedRxStartedAt {
             deadlines.append(validatedRxStartedAt.addingTimeInterval(Double(thresholdMilliseconds) / 1_000))
         }
@@ -253,7 +259,9 @@ struct RxConsistencyGuard: Sendable {
     }
 
     private mutating func beginEpisodeIfNeeded() {
-        guard !snapshot.remoteMediaSpeakerActive, !snapshot.validatedRemoteRxActive else { return }
+        guard !snapshot.remoteMediaSpeakerActive,
+              !snapshot.validatedRemoteRxActive,
+              !snapshot.rxPathReconciliationActive else { return }
         snapshot.episode += 1
         snapshot.recoveryAttempts = 0
         pcmTimeoutEmitted = false
@@ -308,12 +316,17 @@ final class RemoteReceiveActivationCoordinator {
 
     @discardableResult
     func handleValidatedStart(_ event: PttControlEvent, generation: Int = 0) -> Bool {
+        snapshot.wakeId = "rx-\(generation)-\(String(event.leaseId.prefix(8)))"
         guard let speaker = resolveSpeaker(event.sessionId), speaker.sessionId == event.sessionId else {
             pendingSessionId = event.sessionId
             pendingLeaseId = event.leaseId
             pendingGeneration = generation
             snapshot.remoteParticipantState = "RESOLUTION_FAILED"
             snapshot.resolutionFailures += 1
+            snapshot.participantPresentBeforeWake = false
+            snapshot.participantRebindStartedAt = snapshot.participantRebindStartedAt ?? clock.now
+            snapshot.participantRebindAttemptCount += 1
+            snapshot.participantRebindResult = "RECONCILING"
             publish()
             return false
         }
@@ -329,6 +342,9 @@ final class RemoteReceiveActivationCoordinator {
         snapshot.remoteSpeakerName = speaker.displayName
         snapshot.remoteGeneration = generation
         snapshot.remoteLeasePrefix = String(event.leaseId.prefix(8))
+        snapshot.participantPresentBeforeWake = true
+        snapshot.participantRebindResolvedAt = clock.now
+        snapshot.participantRebindResult = "RESOLVED"
         if !isSameParticipant {
             snapshot.remoteParticipantState = "ACTIVATION_REQUESTED"
             snapshot.activationRequestedAt = clock.now
@@ -405,6 +421,7 @@ final class RemoteReceiveActivationCoordinator {
     /// might never produce.
     @discardableResult
     func handleParticipantAvailable(sessionId: String) -> Bool {
+        if pendingSessionId == sessionId { snapshot.participantRebindAttemptCount += 1 }
         guard pendingSessionId == sessionId,
               let leaseId = pendingLeaseId,
               pendingGeneration > 0,
@@ -425,11 +442,19 @@ final class RemoteReceiveActivationCoordinator {
         snapshot.firstAudioAt = nil
         snapshot.activationMilliseconds = nil
         snapshot.remoteParticipantClearedAt = nil
+        snapshot.participantRebindResolvedAt = clock.now
+        snapshot.participantRebindResult = "RESOLVED"
         requestRemoteParticipant(
             speaker, generation: activeGeneration, sessionId: sessionId, leaseId: leaseId
         )
         publish()
         return true
+    }
+
+    func markNoPcmRecoveryAttempt() {
+        snapshot.noPcmRecoveryStartedAt = snapshot.noPcmRecoveryStartedAt ?? clock.now
+        snapshot.noPcmRecoveryResult = "RECONCILING"
+        publish()
     }
 
     func handleRemotePcm() {
@@ -440,6 +465,8 @@ final class RemoteReceiveActivationCoordinator {
         }
         snapshot.rxFirstPcmGeneration = activeGeneration
         snapshot.remoteParticipantState = "PLAYING"
+        snapshot.rxPathViableAt = snapshot.rxPathViableAt ?? clock.now
+        snapshot.noPcmRecoveryResult = snapshot.noPcmRecoveryStartedAt == nil ? "NOT_REQUIRED" : "RECOVERED"
         publish()
     }
 

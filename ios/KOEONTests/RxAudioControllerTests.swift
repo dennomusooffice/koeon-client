@@ -339,7 +339,7 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertNil(snapshot.rxFirstPcmAt)
     }
 
-    func testValidatedRxWithoutPcmDiagnosesAndAttemptsRecoveryOnlyOnce() {
+    func testValidatedRxWithoutPcmUsesBoundedRepeatedReconciliation() {
         let started = Date(timeIntervalSince1970: 1_000)
         var guardState = RxConsistencyGuard()
         guardState.updateValidatedRx(
@@ -357,10 +357,41 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertEqual(first.recoveryGeneration, 9)
         XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
 
-        let second = guardState.evaluate(at: started.addingTimeInterval(1), thresholdMilliseconds: 250)
-        XCTAssertTrue(second.signals.isEmpty)
-        XCTAssertNil(second.recoverySessionId)
-        XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
+        let second = guardState.evaluate(at: started.addingTimeInterval(0.5), thresholdMilliseconds: 250)
+        XCTAssertEqual(second.recoverySessionId, "session-a")
+        XCTAssertEqual(guardState.snapshot.recoveryAttempts, 2)
+    }
+
+    func testB8ControlStartWithoutParticipantIsReconcilingButNotFalselyValidated() {
+        let started = Date(timeIntervalSince1970: 2_000)
+        var guardState = RxConsistencyGuard()
+        guardState.updateValidatedRx(
+            active: true, sessionId: "session-a", generation: 22,
+            participantResolved: false, trackSubscribed: false, batv1TimelineActive: false, at: started
+        )
+        XCTAssertFalse(guardState.snapshot.validatedRemoteRxActive)
+        XCTAssertTrue(guardState.snapshot.rxPathReconciliationActive)
+        XCTAssertTrue(guardState.snapshot.remoteBusyBlocksLocalPtt)
+        XCTAssertEqual(guardState.evaluate(at: started.addingTimeInterval(0.25)).recoverySessionId, "session-a")
+    }
+
+    func testB10FiftyBackgroundRebindGenerationsNeverCreateFalseValidatedRx() {
+        for generation in 1...50 {
+            var guardState = RxConsistencyGuard()
+            let started = Date(timeIntervalSince1970: Double(3_000 + generation))
+            guardState.updateValidatedRx(
+                active: true, sessionId: "session-a", generation: generation,
+                participantResolved: false, trackSubscribed: false, batv1TimelineActive: false, at: started
+            )
+            XCTAssertFalse(guardState.snapshot.validatedRemoteRxActive)
+            XCTAssertTrue(guardState.snapshot.rxPathReconciliationActive)
+            guardState.updateValidatedRx(
+                active: true, sessionId: "session-a", generation: generation,
+                participantResolved: true, trackSubscribed: true, at: started.addingTimeInterval(0.5)
+            )
+            XCTAssertTrue(guardState.snapshot.validatedRemoteRxActive)
+            XCTAssertFalse(guardState.snapshot.rxPathReconciliationActive)
+        }
     }
 
     func testOldGenerationPcmCannotSatisfyCurrentRxFence() {

@@ -130,6 +130,13 @@ struct BufferedAudioTxDiagnostics: Equatable, Sendable {
     var lastAudioSequence = -1
     var finalMarkerSequence: Int?
     var finalMarkerAt: Date?
+    var captureCallbackCount = 0
+    var captureCallbackSampleRate: Int?
+    var captureCallbackChannels: Int?
+    var captureCallbackFrameCount: Int?
+    var unsupportedFormatFrameCount = 0
+    var normalizedFrameCount = 0
+    var captureNormalizationResult = "NOT_REQUIRED"
 }
 
 struct BufferedAudioRxDiagnostics: Equatable, Sendable {
@@ -170,6 +177,12 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     private var forward: (@Sendable (Data) -> Void)?
     private var dropped = 0
     private var firstPcmAt: Date?
+    private var callbackCount = 0
+    private var callbackSampleRate: Int?
+    private var callbackChannels: Int?
+    private var callbackFrameCount: Int?
+    private var unsupportedFormatFrames = 0
+    private var normalizedFrames = 0
 
     func arm(generationId: String) {
         lock.withLock {
@@ -179,6 +192,12 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
             forward = nil
             dropped = 0
             firstPcmAt = nil
+            callbackCount = 0
+            callbackSampleRate = nil
+            callbackChannels = nil
+            callbackFrameCount = nil
+            unsupportedFormatFrames = 0
+            normalizedFrames = 0
         }
     }
 
@@ -192,10 +211,33 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     }
 
     func append(samples: [Int16], sampleRate: Int, channels: Int) {
-        guard sampleRate == batv1SampleRate, channels == batv1Channels, !samples.isEmpty else { return }
-        let bytes = samples.withUnsafeBytes { Data($0) }
+        guard !samples.isEmpty else { return }
+        let normalized: [Int16]
+        if sampleRate == batv1SampleRate, channels == batv1Channels {
+            normalized = samples
+        } else if channels == 1, sampleRate > 0,
+                  let converted = try? Batv1CaptureNormalizer.normalizeMono(
+                    samples: samples, sourceSampleRate: sampleRate
+                  ) {
+            normalized = converted
+        } else {
+            lock.withLock {
+                callbackCount += 1
+                callbackSampleRate = sampleRate
+                callbackChannels = channels
+                callbackFrameCount = samples.count
+                unsupportedFormatFrames += samples.count
+            }
+            return
+        }
+        let bytes = normalized.withUnsafeBytes { Data($0) }
         lock.withLock {
             guard generationId != nil else { return }
+            callbackCount += 1
+            callbackSampleRate = sampleRate
+            callbackChannels = channels
+            callbackFrameCount = samples.count
+            if sampleRate != batv1SampleRate { normalizedFrames += normalized.count }
             if firstPcmAt == nil { firstPcmAt = Date() }
             partial.append(bytes)
             while partial.count >= batv1BytesPerFrame {
@@ -245,6 +287,60 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     var frameCount: Int { lock.withLock { frames.count } }
     var droppedFrames: Int { lock.withLock { dropped } }
     var firstPcmTimestamp: Date? { lock.withLock { firstPcmAt } }
+    var callbackDiagnostics: (count: Int, sampleRate: Int?, channels: Int?, frames: Int?, unsupported: Int, normalized: Int) {
+        lock.withLock {
+            (callbackCount, callbackSampleRate, callbackChannels, callbackFrameCount, unsupportedFormatFrames, normalizedFrames)
+        }
+    }
+}
+
+enum Batv1CaptureNormalizer {
+    static func normalizeMono(samples: [Int16], sourceSampleRate: Int) throws -> [Int16] {
+        guard sourceSampleRate > 0, !samples.isEmpty else { return [] }
+        if sourceSampleRate == batv1SampleRate { return samples }
+        guard let sourceFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: Double(sourceSampleRate),
+            channels: 1,
+            interleaved: false
+        ), let targetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: Double(batv1SampleRate),
+            channels: 1,
+            interleaved: false
+        ), let converter = AVAudioConverter(from: sourceFormat, to: targetFormat),
+        let input = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(samples.count)) else {
+            throw BufferedAudioError.invalidAudioGraphFormat
+        }
+        input.frameLength = input.frameCapacity
+        guard let inputData = input.int16ChannelData?[0] else { throw BufferedAudioError.invalidAudioGraphFormat }
+        samples.withUnsafeBufferPointer { source in
+            inputData.update(from: source.baseAddress!, count: source.count)
+        }
+        let targetCapacity = AVAudioFrameCount(
+            ceil(Double(samples.count) * Double(batv1SampleRate) / Double(sourceSampleRate)) + 32
+        )
+        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetCapacity) else {
+            throw BufferedAudioError.invalidAudioGraphFormat
+        }
+        var supplied = false
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+            if supplied {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return input
+        }
+        if let conversionError { throw conversionError }
+        guard status == .haveData || status == .inputRanDry,
+              let outputData = output.int16ChannelData?[0] else {
+            throw BufferedAudioError.invalidAudioGraphFormat
+        }
+        return Array(UnsafeBufferPointer(start: outputData, count: Int(output.frameLength)))
+    }
 }
 
 @MainActor
@@ -390,6 +486,14 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
             diagnostics.captureConfirmMilliseconds = max(0, Int(confirmedAt.timeIntervalSince(armed) * 1_000))
         }
         diagnostics.captureState = confirmed ? "ACTIVE" : "ERROR"
+        let callback = capture.callbackDiagnostics
+        diagnostics.captureCallbackCount = callback.count
+        diagnostics.captureCallbackSampleRate = callback.sampleRate
+        diagnostics.captureCallbackChannels = callback.channels
+        diagnostics.captureCallbackFrameCount = callback.frames
+        diagnostics.unsupportedFormatFrameCount = callback.unsupported
+        diagnostics.normalizedFrameCount = callback.normalized
+        diagnostics.captureNormalizationResult = callback.normalized > 0 ? "NORMALIZED_TO_PCM16LE_48000_MONO" : "NOT_REQUIRED"
         guard confirmed else {
             diagnostics.lastErrorCode = "BATV1_CAPTURE_ZERO_FRAMES"
             return false
@@ -458,14 +562,26 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
             throw BufferedAudioError.emptyGeneration
         }
         do {
-            Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_FINAL_MARKER_BEGIN", generationId: generationId)
-            _ = try await api.publishBufferedAudio(request(
-                leaseId: leaseId,
-                generationId: generationId,
-                frames: [],
-                firstSequence: nextSequence,
-                finalSequence: finalSequence
-            ))
+            var lastFailure: Error?
+            for attempt in 1...2 {
+                do {
+                    Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_FINAL_MARKER_BEGIN", generationId: generationId)
+                    _ = try await api.publishBufferedAudio(request(
+                        leaseId: leaseId,
+                        generationId: generationId,
+                        frames: [],
+                        firstSequence: nextSequence,
+                        finalSequence: finalSequence
+                    ))
+                    lastFailure = nil
+                    break
+                } catch {
+                    lastFailure = error
+                    guard attempt == 1, !Task.isCancelled else { break }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            if let lastFailure { throw lastFailure }
             diagnostics.finalMarkerSequence = finalSequence
             diagnostics.finalMarkerAt = Date()
             Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_FINAL_MARKER_END", generationId: generationId)

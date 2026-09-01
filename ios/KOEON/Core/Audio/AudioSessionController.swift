@@ -267,6 +267,14 @@ final class AudioSessionController: ObservableObject {
     private var outputVolumeObservation: NSKeyValueObservation?
     private var interruptionState = AudioInterruptionStateMachine()
 
+    var diagnosticCategory: String { audioSession.category.rawValue }
+    var diagnosticMode: String { audioSession.mode.rawValue }
+    var diagnosticSampleRate: Double { audioSession.sampleRate }
+    var diagnosticIoBufferDuration: Double { audioSession.ioBufferDuration }
+    var diagnosticInputPortTypes: [String] { audioSession.currentRoute.inputs.map { $0.portType.rawValue } }
+    var diagnosticOutputPortTypes: [String] { audioSession.currentRoute.outputs.map { $0.portType.rawValue } }
+    var diagnosticAvailableInputPortTypes: [String] { audioSession.availableInputs?.map { $0.portType.rawValue } ?? [] }
+
     init(center: NotificationCenter = .default, audioSession: AVAudioSession = .sharedInstance()) {
         self.center = center
         self.audioSession = audioSession

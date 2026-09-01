@@ -751,8 +751,7 @@ final class IntercomSessionController: ObservableObject {
     var selectedChannel: Channel? { fixture?.channels.first { $0.id == selectedChannelId } }
     var canPressPTT: Bool {
         operationalState == .active && isJoined && joinedSession?.canPublish == true && room.connectionState == .connected &&
-            audio.interruption.state == .ready && !rxConsistencySnapshot.remoteMediaSpeakerActive &&
-            !rxConsistencySnapshot.validatedRemoteRxActive
+            audio.interruption.state == .ready && !rxConsistencySnapshot.remoteBusyBlocksLocalPtt
     }
 
     var pttEligible: Bool { canPressPTT }
@@ -765,6 +764,7 @@ final class IntercomSessionController: ObservableObject {
         if audio.interruption.state != .ready { return "audio_not_ready" }
         if rxConsistencySnapshot.remoteMediaSpeakerActive { return "remote_media_active" }
         if rxConsistencySnapshot.validatedRemoteRxActive { return "remote_rx_active" }
+        if rxConsistencySnapshot.rxPathReconciliationActive { return "remote_rx_reconciling" }
         if pttRequestGate.state != .idle { return "request_gate_busy" }
         if pttSnapshot.state == .error { return "ptt_error" }
         return "none"
@@ -775,7 +775,7 @@ final class IntercomSessionController: ObservableObject {
         if pttSnapshot.state == .error || operationalState == .error { return .error }
         if room.connectionState == .disconnected || !isJoined { return .offline }
         if room.connectionState == .reconnecting || audio.interruption.state == .recovering { return .recovering }
-        if rxConsistencySnapshot.remoteMediaSpeakerActive || rxConsistencySnapshot.validatedRemoteRxActive || pttSnapshot.state == .busy {
+        if rxConsistencySnapshot.remoteBusyBlocksLocalPtt || pttSnapshot.state == .busy {
             return .busyRemote
         }
         if pttSnapshot.state == .transmitting { return .talking }
@@ -1138,7 +1138,7 @@ final class IntercomSessionController: ObservableObject {
             if isJoined, audio.interruption.state != .ready {
                 lastError = "AUDIO INTERRUPTED: 音声復旧が完了するまでPTTは利用できません"
                 playStatusCue(.error)
-            } else if rxConsistencySnapshot.remoteMediaSpeakerActive || rxConsistencySnapshot.validatedRemoteRxActive {
+            } else if rxConsistencySnapshot.remoteBusyBlocksLocalPtt {
                 playStatusCue(.busy)
             }
             return
@@ -1966,12 +1966,15 @@ final class IntercomSessionController: ObservableObject {
         let subscribed = snapshot.sessionId.map {
             room.isRemoteAudioSubscriptionActive(sessionId: $0, generation: snapshot.generation)
         } ?? false
+        let buffered = bufferedReceiver?.diagnostics
+        let batv1TimelineActive = buffered?.generationId != nil && buffered?.timelineLost == false
         rxConsistencyGuard.updateValidatedRx(
             active: validated,
             sessionId: snapshot.sessionId,
             generation: snapshot.generation,
             participantResolved: resolved,
             trackSubscribed: subscribed,
+            batv1TimelineActive: batv1TimelineActive,
             at: Date()
         )
         rxConsistencySnapshot = rxConsistencyGuard.snapshot
@@ -1990,11 +1993,13 @@ final class IntercomSessionController: ObservableObject {
               current.sessionId == sessionId,
               current.generation > 0 else { return }
         if resolved { applyRemoteReceiveSnapshot(remoteReceive?.currentSnapshot() ?? remoteReceiveSnapshot) }
-        Task { [weak room] in
+        Task { [weak self, weak room] in
             _ = try? await room?.activateRemoteAudioSubscription(
                 sessionId: sessionId,
                 generation: current.generation
             )
+            guard let self else { return }
+            self.applyRxSnapshot(self.rx?.currentSnapshot() ?? self.rxSnapshot)
         }
     }
 
@@ -2032,12 +2037,15 @@ final class IntercomSessionController: ObservableObject {
             room.clearVerifiedInactiveRemoteMediaActivity(sessionId: sessionId)
         }
         if let sessionId = evaluation.recoverySessionId, evaluation.recoveryGeneration > 0 {
+            remoteReceive?.markNoPcmRecoveryAttempt()
             _ = remoteReceive?.handleParticipantAvailable(sessionId: sessionId)
-            Task { [weak room] in
+            Task { [weak self, weak room] in
                 _ = try? await room?.activateRemoteAudioSubscription(
                     sessionId: sessionId,
                     generation: evaluation.recoveryGeneration
                 )
+                guard let self else { return }
+                self.applyRxSnapshot(self.rx?.currentSnapshot() ?? self.rxSnapshot)
             }
         }
         scheduleRxDivergenceWatchdogIfNeeded()
@@ -2066,7 +2074,7 @@ final class IntercomSessionController: ObservableObject {
             audioSessionState: audio.interruption.state.rawValue,
             pcmObserved: state.remotePcmObserved,
             mediaSpeakerActive: state.remoteMediaSpeakerActive,
-            pttEligible: baseEligible && !state.remoteMediaSpeakerActive && !state.validatedRemoteRxActive
+            pttEligible: baseEligible && !state.remoteBusyBlocksLocalPtt
         )
         rxDivergenceDiagnostics.append(diagnostic)
         if rxDivergenceDiagnostics.count > 20 {
@@ -2263,6 +2271,18 @@ final class IntercomSessionController: ObservableObject {
                 "audioRearmedAt": timestamp(audioRearmedAt),
                 "readyAt": timestamp(readyAt),
                 "nextPttDownAt": timestamp(nextPttDownAt),
+                "txReleasePhase": releaseSnapshot.txReleasePhase,
+                "txReleaseAttemptGeneration": number(releaseSnapshot.txReleaseAttemptGeneration),
+                "txReleaseEnteredSequence": number(releaseSnapshot.txReleaseEnteredSequence),
+                "txFloorRenewDuringReleaseCount": releaseSnapshot.txFloorRenewDuringReleaseCount,
+                "txFinalMarkerAcceptedSequence": number(releaseSnapshot.txFinalMarkerAcceptedSequence),
+                "txControlEndPublishedSequence": number(releaseSnapshot.txControlEndPublishedSequence),
+                "txFloorReleaseRequestedSequence": number(releaseSnapshot.txFloorReleaseRequestedSequence),
+                "txFloorReleaseCompletedSequence": number(releaseSnapshot.txFloorReleaseCompletedSequence),
+                "txReleaseCompletedSequence": number(releaseSnapshot.txReleaseCompletedSequence),
+                "txReleaseResult": releaseSnapshot.txReleaseResult,
+                "txTerminalCleanupComplete": releaseSnapshot.txTerminalCleanupComplete,
+                "txErrorRecoverable": optional(releaseSnapshot.txErrorRecoverable),
             ],
             "backgroundWake": [
                 "appLifecycleState": appLifecycleState,
@@ -2297,6 +2317,15 @@ final class IntercomSessionController: ObservableObject {
                 "resumeLiveKitConnectedAt": timestamp(resumeLiveKitConnectedAt),
                 "appleDidActivateAt": timestamp(appleDidActivateAt),
                 "firstPcmAt": timestamp(rxSnapshot.rxFirstPcmAt),
+                "wakeId": optional(remoteReceiveSnapshot.wakeId),
+                "participantPresentBeforeWake": optional(remoteReceiveSnapshot.participantPresentBeforeWake),
+                "participantRebindStartedAt": timestamp(remoteReceiveSnapshot.participantRebindStartedAt),
+                "participantRebindAttemptCount": remoteReceiveSnapshot.participantRebindAttemptCount,
+                "participantRebindResolvedAt": timestamp(remoteReceiveSnapshot.participantRebindResolvedAt),
+                "participantRebindResult": remoteReceiveSnapshot.participantRebindResult,
+                "rxPathViableAt": timestamp(remoteReceiveSnapshot.rxPathViableAt),
+                "noPcmRecoveryStartedAt": timestamp(remoteReceiveSnapshot.noPcmRecoveryStartedAt),
+                "noPcmRecoveryResult": remoteReceiveSnapshot.noPcmRecoveryResult,
             ],
             "foregroundRecovery": [
                 "lastBackgroundAt": timestamp(lastBackgroundAt),
@@ -2371,6 +2400,8 @@ final class IntercomSessionController: ObservableObject {
                 "episode": rxConsistencySnapshot.episode,
                 "remoteMediaSpeakerActive": rxConsistencySnapshot.remoteMediaSpeakerActive,
                 "validatedRemoteRxActive": rxConsistencySnapshot.validatedRemoteRxActive,
+                "rxPathReconciliationActive": rxConsistencySnapshot.rxPathReconciliationActive,
+                "batv1TimelineActive": rxConsistencySnapshot.batv1TimelineActive,
                 "remotePcmObserved": rxConsistencySnapshot.remotePcmObserved,
                 "trackSubscribed": rxConsistencySnapshot.trackSubscribed,
                 "localPttEligible": pttEligible,
@@ -2385,6 +2416,14 @@ final class IntercomSessionController: ObservableObject {
             "audio": [
                 "route": audio.route.rawValue,
                 "availability": audio.interruption.state.rawValue,
+                "sessionCategory": audio.diagnosticCategory,
+                "sessionMode": audio.diagnosticMode,
+                "sessionSampleRate": audio.diagnosticSampleRate,
+                "sessionIoBufferDuration": audio.diagnosticIoBufferDuration,
+                "inputPortTypes": audio.diagnosticInputPortTypes,
+                "outputPortTypes": audio.diagnosticOutputPortTypes,
+                "availableInputPortTypes": audio.diagnosticAvailableInputPortTypes,
+                "liveKitEngineAvailability": audio.liveKitEngineAvailability,
                 "processing": [
                     "echoCancellation": true,
                     "echoCancellationOwner": "APPLE_VPIO_PLATFORM_PRIMARY",
@@ -2430,6 +2469,13 @@ final class IntercomSessionController: ObservableObject {
                 "txLastAudioSequence": bufferedTx.lastAudioSequence,
                 "txFinalMarkerSequence": number(bufferedTx.finalMarkerSequence),
                 "txFinalMarkerAt": timestamp(bufferedTx.finalMarkerAt),
+                "txCaptureCallbackCount": bufferedTx.captureCallbackCount,
+                "txCaptureCallbackSampleRate": number(bufferedTx.captureCallbackSampleRate),
+                "txCaptureCallbackChannels": number(bufferedTx.captureCallbackChannels),
+                "txCaptureCallbackFrameCount": number(bufferedTx.captureCallbackFrameCount),
+                "txUnsupportedFormatFrameCount": bufferedTx.unsupportedFormatFrameCount,
+                "txNormalizedFrameCount": bufferedTx.normalizedFrameCount,
+                "txCaptureNormalizationResult": bufferedTx.captureNormalizationResult,
                 "rxGenerationPresent": bufferedRx.generationId != nil,
                 "rxPlaybackCursor": bufferedRx.playbackCursor,
                 "rxLatestSequence": bufferedRx.latestSequence,
