@@ -51,6 +51,8 @@ class RxAudioController(
     private val channelId: String,
     private val cuePlayer: PttCuePlayer,
     private val clock: RxClock = SystemRxClock(),
+    private val onValidatedEnd: () -> Unit = {},
+    private val onEndCueCompleted: () -> Unit = {},
     private val onSnapshot: (RxSnapshot) -> Unit,
 ) {
     private var snapshot = RxSnapshot()
@@ -114,6 +116,17 @@ class RxAudioController(
             silenceStartedAt = clock.nowMillis()
             if (snapshot.state == RxState.RX_DRAINING) scheduleDrainCheck()
         }
+    }
+
+    /** BATv1 finalSequence is media truth. The player has already drained here. */
+    suspend fun completeBufferedTimelineDrain() {
+        val sessionId = snapshot.sessionId ?: return
+        val leaseId = snapshot.leaseId ?: return
+        if (snapshot.state == RxState.RX_IDLE) return
+        if (snapshot.state != RxState.RX_DRAINING) {
+            beginDrain("batv1_final_sequence", sessionId, leaseId)
+        }
+        completeDrain("batv1_final_sequence")
     }
 
     /** Reconciles a missed END against Backend Floor truth without bypassing drain safety. */
@@ -199,6 +212,7 @@ class RxAudioController(
             update(snapshot.copy(duplicateIgnored = snapshot.duplicateIgnored + 1))
             return
         }
+        onValidatedEnd()
         beginDrain("control_end", event.sessionId, event.leaseId, event)
     }
 
@@ -267,6 +281,7 @@ class RxAudioController(
             endCueResult = "Playing",
         ))
         val result = cuePlayer.playEnd()
+        onEndCueCompleted()
         if (operation != generation) return
         update(snapshot.copy(
             state = RxState.RX_IDLE,

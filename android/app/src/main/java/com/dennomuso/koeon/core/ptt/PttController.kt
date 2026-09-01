@@ -16,7 +16,7 @@ import java.util.UUID
 const val FLOOR_LEASE_TTL_MS = 3_000L
 const val FLOOR_RENEW_INTERVAL_MS = 1_000L
 const val MAX_CONTINUOUS_TX_MS = 60_000L
-const val TX_RELEASE_HANG_MS = 120L
+const val TX_RELEASE_HANG_MS = 180L
 const val TX_POST_MUTE_FLUSH_MS = 80L
 
 enum class PttState {
@@ -334,13 +334,20 @@ class PttController(
             val leaseId = snapshot.leaseId
             cancelTimers()
             if (snapshot.state == PttState.TRANSMITTING) {
-                if (withTimeoutOrNull(TX_RELEASE_HANG_MS) { safetyStopSignal.receive() } != null) {
+                val generationId = activeBufferedGenerationId
+                if (generationId != null && bufferedAudio?.beginReleaseHangover(generationId) != true) {
                     return@withLock
                 }
-                val generationId = activeBufferedGenerationId
                 val muted = if (generationId != null) {
+                    if (withTimeoutOrNull(TX_RELEASE_HANG_MS) { safetyStopSignal.receive() } != null) {
+                        return@withLock
+                    }
+                    if (bufferedAudio?.completeReleaseHangover(generationId) != true) return@withLock
                     runCatching { bufferedAudio?.finish(generationId) == true }.getOrDefault(false)
                 } else {
+                    if (withTimeoutOrNull(TX_RELEASE_HANG_MS) { safetyStopSignal.receive() } != null) {
+                        return@withLock
+                    }
                     runCatching { microphone.setEnabled(false) }.getOrDefault(false)
                 }
                 activeBufferedGenerationId = null

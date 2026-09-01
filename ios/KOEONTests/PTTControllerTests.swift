@@ -623,6 +623,40 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testReleaseHangoverIncludesDelayedTailAndFinalMarkerIsLast() async throws {
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let api = Batv1APIStub()
+        let transmitter = BufferedAudioTransmitter(
+            api: api, capture: capture, channelId: "channel-a",
+            sessionId: "session-a", deviceId: "device-a", recordingAuthority: authority
+        )
+        let frame = Array(repeating: Int16(5), count: batv1BytesPerFrame / 2)
+        let generation = "tail-contract"
+        await transmitter.prepare(generationId: generation)
+        try await transmitter.audioSessionDidActivate()
+        capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels)
+        XCTAssertTrue(await transmitter.awaitCaptureAndMarkCueBoundary(generationId: generation))
+        try await transmitter.authorize(leaseId: "lease-a", generationId: generation)
+        capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels)
+        let tail50 = Task { try? await Task.sleep(for: .milliseconds(50)); capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels) }
+        let tail150 = Task { try? await Task.sleep(for: .milliseconds(150)); capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels) }
+        let excluded300 = Task { try? await Task.sleep(for: .milliseconds(300)); capture.append(samples: frame, sampleRate: batv1SampleRate, channels: batv1Channels) }
+        XCTAssertTrue(await transmitter.performReleaseHangover(generationId: generation))
+        try await transmitter.finish(generationId: generation)
+        _ = await tail50.value
+        _ = await tail150.value
+        _ = await excluded300.value
+
+        let audio = api.publishedRequests.filter { !$0.chunks.isEmpty }.flatMap(\.chunks)
+        XCTAssertEqual(audio.map(\.sequence), [0, 1, 2])
+        XCTAssertEqual(api.publishedRequests.last?.finalSequence, 2)
+        XCTAssertEqual(transmitter.diagnostics.framesAcceptedAfterPttUp, 2)
+        XCTAssertEqual(transmitter.diagnostics.lastAudioSequence, 2)
+        XCTAssertEqual(transmitter.diagnostics.finalMarkerSequence, 2)
+    }
+
+    @MainActor
     func testRxLifecycleStressSerializesOneHundredGenerationsOnPersistentPlayer() async {
         let api = Batv1APIStub()
         api.subscribeHandler = { request in
@@ -656,6 +690,58 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(player.endCount, 100)
         XCTAssertEqual(player.enqueueCount, 100)
         XCTAssertEqual(player.shutdownCount, 1)
+    }
+
+    @MainActor
+    func testReceiverDrainsFinalSequenceWhenControlEndArrivesFirst() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0,
+                bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())]
+            )
+        }
+        let player = Batv1PcmPlayerMock()
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "session-a", player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "end-first", senderSessionId: "speaker")
+        receiver.noteControlEnd(at: Date(timeIntervalSince1970: 1))
+        await receiver.awaitCurrentGenerationTermination()
+
+        XCTAssertEqual(receiver.diagnostics.finalSequence, 0)
+        XCTAssertEqual(receiver.diagnostics.playbackCursor, 1)
+        XCTAssertNotNil(receiver.diagnostics.finalSequenceObservedAt)
+        XCTAssertNotNil(receiver.diagnostics.finalFrameWrittenAt)
+        XCTAssertNotNil(receiver.diagnostics.playerDrainCompletedAt)
+        XCTAssertNotNil(receiver.diagnostics.endCueAt)
+        XCTAssertEqual(receiver.diagnostics.controlEndReceivedAt, Date(timeIntervalSince1970: 1))
+    }
+
+    @MainActor
+    func testReceiverFinalSequenceRemainsTruthWhenControlEndArrivesAfterDrain() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0,
+                bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())]
+            )
+        }
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "session-a", player: Batv1PcmPlayerMock())
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "final-first", senderSessionId: "speaker")
+        await receiver.awaitCurrentGenerationTermination()
+        receiver.noteControlEnd(at: Date(timeIntervalSince1970: 2))
+        XCTAssertEqual(receiver.diagnostics.finalSequence, 0)
+        XCTAssertEqual(receiver.diagnostics.playbackCursor, 1)
+        XCTAssertEqual(receiver.diagnostics.controlEndReceivedAt, Date(timeIntervalSince1970: 2))
     }
 
     @MainActor
@@ -784,6 +870,10 @@ private final class BufferedAudioMock: BufferedAudioTransmitting {
     func authorize(leaseId: String, generationId: String) async throws {
         await events.append("buffer:authorize")
     }
+    func performReleaseHangover(generationId: String) async -> Bool {
+        await events.append("buffer:hangover")
+        return true
+    }
     func finish(generationId: String) async throws { await events.append("buffer:finish") }
     func discard(generationId: String) async { await events.append("buffer:discard") }
 }
@@ -842,6 +932,7 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
 
 private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     var subscribeHandler: ((Batv1SubscribeRequest) throws -> Batv1SubscribeResponse)?
+    private(set) var publishedRequests: [Batv1PublishRequest] = []
     func fixture() async throws -> FixtureResponse { throw MockError.expected }
     func enroll(_ request: EnrollmentRequest) async throws -> EnrollmentResponse { throw MockError.expected }
     func me() async throws -> MeResponse { throw MockError.expected }
@@ -855,6 +946,7 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     func registerPttToken(sessionId: String, channelId: String, token: String) async throws { throw MockError.expected }
     func unregisterPttToken(sessionId: String) async throws { throw MockError.expected }
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
+        publishedRequests.append(request)
         Batv1PublishResponse(outcome: "accepted", acceptedChunks: request.chunks.count, latestSequence: request.chunks.last?.sequence ?? -1)
     }
     func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {

@@ -6,16 +6,16 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class Batv1PublishRequest(
-    val protocolVersion: Int = 1,
+    val protocolVersion: Int,
     val generationId: String,
     val channelId: String,
     val speakerSessionId: String,
     val speakerDeviceId: String,
     val leaseId: String,
-    val codec: String = "pcm16le",
-    val sampleRate: Int = 48_000,
-    val channels: Int = 1,
-    val frameDurationMs: Int = 20,
+    val codec: String,
+    val sampleRate: Int,
+    val channels: Int,
+    val frameDurationMs: Int,
     val sessionId: String,
     val chunks: List<Batv1Chunk>,
     val finalSequence: Int? = null,

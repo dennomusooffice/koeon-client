@@ -492,6 +492,7 @@ final class IntercomSessionController: ObservableObject {
         }
         room.onPttControl = { [weak self] event, senderSessionId in
             if event.type == "start" { self?.rxReadyStartReceivedAt = Date() }
+            if event.type == "end" { self?.bufferedReceiver?.noteControlEnd() }
             self?.rx?.handleControl(event, senderSessionId: senderSessionId)
             if self?.audio.pushToTalkAudioSessionActive == true {
                 self?.rxReadyAppleAudioReadyAt = Date()
@@ -924,7 +925,8 @@ final class IntercomSessionController: ObservableObject {
                 onAudioActivity: { [weak remoteReceive] sessionId, active in
                     remoteReceive?.handleRemoteAudioActivity(sessionId: sessionId, active: active)
                 },
-                onDrainCompleted: { [weak remoteReceive] generation, sessionId, leaseId, reason in
+                onDrainCompleted: { [weak self, weak remoteReceive] generation, sessionId, leaseId, reason in
+                    self?.bufferedReceiver?.noteEndCue()
                     remoteReceive?.completeDrain(
                         generation: generation, sessionId: sessionId, leaseId: leaseId, reason: reason
                     ) ?? false
@@ -1000,6 +1002,10 @@ final class IntercomSessionController: ObservableObject {
                     guard let self else { return }
                     self.rx?.handleRemotePcm(at: timestamp)
                     self.applyRxSnapshot(self.rx?.currentSnapshot() ?? self.rxSnapshot)
+                },
+                onTimelineDrained: { [weak self] in
+                    self?.rx?.handleRemoteAudioActivity(senderSessionId: nil, active: false)
+                    await self?.rx?.completeBufferedTimelineDrain()
                 },
                 onFailure: { [weak self] code in self?.lastError = "Buffered RX failed safely: \(code)" }
             )
@@ -1592,7 +1598,8 @@ final class IntercomSessionController: ObservableObject {
             onAudioActivity: { [weak coordinator] sessionId, active in
                 coordinator?.handleRemoteAudioActivity(sessionId: sessionId, active: active)
             },
-            onDrainCompleted: { [weak coordinator] generation, sessionId, leaseId, reason in
+            onDrainCompleted: { [weak self, weak coordinator] generation, sessionId, leaseId, reason in
+                self?.bufferedReceiver?.noteEndCue()
                 coordinator?.completeDrain(
                     generation: generation, sessionId: sessionId, leaseId: leaseId, reason: reason
                 ) ?? false
@@ -1663,6 +1670,10 @@ final class IntercomSessionController: ObservableObject {
                     guard let self else { return }
                     self.rx?.handleRemotePcm(at: timestamp)
                     self.applyRxSnapshot(self.rx?.currentSnapshot() ?? self.rxSnapshot)
+                },
+                onTimelineDrained: { [weak self] in
+                    self?.rx?.handleRemoteAudioActivity(senderSessionId: nil, active: false)
+                    await self?.rx?.completeBufferedTimelineDrain()
                 },
                 onFailure: { [weak self] code in self?.lastError = "Buffered RX failed safely: \(code)" }
             )
@@ -2407,12 +2418,27 @@ final class IntercomSessionController: ObservableObject {
                 "txCanonicalLastSequence": bufferedTx.canonicalLastSequence,
                 "txDroppedFrames": bufferedTx.canonicalDroppedFrames,
                 "txLastErrorCode": optional(bufferedTx.lastErrorCode),
+                "txPttUpAt": timestamp(bufferedTx.pttUpAt),
+                "txHangoverStartedAt": timestamp(bufferedTx.hangoverStartedAt),
+                "txHangoverCompletedAt": timestamp(bufferedTx.hangoverCompletedAt),
+                "txHangoverMs": number(bufferedTx.hangoverMilliseconds),
+                "txFramesAcceptedAfterPttUp": bufferedTx.framesAcceptedAfterPttUp,
+                "txLastAudioSequence": bufferedTx.lastAudioSequence,
+                "txFinalMarkerSequence": number(bufferedTx.finalMarkerSequence),
+                "txFinalMarkerAt": timestamp(bufferedTx.finalMarkerAt),
                 "rxGenerationPresent": bufferedRx.generationId != nil,
                 "rxPlaybackCursor": bufferedRx.playbackCursor,
                 "rxLatestSequence": bufferedRx.latestSequence,
                 "rxBacklogMs": bufferedRx.backlogMilliseconds,
                 "rxPlaybackRate": bufferedRx.playbackRate,
                 "rxTimelineLost": bufferedRx.timelineLost,
+                "rxControlEndReceivedAt": timestamp(bufferedRx.controlEndReceivedAt),
+                "rxFinalSequenceObservedAt": timestamp(bufferedRx.finalSequenceObservedAt),
+                "rxFinalSequence": number(bufferedRx.finalSequence),
+                "rxCursorAtFinalObservation": number(bufferedRx.cursorAtFinalObservation),
+                "rxFinalFrameWrittenAt": timestamp(bufferedRx.finalFrameWrittenAt),
+                "rxPlayerDrainCompletedAt": timestamp(bufferedRx.playerDrainCompletedAt),
+                "rxEndCueAt": timestamp(bufferedRx.endCueAt),
                 "controlSenderIdentityResolution": room.controlSenderIdentityResolution.rawValue,
             ],
             "crashBreadcrumbs": [

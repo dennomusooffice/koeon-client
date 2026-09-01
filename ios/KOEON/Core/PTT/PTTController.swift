@@ -396,6 +396,12 @@ actor PTTController {
         if let leaseId = snapshot.leaseId { await control.cancelRxReady(leaseId: leaseId) }
         if snapshot.state == .transmitting, let leaseId = snapshot.leaseId {
             snapshot.lastStopReason = "user_release"
+            if let bufferedGenerationId = activeBufferedGenerationId {
+                guard await bufferedAudio?.performReleaseHangover(generationId: bufferedGenerationId) == true,
+                      snapshot.state == .transmitting,
+                      snapshot.leaseId == leaseId,
+                      activeBufferedGenerationId == bufferedGenerationId else { return }
+            }
             await finishTransmission(leaseId: leaseId, playEndCue: playEndCue, nextState: .idle, error: nil)
         } else if snapshot.state == .requestingFloor, let leaseId = snapshot.leaseId {
             await discardActiveBuffered()

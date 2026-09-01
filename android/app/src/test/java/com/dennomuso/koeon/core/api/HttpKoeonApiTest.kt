@@ -1,5 +1,7 @@
 package com.dennomuso.koeon.core.api
 
+import com.dennomuso.koeon.core.model.Batv1Chunk
+import com.dennomuso.koeon.core.model.Batv1PublishRequest
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -159,6 +161,35 @@ class HttpKoeonApiTest {
         assertEquals("POST", request.method)
         assertEquals("Bearer device-credential-test-value-1234567890", request.getHeader("Authorization"))
         assertEquals(emptySet<String>(), Json.parseToJsonElement(request.body.readUtf8()).jsonObject.keys)
+    }
+
+    @Test
+    fun `BATv1 publish wire includes every required immutable format field`() = runTest {
+        server.enqueue(jsonResponse("""{"outcome":"accepted","acceptedChunks":1,"latestSequence":0}"""))
+
+        api.publishBufferedAudio(
+            Batv1PublishRequest(
+                protocolVersion = 1,
+                generationId = "generation-1",
+                channelId = "channel-1",
+                speakerSessionId = "session-1",
+                speakerDeviceId = "device-1",
+                leaseId = "lease-1",
+                codec = "pcm16le",
+                sampleRate = 48_000,
+                channels = 1,
+                frameDurationMs = 20,
+                sessionId = "session-1",
+                chunks = listOf(Batv1Chunk(sequence = 0, payloadBase64 = "AA==")),
+            ),
+        )
+
+        val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals("1", body["protocolVersion"]?.jsonPrimitive?.content)
+        assertEquals("pcm16le", body["codec"]?.jsonPrimitive?.content)
+        assertEquals("48000", body["sampleRate"]?.jsonPrimitive?.content)
+        assertEquals("1", body["channels"]?.jsonPrimitive?.content)
+        assertEquals("20", body["frameDurationMs"]?.jsonPrimitive?.content)
     }
 
     private fun jsonResponse(body: String) = MockResponse()
