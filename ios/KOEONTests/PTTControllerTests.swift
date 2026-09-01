@@ -4,6 +4,14 @@ import XCTest
 
 @MainActor
 final class PTTControllerTests: XCTestCase {
+    func testC1C2C8SpeakerBluetoothSpeakerPolicySurvivesFiftySwitches() {
+        for _ in 0 ..< 50 {
+            XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: .speaker))
+            XCTAssertFalse(AudioSessionController.speakerOutputPreferred(for: .bluetooth))
+            XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: .speaker))
+        }
+    }
+
     func testNormalAppleActivationDoesNotResetActiveRequestGate() {
         XCTAssertFalse(shouldFinishPostCallRecovery(onAppleActivation: .ready))
         XCTAssertTrue(shouldFinishPostCallRecovery(onAppleActivation: .recovering))
