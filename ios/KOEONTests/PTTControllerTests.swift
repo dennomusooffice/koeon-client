@@ -485,7 +485,7 @@ final class PTTControllerTests: XCTestCase {
         let controller = PTTController(
             role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
             cuePlayer: CueMock(events: events), control: ControlMock(events: events), bufferedAudio: buffered,
-            clock: ControlledClock(immediateSleeps: [1_000: 5]), onUpdate: { _ in }
+            clock: SystemPTTClock(), onUpdate: { _ in }
         )
         let prepared = await controller.preArmForAppleActivation()
         XCTAssertTrue(prepared)
@@ -493,13 +493,14 @@ final class PTTControllerTests: XCTestCase {
         await controller.activatePrearmedTransmission()
         let release = Task { await controller.pttUp(playEndCue: false) }
         await waitUntil { buffered.finishStarted }
-        await waitUntil { (await controller.currentSnapshot()).txFloorRenewDuringReleaseCount > 0 }
+        try? await Task.sleep(for: .milliseconds(3_200))
         let releasing = await controller.currentSnapshot()
         XCTAssertEqual(releasing.state, .releasing)
+        XCTAssertGreaterThanOrEqual(releasing.txFloorRenewDuringReleaseCount, 3)
         buffered.completeFinish()
         await release.value
         let snapshot = await controller.currentSnapshot()
-        XCTAssertGreaterThan(snapshot.txFloorRenewDuringReleaseCount, 0)
+        XCTAssertGreaterThanOrEqual(snapshot.txFloorRenewDuringReleaseCount, 3)
         XCTAssertEqual(snapshot.state, .idle)
     }
 
