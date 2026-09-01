@@ -171,10 +171,6 @@ struct BufferedAudioRxDiagnostics: Equatable, Sendable {
 /// It never performs network I/O and never writes audio to disk.
 final class Batv1CaptureBuffer: @unchecked Sendable {
     private let lock = NSLock()
-    private let normalizationQueue = DispatchQueue(
-        label: "com.dennomuso.koeon.batv1.capture-normalization",
-        qos: .userInteractive
-    )
     private var frames: [Data] = []
     private var partial = Data()
     private var generationId: String?
@@ -216,56 +212,20 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
 
     func append(samples: [Int16], sampleRate: Int, channels: Int) {
         guard !samples.isEmpty else { return }
-        let expectedGeneration = lock.withLock { () -> String? in
-            guard let generationId else { return nil }
+        let formatAccepted = lock.withLock { () -> Bool in
+            guard generationId != nil else { return false }
             callbackCount += 1
             callbackSampleRate = sampleRate
             callbackChannels = channels
             callbackFrameCount = samples.count
-            return generationId
+            let accepted = sampleRate == batv1SampleRate && channels == batv1Channels
+            if !accepted { unsupportedFormatFrames += samples.count }
+            return accepted
         }
-        guard let expectedGeneration else { return }
-        if sampleRate == batv1SampleRate, channels == batv1Channels {
-            appendNormalized(samples, expectedGeneration: expectedGeneration, wasNormalized: false)
-            return
-        }
-        guard channels == 1, sampleRate > 0 else {
-            lock.withLock {
-                unsupportedFormatFrames += samples.count
-            }
-            return
-        }
-
-        // AVAudioConverter can allocate and block. Never run it on LiveKit's
-        // realtime capture callback; a serial queue preserves callback order.
-        normalizationQueue.async { [weak self] in
-            guard let self else { return }
-            guard let normalized = try? Batv1CaptureNormalizer.normalizeMono(
-                samples: samples, sourceSampleRate: sampleRate
-            ) else {
-                self.lock.withLock {
-                    guard self.generationId == expectedGeneration else { return }
-                    self.unsupportedFormatFrames += samples.count
-                }
-                return
-            }
-            self.appendNormalized(
-                normalized,
-                expectedGeneration: expectedGeneration,
-                wasNormalized: true
-            )
-        }
-    }
-
-    private func appendNormalized(
-        _ normalized: [Int16],
-        expectedGeneration: String,
-        wasNormalized: Bool
-    ) {
-        let bytes = normalized.withUnsafeBytes { Data($0) }
+        guard formatAccepted else { return }
+        let bytes = samples.withUnsafeBytes { Data($0) }
         lock.withLock {
-            guard generationId == expectedGeneration else { return }
-            if wasNormalized { normalizedFrames += normalized.count }
+            guard generationId != nil else { return }
             if firstPcmAt == nil { firstPcmAt = Date() }
             partial.append(bytes)
             while partial.count >= batv1BytesPerFrame {
@@ -319,55 +279,6 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
         lock.withLock {
             (callbackCount, callbackSampleRate, callbackChannels, callbackFrameCount, unsupportedFormatFrames, normalizedFrames)
         }
-    }
-}
-
-enum Batv1CaptureNormalizer {
-    static func normalizeMono(samples: [Int16], sourceSampleRate: Int) throws -> [Int16] {
-        guard sourceSampleRate > 0, !samples.isEmpty else { return [] }
-        if sourceSampleRate == batv1SampleRate { return samples }
-        guard let sourceFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: Double(sourceSampleRate),
-            channels: 1,
-            interleaved: false
-        ), let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: Double(batv1SampleRate),
-            channels: 1,
-            interleaved: false
-        ), let converter = AVAudioConverter(from: sourceFormat, to: targetFormat),
-        let input = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(samples.count)) else {
-            throw BufferedAudioError.invalidAudioGraphFormat
-        }
-        input.frameLength = input.frameCapacity
-        guard let inputData = input.int16ChannelData?[0] else { throw BufferedAudioError.invalidAudioGraphFormat }
-        samples.withUnsafeBufferPointer { source in
-            inputData.update(from: source.baseAddress!, count: source.count)
-        }
-        let targetCapacity = AVAudioFrameCount(
-            ceil(Double(samples.count) * Double(batv1SampleRate) / Double(sourceSampleRate)) + 32
-        )
-        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetCapacity) else {
-            throw BufferedAudioError.invalidAudioGraphFormat
-        }
-        var supplied = false
-        var conversionError: NSError?
-        let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
-            if supplied {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            inputStatus.pointee = .haveData
-            return input
-        }
-        if let conversionError { throw conversionError }
-        guard status == .haveData || status == .inputRanDry,
-              let outputData = output.int16ChannelData?[0] else {
-            throw BufferedAudioError.invalidAudioGraphFormat
-        }
-        return Array(UnsafeBufferPointer(start: outputData, count: Int(output.frameLength)))
     }
 }
 

@@ -945,31 +945,34 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(receiver.diagnostics.controlEndReceivedAt, Date(timeIntervalSince1970: 2))
     }
 
-    func testC4C5C6CaptureNormalizes16kAnd32kMonoTo48k() throws {
-        for sourceRate in [16_000, 32_000, 48_000] {
-            let samples = Array(repeating: Int16(1_024), count: sourceRate * 20 / 1_000)
-            let output = try Batv1CaptureNormalizer.normalizeMono(samples: samples, sourceSampleRate: sourceRate)
-            XCTAssertEqual(output.count, batv1SampleRate * 20 / 1_000, accuracy: 2)
-        }
-    }
-
-    func testC5Non48kCaptureIsNormalizedAsynchronouslyAndGenerationFenced() async {
+    func testC4Canonical48kMonoCaptureRemainsAccepted() async {
         let capture = Batv1CaptureBuffer()
-        capture.arm(generationId: "hfp-16k")
+        capture.arm(generationId: "canonical-48k")
         capture.append(
-            samples: Array(repeating: Int16(1_024), count: 16_000 * 20 / 1_000),
-            sampleRate: 16_000,
+            samples: Array(repeating: Int16(1_024), count: 48_000 * 20 / 1_000),
+            sampleRate: 48_000,
             channels: 1
         )
         let captureConfirmed = await capture.awaitCapture(timeoutMilliseconds: 750)
         XCTAssertTrue(captureConfirmed)
         XCTAssertEqual(capture.frameCount, 1)
-        XCTAssertGreaterThan(capture.callbackDiagnostics.normalized, 0)
+        XCTAssertEqual(capture.callbackDiagnostics.unsupported, 0)
+        XCTAssertEqual(capture.callbackDiagnostics.normalized, 0)
+    }
 
-        capture.arm(generationId: "next-generation")
-        capture.discard()
-        try? await Task.sleep(for: .milliseconds(10))
-        XCTAssertEqual(capture.frameCount, 0, "Queued conversion from an old generation must be fenced")
+    func testC5C6Non48kCaptureIsDiagnosedWithoutUnprovenNormalization() {
+        for sourceRate in [16_000, 32_000] {
+            let capture = Batv1CaptureBuffer()
+            capture.arm(generationId: "diagnostic-\(sourceRate)")
+            let samples = Array(repeating: Int16(1_024), count: sourceRate * 20 / 1_000)
+            capture.append(samples: samples, sampleRate: sourceRate, channels: 1)
+            XCTAssertEqual(capture.callbackDiagnostics.count, 1)
+            XCTAssertEqual(capture.callbackDiagnostics.sampleRate, sourceRate)
+            XCTAssertEqual(capture.callbackDiagnostics.channels, 1)
+            XCTAssertEqual(capture.callbackDiagnostics.unsupported, samples.count)
+            XCTAssertEqual(capture.callbackDiagnostics.normalized, 0)
+            XCTAssertEqual(capture.frameCount, 0)
+        }
     }
 
     func testC7ZeroCallbackCannotBeMisreportedAsCaptureConfirmed() async {
