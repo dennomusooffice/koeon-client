@@ -671,6 +671,7 @@ final class IntercomSessionController: ObservableObject {
         }
         pushToTalk.onAudioSessionActivated = { [weak self] audioSession in
             guard let self else { return }
+            Batv1CrashBreadcrumbStore.shared.record(role: "APP", stage: "APPLE_DID_ACTIVATE")
             if let generation = self.appleDidBeginAttemptGeneration,
                (self.pttRequestGate.state == .beginRequested || self.pttRequestGate.state == .transmitting) {
                 self.appleDidActivateAt = Date()
@@ -723,6 +724,7 @@ final class IntercomSessionController: ObservableObject {
         }
         pushToTalk.onAudioSessionDeactivated = { [weak self] _ in
             guard let self else { return }
+            Batv1CrashBreadcrumbStore.shared.record(role: "APP", stage: "APPLE_DID_DEACTIVATE")
             self.appleLastDeactivateAt = Date()
             self.rx?.audioSessionDidDeactivate()
             self.bufferedReceiver?.audioSessionDidDeactivate()
@@ -979,7 +981,13 @@ final class IntercomSessionController: ObservableObject {
                 capture: bufferedCapture,
                 channelId: response.channel.id,
                 sessionId: response.sessionId,
-                deviceId: deviceId
+                deviceId: deviceId,
+                onFailure: { [weak self] code in
+                    Task { @MainActor in
+                        await self?.ptt?.stopForSafety(reason: "Buffered TX failed safely: \(code)")
+                        self?.lastError = "Buffered TX failed safely: \(code)"
+                    }
+                }
             )
             self.bufferedTransmitter = bufferedTransmitter
             bufferedReceiver = BufferedAudioReceiver(
@@ -992,7 +1000,8 @@ final class IntercomSessionController: ObservableObject {
                     guard let self else { return }
                     self.rx?.handleRemotePcm(at: timestamp)
                     self.applyRxSnapshot(self.rx?.currentSnapshot() ?? self.rxSnapshot)
-                }
+                },
+                onFailure: { [weak self] code in self?.lastError = "Buffered RX failed safely: \(code)" }
             )
             let controller = PTTController(
                 role: response.user.role,
@@ -1022,7 +1031,7 @@ final class IntercomSessionController: ObservableObject {
             pendingJoinResponse = nil
             joinedSession = nil
             ptt = nil
-            bufferedReceiver?.stop()
+            await bufferedReceiver?.shutdownAndAwait()
             bufferedReceiver = nil
             bufferedTransmitter = nil
             rx?.reset()
@@ -1040,6 +1049,7 @@ final class IntercomSessionController: ObservableObject {
 
     func leave(powerOff: Bool = true) async {
         guard let session = joinedSession else { return }
+        Batv1CrashBreadcrumbStore.shared.record(role: "APP", stage: "SESSION_LEAVE")
         isLoading = true
         haptics?.cancel()
         resetPttRequestGate()
@@ -1049,7 +1059,7 @@ final class IntercomSessionController: ObservableObject {
         floorStatusTask = nil
         await ptt?.stopForSafety(reason: "Channel left.")
         ptt = nil
-        bufferedReceiver?.stop()
+        await bufferedReceiver?.shutdownAndAwait()
         bufferedReceiver = nil
         bufferedTransmitter = nil
         remoteReceive?.reset()
@@ -1501,7 +1511,7 @@ final class IntercomSessionController: ObservableObject {
         resetPttRequestGate()
         await ptt?.stopForSafety(reason: "Incoming Push is replacing a stale LiveKit runtime.")
         ptt = nil
-        bufferedReceiver?.stop()
+        await bufferedReceiver?.shutdownAndAwait()
         bufferedReceiver = nil
         bufferedTransmitter = nil
         rx?.reset()
@@ -1634,7 +1644,13 @@ final class IntercomSessionController: ObservableObject {
                 capture: bufferedCapture,
                 channelId: response.channel.id,
                 sessionId: response.sessionId,
-                deviceId: deviceId
+                deviceId: deviceId,
+                onFailure: { [weak self] code in
+                    Task { @MainActor in
+                        await self?.ptt?.stopForSafety(reason: "Buffered TX failed safely: \(code)")
+                        self?.lastError = "Buffered TX failed safely: \(code)"
+                    }
+                }
             )
             self.bufferedTransmitter = bufferedTransmitter
             bufferedReceiver = BufferedAudioReceiver(
@@ -1647,7 +1663,8 @@ final class IntercomSessionController: ObservableObject {
                     guard let self else { return }
                     self.rx?.handleRemotePcm(at: timestamp)
                     self.applyRxSnapshot(self.rx?.currentSnapshot() ?? self.rxSnapshot)
-                }
+                },
+                onFailure: { [weak self] code in self?.lastError = "Buffered RX failed safely: \(code)" }
             )
             let controller = PTTController(
                 role: response.user.role,
@@ -1664,7 +1681,7 @@ final class IntercomSessionController: ObservableObject {
         } catch {
             pendingJoinResponse = nil
             joinedSession = nil
-            bufferedReceiver?.stop()
+            await bufferedReceiver?.shutdownAndAwait()
             bufferedReceiver = nil
             bufferedTransmitter = nil
             pttRestoreState = "failed_retryable_join"
@@ -2397,6 +2414,21 @@ final class IntercomSessionController: ObservableObject {
                 "rxPlaybackRate": bufferedRx.playbackRate,
                 "rxTimelineLost": bufferedRx.timelineLost,
                 "controlSenderIdentityResolution": room.controlSenderIdentityResolution.rawValue,
+            ],
+            "crashBreadcrumbs": [
+                "previousRunTermination": Batv1CrashBreadcrumbStore.shared.previousRunTermination,
+                "events": Batv1CrashBreadcrumbStore.shared.snapshot().map { event in
+                    [
+                        "timestamp": ISO8601DateFormatter().string(from: event.timestamp),
+                        "platform": event.platform,
+                        "build": event.build,
+                        "generation": optional(event.generationToken),
+                        "role": event.role,
+                        "stage": event.stage,
+                        "actorClass": event.actorClass,
+                        "resultClass": event.resultClass,
+                    ] as [String: Any]
+                },
             ],
             "platformSpecific": [
                 "build": "\(version) (\(build))",

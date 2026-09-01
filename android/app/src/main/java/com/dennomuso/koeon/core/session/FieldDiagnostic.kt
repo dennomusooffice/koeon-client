@@ -9,6 +9,7 @@ import com.dennomuso.koeon.core.ptt.pttSemanticState
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import java.time.Instant
 
@@ -109,6 +110,23 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             put("rxPlaybackRate", JsonPrimitive(bufferedRx.playbackRate))
             put("rxTimelineLost", JsonPrimitive(bufferedRx.timelineLost))
             put("controlSenderIdentityResolution", JsonPrimitive(d.controlSenderIdentityResolution))
+        })
+        put("crashBreadcrumbs", buildJsonObject {
+            put("previousRunTermination", JsonPrimitive(com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.previousRunTermination().name))
+            put("events", buildJsonArray {
+                com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.snapshot().forEach { event ->
+                    add(buildJsonObject {
+                        put("timestampEpochMs", JsonPrimitive(event.timestampEpochMs))
+                        put("platform", JsonPrimitive(event.platform))
+                        put("build", JsonPrimitive(event.build))
+                        put("generation", nullable(event.generationToken))
+                        put("role", JsonPrimitive(event.role))
+                        put("stage", JsonPrimitive(event.stage))
+                        put("threadClass", JsonPrimitive(event.threadClass))
+                        put("resultClass", JsonPrimitive(event.resultClass))
+                    })
+                }
+            })
         })
         put("platformSpecific", buildJsonObject {
             put("build", JsonPrimitive("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"))

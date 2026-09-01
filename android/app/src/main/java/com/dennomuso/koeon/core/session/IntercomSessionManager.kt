@@ -24,6 +24,7 @@ import com.dennomuso.koeon.core.audio.AudioBitratePreset
 import com.dennomuso.koeon.core.audio.AudioBitratePreferenceStore
 import com.dennomuso.koeon.core.audio.BufferedAudioTxDiagnostics
 import com.dennomuso.koeon.core.audio.BufferedAudioRxDiagnostics
+import com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs
 import com.dennomuso.koeon.core.audio.AUDIO_BITRATE_PREFERENCE_KEY
 import com.dennomuso.koeon.core.livekit.IntercomConnectionState
 import com.dennomuso.koeon.core.livekit.AudioFocusEvent
@@ -311,6 +312,7 @@ class IntercomSessionManager(
     val state: StateFlow<IntercomUiState> = _state.asStateFlow()
 
     init {
+        Batv1CrashBreadcrumbs.initialize(appContext, "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             headsetPttEnabled = headsetPttEnabled,
             headsetPttMode = headsetPttMode,
@@ -835,6 +837,10 @@ class IntercomSessionManager(
             uptimeJob?.cancel()
             audioRecoveryJob?.cancel()
             runCatching { pttController?.stopForSafety("Session left") }
+            com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.record("APP", "SESSION_LEAVE")
+            batv1Receiver?.shutdown()
+            batv1Receiver = null
+            batv1Transmitter = null
             room.disconnect()
             audioRouteMonitor.stop()
             networkMonitor.stop()
@@ -1022,8 +1028,15 @@ class IntercomSessionManager(
             override suspend fun release(leaseId: String): FloorResponse = api.release(join.sessionId, leaseId)
         }
         val deviceId = join.deviceId
-        batv1Receiver?.stop()
-        batv1Receiver = com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver(scope, api, join.sessionId)
+        batv1Receiver?.shutdown()
+        batv1Receiver = com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver(
+            scope = scope,
+            api = api,
+            sessionId = join.sessionId,
+            onFailure = { code ->
+                scope.launch { _state.update { it.copy(error = "Buffered RX failed safely: $code") } }
+            },
+        )
         room.onBufferedAudioStart = { generationId -> batv1Receiver?.start(generationId) }
         batv1Transmitter = if (join.canPublish && !deviceId.isNullOrBlank()) {
             com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter(
@@ -1033,6 +1046,12 @@ class IntercomSessionManager(
                 channelId = join.channel.id,
                 sessionId = join.sessionId,
                 deviceId = deviceId,
+                onFailure = { code ->
+                    scope.launch {
+                        pttController?.stopForSafety("Buffered TX failed safely: $code")
+                        _state.update { it.copy(error = "Buffered TX failed safely: $code") }
+                    }
+                },
             )
         } else null
         pttController = PttController(
