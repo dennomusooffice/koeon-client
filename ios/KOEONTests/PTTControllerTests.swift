@@ -455,7 +455,8 @@ final class PTTControllerTests: XCTestCase {
             cuePlayer: CueMock(events: events), control: ControlMock(events: events), bufferedAudio: buffered,
             clock: ControlledClock(), onUpdate: { _ in }
         )
-        XCTAssertTrue(await controller.preArmForAppleActivation())
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
         await controller.appleAudioSessionDidActivate()
         await controller.activatePrearmedTransmission()
         await controller.pttUp(playEndCue: false)
@@ -478,13 +479,15 @@ final class PTTControllerTests: XCTestCase {
             cuePlayer: CueMock(events: events), control: ControlMock(events: events), bufferedAudio: buffered,
             clock: ControlledClock(immediateSleeps: [1_000: 5]), onUpdate: { _ in }
         )
-        XCTAssertTrue(await controller.preArmForAppleActivation())
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
         await controller.appleAudioSessionDidActivate()
         await controller.activatePrearmedTransmission()
         let release = Task { await controller.pttUp(playEndCue: false) }
         await waitUntil { buffered.finishStarted }
         await waitUntil { (await controller.currentSnapshot()).txFloorRenewDuringReleaseCount > 0 }
-        XCTAssertEqual((await controller.currentSnapshot()).state, .releasing)
+        let releasing = await controller.currentSnapshot()
+        XCTAssertEqual(releasing.state, .releasing)
         buffered.completeFinish()
         await release.value
         let snapshot = await controller.currentSnapshot()
@@ -500,7 +503,8 @@ final class PTTControllerTests: XCTestCase {
             cuePlayer: CueMock(events: events), control: ControlMock(events: events), bufferedAudio: buffered,
             clock: ControlledClock(), onUpdate: { _ in }
         )
-        XCTAssertTrue(await controller.preArmForAppleActivation())
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
         await controller.appleAudioSessionDidActivate()
         await controller.activatePrearmedTransmission()
         await controller.pttUp(playEndCue: false)
@@ -508,7 +512,8 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertEqual(snapshot.state, .idle)
         XCTAssertTrue(snapshot.txTerminalCleanupComplete)
         XCTAssertEqual(snapshot.txErrorRecoverable, true)
-        XCTAssertTrue((await events.values()).contains("release"))
+        let values = await events.values()
+        XCTAssertTrue(values.contains("release"))
     }
 
     private func makeController(
@@ -922,7 +927,8 @@ final class BufferedAudioTimelineTests: XCTestCase {
     func testC7ZeroCallbackCannotBeMisreportedAsCaptureConfirmed() async {
         let capture = Batv1CaptureBuffer()
         capture.arm(generationId: "zero-callback")
-        XCTAssertFalse(await capture.awaitCapture(timeoutMilliseconds: 1))
+        let confirmed = await capture.awaitCapture(timeoutMilliseconds: 1)
+        XCTAssertFalse(confirmed)
         XCTAssertEqual(capture.callbackDiagnostics.count, 0)
         XCTAssertEqual(capture.frameCount, 0)
     }
