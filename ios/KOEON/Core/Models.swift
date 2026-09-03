@@ -468,6 +468,8 @@ struct RxConsistencySnapshot: Equatable, Sendable {
     var batv1TimelineActive = false
     var rxPathReconciliationActive = false
     var recoveryAttempts = 0
+    var pathState = "IDLE"
+    var recoveryLevel = 0
 
     var remoteBusyBlocksLocalPtt: Bool {
         remoteMediaSpeakerActive || validatedRemoteRxActive || rxPathReconciliationActive

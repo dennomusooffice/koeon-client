@@ -865,6 +865,7 @@ final class BufferedAudioReceiver {
     private var latestSequenceStableSinceUptime: TimeInterval?
     private var observedLatestSequence = -1
     private var activeSenderSessionId: String?
+    private(set) var subscriptionActive = false
     private(set) var diagnostics = BufferedAudioRxDiagnostics()
 
     init(
@@ -888,6 +889,10 @@ final class BufferedAudioReceiver {
     }
 
     func start(generationId: String, senderSessionId: String?, leaseId: String? = nil, senderUserId: String? = nil) {
+        // Reliable/fast START duplicates must not rewind an already playing timeline.
+        if diagnostics.generationId == generationId, activeSenderSessionId == senderSessionId,
+           task != nil, !diagnostics.timelineLost { return }
+        subscriptionActive = false
         let previous = task
         previous?.cancel()
         generationToken += 1
@@ -930,6 +935,7 @@ final class BufferedAudioReceiver {
     }
 
     func stop() {
+        subscriptionActive = false
         generationToken += 1
         task?.cancel()
         if let activeSenderSessionId { onActivity(activeSenderSessionId, false) }
@@ -938,6 +944,7 @@ final class BufferedAudioReceiver {
     }
 
     func stopAndAwait() async {
+        subscriptionActive = false
         generationToken += 1
         let previous = task
         previous?.cancel()
@@ -982,6 +989,7 @@ final class BufferedAudioReceiver {
                 let response: Batv1SubscribeResponse
                 do {
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: generationId)
+                    subscriptionActive = true
                     response = try await api.subscribeBufferedAudio(
                         Batv1SubscribeRequest(sessionId: sessionId, generationId: generationId, nextSequence: cursor)
                     )
@@ -1044,6 +1052,7 @@ final class BufferedAudioReceiver {
                 if response.timelineEnded, let final = response.finalSequence, cursor > final {
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_DRAIN_BEGIN", generationId: generationId)
                     await player.drain(generationToken: generationToken)
+                    guard !Task.isCancelled, self.generationToken == generationToken else { break }
                     diagnostics.playbackCursor = cursor
                     diagnostics.backlogMilliseconds = 0
                     diagnostics.playbackRate = 1
@@ -1052,6 +1061,7 @@ final class BufferedAudioReceiver {
                     onActivity(senderSessionId, false)
                     await onTimelineDrained()
                     terminalDrainPublished = true
+                    guard self.generationToken == generationToken else { break }
                     diagnostics.endCueAt = Date()
                     diagnostics.terminalReason = "final_sequence"
                     break
@@ -1064,6 +1074,7 @@ final class BufferedAudioReceiver {
                     }
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_MISSING_FINAL_DRAIN_BEGIN", generationId: generationId)
                     await player.drain(generationToken: generationToken)
+                    guard !Task.isCancelled, self.generationToken == generationToken else { break }
                     diagnostics.playbackCursor = cursor
                     diagnostics.backlogMilliseconds = 0
                     diagnostics.playbackRate = 1
@@ -1074,6 +1085,7 @@ final class BufferedAudioReceiver {
                     onActivity(senderSessionId, false)
                     await onTimelineDrained()
                     terminalDrainPublished = true
+                    guard self.generationToken == generationToken else { break }
                     diagnostics.endCueAt = Date()
                     break
                 }
@@ -1082,6 +1094,10 @@ final class BufferedAudioReceiver {
                 }
             }
         } catch {
+            guard !Task.isCancelled, self.generationToken == generationToken else {
+                player.endGeneration(token: generationToken)
+                return
+            }
             diagnostics.timelineLost = true
             if !diagnostics.graphPrepared {
                 if case BufferedAudioError.invalidAudioGraphFormat = error {
@@ -1097,9 +1113,11 @@ final class BufferedAudioReceiver {
         player.endGeneration(token: generationToken)
         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_STOP_END", generationId: generationId)
         guard self.generationToken == generationToken else { return }
+        subscriptionActive = false
         if !terminalDrainPublished {
             onActivity(senderSessionId, false)
             await onTimelineDrained()
+            guard self.generationToken == generationToken else { return }
             diagnostics.endCueAt = diagnostics.endCueAt ?? Date()
         }
         diagnostics.generationId = nil

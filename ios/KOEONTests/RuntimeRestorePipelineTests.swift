@@ -3,6 +3,79 @@ import XCTest
 
 @MainActor
 final class RuntimeRestorePipelineTests: XCTestCase {
+    func testDDirtyConnectedNeverBecomesWarmOnTransientActive() {
+        var runtime = RuntimeLiveness()
+        runtime.beginRuntime()
+        runtime.validate(bindingsReady: true)
+        XCTAssertFalse(runtime.dirty)
+        runtime.invalidate()
+        for lifecycle in ["background", "inactive", "active"] {
+            XCTAssertEqual(incomingPushRuntimeAction(hasJoinedRuntime: true, connectionState: .connected,
+                appLifecycleState: lifecycle, runtimeDirty: runtime.dirty), .resumeImmediately)
+        }
+        runtime.validate(bindingsReady: false)
+        XCTAssertTrue(runtime.dirty)
+        XCTAssertEqual(runtimeRestoreEntryDecision(reason: .foregroundRecovery, hasJoinedRuntime: true,
+            connectionState: .connected, runtimeDirty: runtime.dirty), .performFreshResume)
+        runtime.beginRuntime()
+        runtime.validate(bindingsReady: true)
+        XCTAssertFalse(runtime.dirty)
+        XCTAssertEqual(runtime.validatedGeneration, runtime.generation)
+    }
+
+    func testDDiagnosticCurrentNeverInheritsCompletedAttemptFields() {
+        var ledger = LifecycleAttemptLedger()
+        let first = Date(timeIntervalSince1970: 10)
+        ledger.begin(generation: 1, channelId: "stage", sessionGeneration: 1, at: first)
+        ledger.finish(at: first.addingTimeInterval(1))
+        ledger.begin(generation: 2, channelId: "stage", sessionGeneration: 2, at: first.addingTimeInterval(3))
+        XCTAssertEqual(ledger.lastCompleted?.generation, 1)
+        XCTAssertEqual(ledger.current?.generation, 2)
+        XCTAssertNil(ledger.current?.completedAt)
+        XCTAssertNotEqual(ledger.current?.channelHash, "stage")
+        XCTAssertLessThan(ledger.lastCompleted!.completedAt!, ledger.current!.startedAt)
+    }
+
+    func testDNoMediaEscalatesThroughFreshRuntimeAndFencesOldGeneration() async throws {
+        for resolved in [true, false] {
+            var liveness = RuntimeLiveness()
+            liveness.beginRuntime()
+            let oldRuntime = liveness.generation
+            var consistency = RxConsistencyGuard()
+            let start = Date(timeIntervalSince1970: 1_000)
+            consistency.updateValidatedRx(active: true, sessionId: "remote", generation: 1,
+                participantResolved: resolved, trackSubscribed: false, at: start)
+            var levels: [Int] = []
+            for time in [0.25, 0.75, 1.5, 2.5] {
+                levels.append(consistency.evaluate(at: start.addingTimeInterval(time)).recoveryLevel)
+            }
+            XCTAssertEqual(levels, [1, 2, 3, 4])
+            XCTAssertFalse(consistency.snapshot.validatedRemoteRxActive)
+            var stages: [String] = []
+            let result = try await performFreshRuntimeRestore(
+                requestFreshSession: { stages.append("resume"); return "new-local-session" },
+                onFreshSessionReceived: { _ in },
+                teardownStaleRuntime: {
+                    stages.append("teardown")
+                    liveness.beginRuntime()
+                    consistency.reset()
+                },
+                establishFreshRuntime: { _ in
+                    stages.append("bind-current-timeline")
+                    consistency.updateValidatedRx(active: true, sessionId: "remote", generation: 2,
+                        participantResolved: true, trackSubscribed: false, batv1TimelineActive: true, at: start)
+                    liveness.validate(bindingsReady: true)
+                    return true
+                })
+            XCTAssertTrue(result)
+            XCTAssertEqual(stages, ["resume", "teardown", "bind-current-timeline"])
+            XCTAssertNotEqual(oldRuntime, liveness.generation)
+            XCTAssertEqual(consistency.handleRemotePcm(sessionId: "remote", generation: 1, at: start), .rejected)
+            XCTAssertEqual(consistency.handleRemotePcm(sessionId: "remote", generation: 2, at: start), .observed)
+            XCTAssertEqual(consistency.snapshot.pathState, "PCM_FLOWING")
+        }
+    }
+
     func testQ1BackgroundStaleConnectedRunsResumeTeardownAndFreshConnectExactlyOnce() async throws {
         XCTAssertEqual(runtimeRestoreEntryDecision(
             reason: .incomingPushColdWake,
