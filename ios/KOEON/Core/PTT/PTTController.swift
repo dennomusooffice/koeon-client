@@ -377,6 +377,7 @@ actor PTTController {
         do {
             try await bufferedAudio?.audioSessionDidActivate()
         } catch {
+            guard operation == generation else { return }
             await stopForSafety(reason: "BATv1 local recording start failed: \(Self.safeMessage(error))")
         }
     }
@@ -551,7 +552,6 @@ actor PTTController {
             snapshot.floorLastRenewResult = "renewed"
             publish()
         } catch {
-            guard operation == generation else { return }
             guard operation == generation, snapshot.leaseId == leaseId else { return }
             snapshot.floorLastRenewCompletedAt = clock.now
             snapshot.floorLastRenewResult = "failed"

@@ -685,6 +685,32 @@ final class PTTControllerTests: XCTestCase {
         await controller.pttUp(playEndCue: false)
     }
 
+    func testDLateRecordingStartFailureCannotAbortTheNextAttempt() async {
+        let events = EventLog()
+        let buffered = SuspendedCaptureMock(suspendRecording: true)
+        let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+            microphone: MicrophoneMock(events: events), cuePlayer: CueMock(events: events),
+            control: ControlMock(events: events), bufferedAudio: buffered,
+            clock: ControlledClock(), onUpdate: { _ in })
+        _ = await controller.preArmForAppleActivation()
+        let oldActivation = Task { await controller.appleAudioSessionDidActivate() }
+        await waitUntil { buffered.isWaiting }
+        await controller.pttUp(playEndCue: false)
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        let newAttempt = await controller.currentSnapshot().attemptGeneration
+        buffered.failOldRecording()
+        await oldActivation.value
+        var snapshot = await controller.currentSnapshot()
+        XCTAssertEqual(snapshot.attemptGeneration, newAttempt)
+        XCTAssertEqual(snapshot.state, .requestingFloor)
+        XCTAssertNotNil(snapshot.leaseId)
+        await controller.activatePrearmedTransmission()
+        snapshot = await controller.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .transmitting)
+        await controller.pttUp(playEndCue: false)
+    }
+
     private func makeController(
         role: KOEONRole = .staff,
         floor: FloorMock,
@@ -1513,16 +1539,24 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
 private final class SuspendedCaptureMock: BufferedAudioTransmitting {
     var diagnostics = BufferedAudioTxDiagnostics()
     private var continuation: CheckedContinuation<Bool, Never>?
+    private var recordingContinuation: CheckedContinuation<Void, Error>?
+    private let suspendRecording: Bool
     private var first = true
-    var isWaiting: Bool { continuation != nil }
+    init(suspendRecording: Bool = false) { self.suspendRecording = suspendRecording }
+    var isWaiting: Bool { continuation != nil || recordingContinuation != nil }
     func prepare(generationId: String) async {}
-    func audioSessionDidActivate() async throws {}
+    func audioSessionDidActivate() async throws {
+        if suspendRecording {
+            try await withCheckedThrowingContinuation { recordingContinuation = $0 }
+        }
+    }
     func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool {
-        guard first else { return true }
+        guard first, !suspendRecording else { return true }
         first = false
         return await withCheckedContinuation { continuation = $0 }
     }
     func failOldCapture() { continuation?.resume(returning: false); continuation = nil }
+    func failOldRecording() { recordingContinuation?.resume(throwing: MockError.expected); recordingContinuation = nil }
     func authorize(leaseId: String, generationId: String) async throws {}
     func performReleaseHangover(generationId: String) async -> Bool { true }
     func finish(generationId: String) async throws {}
