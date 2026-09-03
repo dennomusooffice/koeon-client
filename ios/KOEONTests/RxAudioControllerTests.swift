@@ -339,7 +339,7 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertNil(snapshot.rxFirstPcmAt)
     }
 
-    func testValidatedRxWithoutPcmUsesBoundedRepeatedReconciliation() {
+    func testValidatedRxWithoutPcmUsesAbsoluteEscalationNotRepeatedReconciliation() {
         let started = Date(timeIntervalSince1970: 1_000)
         var guardState = RxConsistencyGuard()
         guardState.updateValidatedRx(
@@ -358,8 +358,16 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
 
         let second = guardState.evaluate(at: started.addingTimeInterval(0.5), thresholdMilliseconds: 250)
-        XCTAssertEqual(second.recoverySessionId, "session-a")
-        XCTAssertEqual(guardState.snapshot.recoveryAttempts, 2)
+        XCTAssertNil(second.recoverySessionId)
+        XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
+        XCTAssertFalse(guardState.snapshot.validatedRemoteRxActive, "Participant alone is not media viability")
+        for (time, level) in [(0.75, 2), (1.5, 3), (2.5, 4), (4.0, 5)] {
+            let step = guardState.evaluate(at: started.addingTimeInterval(time))
+            XCTAssertEqual(step.recoveryLevel, level)
+        }
+        XCTAssertNil(guardState.nextDeadline())
+        XCTAssertNil(guardState.evaluate(at: started.addingTimeInterval(30)).recoverySessionId)
+        XCTAssertEqual(guardState.snapshot.recoveryAttempts, 5)
     }
 
     func testB8ControlStartWithoutParticipantIsReconcilingButNotFalselyValidated() {
@@ -1193,6 +1201,36 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(PttCuePlayer.txRxAmplitude, 0.35)
         XCTAssertLessThan(PttCuePlayer.errorAmplitude, 0.95)
         XCTAssertEqual(postCallStableMilliseconds, 500)
+    }
+
+    func testDChannelReentryClearsOldGenerationBusyAndWatchdog() async {
+        for _ in 0..<50 {
+            let controller = activeRemoteController()
+            let old = controller.currentSnapshot().generation
+            await controller.resetAndAwait()
+            XCTAssertEqual(controller.currentSnapshot().state, .idle)
+            XCTAssertNil(controller.currentSnapshot().sessionId)
+            controller.handleControl(event(type: "start", session: "session-b", lease: "lease-b", sequence: 2), senderSessionId: "session-b")
+            XCTAssertGreaterThan(controller.currentSnapshot().generation, old)
+            controller.handleControl(event(type: "end", sequence: 3), senderSessionId: "session-a")
+            XCTAssertEqual(controller.currentSnapshot().sessionId, "session-b")
+            await controller.resetAndAwait()
+            controller.handleControl(event(type: "start", sequence: 4), senderSessionId: "session-a")
+            XCTAssertEqual(controller.currentSnapshot().sessionId, "session-a")
+            XCTAssertNil(controller.currentSnapshot().rxFirstPcmAt)
+            await controller.resetAndAwait()
+        }
+    }
+
+    func testDRemoteBusyConvergesWithoutNewControlOrIncomingPtt() async {
+        let controller = activeRemoteController()
+        for _ in 0..<3 { controller.reconcileFloor(remoteBusyStatus(ownerUserId: "staff-a")) }
+        XCTAssertEqual(controller.currentSnapshot().state, .active)
+        controller.reconcileFloor(FloorResponse(outcome: .available, owner: nil, leaseId: nil,
+            acquiredAt: nil, leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false))
+        controller.handleRemoteAudioActivity(senderSessionId: "session-a", active: false)
+        await controller.completeBufferedTimelineDrain()
+        XCTAssertEqual(controller.currentSnapshot().state, .idle)
     }
 
     private func coordinator(

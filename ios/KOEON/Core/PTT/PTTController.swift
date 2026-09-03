@@ -32,6 +32,10 @@ actor PTTController {
     private var preparedResponse: FloorResponse?
     private var preparedOperation: Int?
     private var activeBufferedGenerationId: String?
+    private var acquisitionInFlight = false
+    private var terminalTask: Task<Void, Never>?
+    private var ownedLeaseId: String?
+    private var ownedReleaseAttempts = 0
 
     init(
         role: KOEONRole,
@@ -90,7 +94,10 @@ actor PTTController {
             publish()
             return false
         }
-        guard !isPressed, snapshot.state != .transmitting else { return false }
+        guard !isPressed, !acquisitionInFlight, terminalTask == nil,
+              ownedLeaseId == nil, snapshot.state == .idle else { return false }
+        acquisitionInFlight = true
+        defer { acquisitionInFlight = false }
 
         isPressed = true
         localCueEnabled = playReadyCue
@@ -111,11 +118,13 @@ actor PTTController {
 
         do {
             let response = try await floor.acquire()
+            if response.outcome == .granted, let leaseId = response.leaseId {
+                ownedLeaseId = leaseId
+                ownedReleaseAttempts = 0
+                snapshot.leaseId = leaseId
+            }
             guard operation == generation, isPressed else {
-                if let leaseId = response.leaseId, response.outcome == .granted {
-                    try? await floor.release(leaseId: leaseId)
-                }
-                clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
+                await abortBeforeTransmission(reason: "PTT cancelled during Floor acquire")
                 return false
             }
             guard response.outcome == .granted, let leaseId = response.leaseId else {
@@ -134,8 +143,7 @@ actor PTTController {
             startLeaseTasks(leaseId: leaseId, operation: operation, response: response)
             await onFloorGranted?()
             guard operation == generation, isPressed, snapshot.attemptGeneration == operation else {
-                try? await floor.release(leaseId: leaseId)
-                clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
+                await abortBeforeTransmission(reason: "PTT attempt cancelled")
                 return false
             }
             // BATv1 on Apple PushToTalk must wait for Apple's didActivate before
@@ -162,8 +170,7 @@ actor PTTController {
             )
             guard operation == generation, isPressed, snapshot.attemptGeneration == operation else {
                 await control.cancelRxReady(leaseId: leaseId)
-                try? await floor.release(leaseId: leaseId)
-                clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
+                await abortBeforeTransmission(reason: "PTT attempt cancelled")
                 return false
             }
             do {
@@ -178,8 +185,7 @@ actor PTTController {
                 }
                 guard operation == generation, isPressed, snapshot.attemptGeneration == operation else {
                     try? await control.publishEnd(leaseId: leaseId)
-                    try? await floor.release(leaseId: leaseId)
-                    clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
+                    await abortBeforeTransmission(reason: "PTT attempt cancelled")
                     return false
                 }
                 snapshot.controlStartSentAt = clock.now
@@ -192,8 +198,7 @@ actor PTTController {
                 snapshot.controlPublishReliableMilliseconds = timing.reliableMilliseconds
             } catch {
                 guard operation == generation, isPressed, snapshot.attemptGeneration == operation else {
-                    try? await floor.release(leaseId: leaseId)
-                    clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
+                    await abortBeforeTransmission(reason: "PTT attempt cancelled")
                     return false
                 }
                 snapshot.controlStartResult = "Failed: \(Self.safeMessage(error))"
@@ -205,8 +210,7 @@ actor PTTController {
             guard operation == generation, isPressed, snapshot.attemptGeneration == operation else {
                 await control.cancelRxReady(leaseId: leaseId)
                 try? await control.publishEnd(leaseId: leaseId)
-                try? await floor.release(leaseId: leaseId)
-                clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
+                await abortBeforeTransmission(reason: "PTT attempt cancelled")
                 return false
             }
             snapshot.rxReadyExpectedCount = ready.expectedCount
@@ -252,8 +256,7 @@ actor PTTController {
             publish()
 
             guard operation == generation, isPressed else {
-                try? await floor.release(leaseId: leaseId)
-                clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
+                await abortBeforeTransmission(reason: "PTT attempt cancelled")
                 return false
             }
 
@@ -265,8 +268,7 @@ actor PTTController {
             guard operation == generation, isPressed else {
                 await discardActiveBuffered()
                 try? await microphone.setMicrophoneEnabled(false)
-                try? await floor.release(leaseId: leaseId)
-                clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
+                await abortBeforeTransmission(reason: "PTT attempt cancelled")
                 return false
             }
 
@@ -276,22 +278,7 @@ actor PTTController {
             publish()
             return true
         } catch {
-            await discardActiveBuffered()
-            try? await microphone.setMicrophoneEnabled(false)
-            guard operation == generation, isPressed else {
-                clearLeaseIfCurrentSnapshot(operation: operation, nextState: .idle)
-                return false
-            }
-            if let leaseId = snapshot.leaseId {
-                try? await floor.release(leaseId: leaseId)
-            }
-            snapshot.state = .error
-            snapshot.lastError = Self.safeMessage(error)
-            snapshot.leaseId = nil
-            snapshot.ownerName = nil
-            snapshot.leaseExpiresAt = nil
-            snapshot.maxTxExpiresAt = nil
-            publish()
+            await abortBeforeTransmission(reason: Self.safeMessage(error))
             return false
         }
     }
@@ -404,11 +391,7 @@ actor PTTController {
             }
             await finishTransmission(leaseId: leaseId, playEndCue: playEndCue, nextState: .idle, error: nil)
         } else if snapshot.state == .requestingFloor, let leaseId = snapshot.leaseId {
-            generation += 1
-            await discardActiveBuffered()
-            try? await control.publishEnd(leaseId: leaseId)
-            try? await floor.release(leaseId: leaseId)
-            clearLease(nextState: .idle)
+            await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .idle, error: nil)
         } else if snapshot.state == .requestingFloor {
             generation += 1
             await discardActiveBuffered()
@@ -422,24 +405,23 @@ actor PTTController {
     }
 
     func stopForSafety(reason: String) async {
+        if let terminalTask { await terminalTask.value; return }
         snapshot.lastStopReason = reason
         isPressed = false
-        generation += 1
-        if let leaseId = snapshot.leaseId {
+        if let leaseId = ownedLeaseId {
             await control.cancelRxReady(leaseId: leaseId)
-            if snapshot.state == .transmitting {
-                await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .error, error: reason)
-            } else {
-                await discardActiveBuffered()
-                try? await control.publishEnd(leaseId: leaseId)
-                try? await floor.release(leaseId: leaseId)
-                clearLease(nextState: .error)
-                snapshot.lastError = reason
-                publish()
-            }
+            await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .error, error: reason)
         } else {
+            generation += 1
             await discardActiveBuffered()
-            try? await microphone.setMicrophoneEnabled(false)
+            do {
+                try await microphone.setMicrophoneEnabled(false)
+                snapshot.txTerminalCleanupComplete = !acquisitionInFlight
+                snapshot.txErrorRecoverable = !acquisitionInFlight
+            } catch {
+                snapshot.txTerminalCleanupComplete = false
+                snapshot.txErrorRecoverable = false
+            }
             cancelTimers()
             snapshot.state = role.canPublish ? .error : .rxOnly
             snapshot.lastError = reason
@@ -448,9 +430,62 @@ actor PTTController {
     }
 
     func resetAfterReconnect() {
-        guard snapshot.state == .error else { return }
+        guard snapshot.state == .error, ownedLeaseId == nil,
+              !acquisitionInFlight, snapshot.txTerminalCleanupComplete else { return }
         snapshot.state = role.canPublish ? .idle : .rxOnly
         publish()
+    }
+
+    func completeRecoverableAbortAfterAppleRearm(appleSettled: Bool, audioRearmed: Bool) {
+        guard appleSettled, audioRearmed, snapshot.txErrorRecoverable == true, snapshot.txTerminalCleanupComplete,
+              ownedLeaseId == nil, !acquisitionInFlight, terminalTask == nil else { return }
+        snapshot.state = role.canPublish ? .idle : .rxOnly
+        publish()
+    }
+
+    func cleanupIsConfirmed() -> Bool {
+        ownedLeaseId == nil && terminalTask == nil && !acquisitionInFlight && !isPressed &&
+            (snapshot.txTerminalCleanupComplete || snapshot.state == .idle || snapshot.state == .rxOnly)
+    }
+
+    /// Only the authenticated Floor status for this controller's own session may
+    /// supply a missing lease. A redacted/non-owner response never authorizes release.
+    func reconcileOwnFloor(_ status: FloorResponse) async {
+        guard !isPressed, !acquisitionInFlight, terminalTask == nil,
+              snapshot.state != .transmitting, snapshot.state != .releasing else { return }
+        if status.isOwner, let leaseId = status.leaseId {
+            guard ownedLeaseId == nil || ownedLeaseId == leaseId else { return }
+            if ownedLeaseId == nil { ownedReleaseAttempts = 0 }
+            ownedLeaseId = leaseId
+            snapshot.leaseId = leaseId
+            await abortBeforeTransmission(reason: "OWN_STALE_FLOOR")
+        } else if (status.outcome == .available || status.outcome == .released), ownedLeaseId != nil {
+            await discardActiveBuffered()
+            do { try await microphone.setMicrophoneEnabled(false) } catch { return }
+            ownedLeaseId = nil
+            snapshot.floorReleaseCompletedAt = clock.now
+            snapshot.txTerminalCleanupComplete = true
+            snapshot.txErrorRecoverable = true
+            clearLease(nextState: .error)
+        } else if status.outcome == .available, snapshot.state == .busy {
+            clearLease(nextState: .idle)
+        }
+    }
+
+    private func abortBeforeTransmission(reason: String) async {
+        isPressed = false
+        if ownedLeaseId == nil, snapshot.txTerminalCleanupComplete { return }
+        if let leaseId = ownedLeaseId {
+            await finishTransmission(leaseId: leaseId, playEndCue: false,
+                nextState: snapshot.pttUpAt != nil ? .idle : .error, error: reason)
+        } else {
+            await discardActiveBuffered()
+            snapshot.state = .error
+            snapshot.lastError = reason
+            snapshot.txTerminalCleanupComplete = true
+            snapshot.txErrorRecoverable = true
+            publish()
+        }
     }
 
     private func startLeaseTasks(leaseId: String, operation: Int, response: FloorResponse) {
@@ -508,6 +543,7 @@ actor PTTController {
             snapshot.floorLastRenewResult = "renewed"
             publish()
         } catch {
+            guard operation == generation, snapshot.leaseId == leaseId else { return }
             snapshot.floorLastRenewCompletedAt = clock.now
             snapshot.floorLastRenewResult = "failed"
             snapshot.floorLastRenewError = Self.safeMessage(error)
@@ -549,13 +585,30 @@ actor PTTController {
         nextState: PTTState,
         error: String?
     ) async {
+        if let terminalTask { await terminalTask.value; return }
+        let needsFinalMarker = snapshot.talkingAt != nil
+        terminalTask = Task { [weak self] in
+            await self?.performTerminalCleanup(leaseId: leaseId, playEndCue: playEndCue,
+                nextState: nextState, error: error, needsFinalMarker: needsFinalMarker)
+        }
+        await terminalTask?.value
+        terminalTask = nil
+    }
+
+    private func performTerminalCleanup(
+        leaseId: String, playEndCue: Bool, nextState: PTTState, error: String?, needsFinalMarker: Bool
+    ) async {
         cancelMaxTxTimer()
         if snapshot.state != .releasing { enterReleasing() }
         var microphoneIsOff = false
         let wasBuffered = activeBufferedGenerationId != nil
         var terminalError = error
         do {
-            if let bufferedGenerationId = activeBufferedGenerationId {
+            if !needsFinalMarker {
+                await discardActiveBuffered()
+                try await microphone.setMicrophoneEnabled(false)
+                snapshot.txReleasePhase = "PREAUTH_BUFFER_DISCARDED"
+            } else if let bufferedGenerationId = activeBufferedGenerationId {
                 snapshot.txReleasePhase = "FINALIZING_BUFFERED_AUDIO"
                 publish()
                 try await bufferedAudio?.finish(generationId: bufferedGenerationId)
@@ -604,23 +657,31 @@ actor PTTController {
         snapshot.floorReleaseRequestedAt = clock.now
         snapshot.txFloorReleaseRequestedSequence = nextReleaseSequence()
         publish()
-        do {
-            try await floor.release(leaseId: leaseId)
-        } catch {
-            terminalError = "Floor release failed: \(Self.safeMessage(error))"
-            snapshot.lastError = terminalError
-            snapshot.txErrorRecoverable = false
+        var released = false
+        while ownedReleaseAttempts < 3 {
+            ownedReleaseAttempts += 1
+            do {
+                try await floor.release(leaseId: leaseId)
+                released = true
+                break
+            } catch {
+                terminalError = "Floor release failed: \(Self.safeMessage(error))"
+            }
         }
-        snapshot.floorReleaseCompletedAt = clock.now
-        snapshot.txFloorReleaseCompletedSequence = nextReleaseSequence()
+        if released {
+            ownedLeaseId = nil
+            snapshot.floorReleaseCompletedAt = clock.now
+            snapshot.txFloorReleaseCompletedSequence = nextReleaseSequence()
+        }
         cancelRenewTimer()
         generation += 1
-        let safeNextState: PTTState = snapshot.txErrorRecoverable == false ? .error : nextState
-        clearLease(nextState: safeNextState)
-        snapshot.txReleasePhase = "COMPLETE"
+        snapshot.txErrorRecoverable = released && microphoneIsOff
+        if released { clearLease(nextState: microphoneIsOff ? nextState : .error) }
+        else { snapshot.state = .error }
+        snapshot.txReleasePhase = released ? "COMPLETE" : "PENDING_LEASE_CLEANUP"
         snapshot.txReleaseCompletedSequence = nextReleaseSequence()
-        snapshot.txTerminalCleanupComplete = true
-        snapshot.txReleaseResult = terminalError == nil ? "PASS" : "RECOVERED_WITH_ERROR"
+        snapshot.txTerminalCleanupComplete = released && microphoneIsOff
+        snapshot.txReleaseResult = !released ? "LEASE_RELEASE_UNCONFIRMED" : terminalError == nil ? "PASS" : "RECOVERED_WITH_ERROR"
         if let terminalError { snapshot.lastError = terminalError }
         publish()
     }

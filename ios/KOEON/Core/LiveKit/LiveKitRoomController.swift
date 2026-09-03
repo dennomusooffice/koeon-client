@@ -171,7 +171,9 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
 
     func disconnect() async {
         if canPublish { try? await setMicrophoneEnabled(false) }
-        await room?.disconnect()
+        let departingRoom = room
+        room = nil
+        await departingRoom?.disconnect()
         removeRemotePcmObserverIfNeeded()
         room = nil
         connectionState = .disconnected
@@ -294,7 +296,9 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     }
 
     func isRemoteAudioSubscriptionActive(sessionId: String, generation: Int) -> Bool {
-        remoteAudioSubscriptionGate.isActive(sessionId: sessionId, generation: generation)
+        guard remoteAudioSubscriptionGate.isActive(sessionId: sessionId, generation: generation),
+              let participant = room?.remoteParticipants.values.first(where: { $0.identity?.stringValue == sessionId }) else { return false }
+        return participant.audioTracks.contains { $0.isSubscribed && $0.track != nil }
     }
 
     func remoteParticipantIsSpeaking(sessionId: String) -> Bool? {
@@ -392,7 +396,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         didUpdateConnectionState connectionState: ConnectionState,
         from oldConnectionState: ConnectionState
     ) {
-        enqueueDelegateEvent(
+        enqueueDelegateEvent(sourceRoom: room,
             name: "didUpdateConnectionState",
             event: .connectionState(
                 Self.mapConnection(connectionState),
@@ -402,28 +406,28 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     }
 
     nonisolated func roomIsReconnecting(_ room: Room) {
-        enqueueDelegateEvent(
+        enqueueDelegateEvent(sourceRoom: room,
             name: "roomIsReconnecting",
             event: .reconnectStarted("LiveKit Room is reconnecting; TX was stopped.")
         )
     }
 
     nonisolated func roomDidReconnect(_ room: Room) {
-        enqueueDelegateEvent(
+        enqueueDelegateEvent(sourceRoom: room,
             name: "roomDidReconnect",
             event: .reconnectCompleted(Self.participantNameSnapshot(room))
         )
     }
 
     nonisolated func room(_ room: Room, didStartReconnectWithMode reconnectMode: ReconnectMode) {
-        enqueueDelegateEvent(
+        enqueueDelegateEvent(sourceRoom: room,
             name: "didStartReconnectWithMode",
             event: .reconnectStarted("LiveKit reconnect started; TX was stopped.")
         )
     }
 
     nonisolated func room(_ room: Room, didCompleteReconnectWithMode reconnectMode: ReconnectMode) {
-        enqueueDelegateEvent(
+        enqueueDelegateEvent(sourceRoom: room,
             name: "didCompleteReconnectWithMode",
             event: .reconnectCompleted(Self.participantNameSnapshot(room))
         )
@@ -431,11 +435,11 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
 
     nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
         let message = error.map { issue in Self.safeMessageSnapshot(issue) }
-        enqueueDelegateEvent(name: "didDisconnectWithError", event: .disconnected(message))
+        enqueueDelegateEvent(sourceRoom: room, name: "didDisconnectWithError", event: .disconnected(message))
     }
 
     nonisolated func room(_ room: Room, participantDidConnect participant: RemoteParticipant) {
-        enqueueDelegateEvent(
+        enqueueDelegateEvent(sourceRoom: room,
             name: "participantDidConnect",
             event: .participantConnected(
                 sessionId: participant.identity?.stringValue,
@@ -445,7 +449,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     }
 
     nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
-        enqueueDelegateEvent(
+        enqueueDelegateEvent(sourceRoom: room,
             name: "participantDidDisconnect",
             event: .participantDisconnected(
                 sessionId: participant.identity?.stringValue,
@@ -456,7 +460,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
 
     nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
         let remote = participants.compactMap { $0 as? RemoteParticipant }.first
-        enqueueDelegateEvent(
+        enqueueDelegateEvent(sourceRoom: room,
             name: "didUpdateSpeakingParticipants",
             event: .speakingParticipant(
                 name: remote.flatMap(Self.displayName),
@@ -482,7 +486,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
                     $0.identity?.stringValue
                 }
             )
-            enqueueDelegateEvent(
+            enqueueDelegateEvent(sourceRoom: room,
                 name: "didReceiveData.pttControl",
                 event: .pttControl(
                     event,
@@ -493,7 +497,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
             return
         }
         if topic == pttRxReadyTopic, let event = PttRxReadyCodec.decode(data) {
-            enqueueDelegateEvent(
+            enqueueDelegateEvent(sourceRoom: room,
                 name: "didReceiveData.rxReady",
                 event: .rxReady(
                     event,
@@ -508,10 +512,12 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         ingressDiagnostics
     }
 
-    nonisolated private func enqueueDelegateEvent(name: String, event: LiveKitDelegateEvent) {
+    nonisolated private func enqueueDelegateEvent(sourceRoom: Room, name: String, event: LiveKitDelegateEvent) {
+        let sourceIdentity = ObjectIdentifier(sourceRoom)
         let envelope = LiveKitDelegateEnvelope(name: name, ingressAt: Date(), event: event)
         Task { @MainActor [weak self] in
-            self?.applyDelegateEvent(envelope)
+            guard let self, self.room.map({ ObjectIdentifier($0) }) == sourceIdentity else { return }
+            self.applyDelegateEvent(envelope)
         }
     }
 

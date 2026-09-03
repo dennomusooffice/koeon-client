@@ -87,6 +87,7 @@ struct RxDivergenceEvaluation: Equatable, Sendable {
     var verifiedInactiveMediaSessionId: String?
     var recoverySessionId: String?
     var recoveryGeneration = 0
+    var recoveryLevel = 0
 }
 
 enum RxRemotePcmObservation: Equatable, Sendable {
@@ -104,6 +105,8 @@ struct RxConsistencyGuard: Sendable {
     private var validatedRxStartedAt: Date?
     private var pcmTimeoutEmitted = false
     private var mediaDivergenceEmitted = false
+    // Absolute episode deadlines; never restart the ladder on a reconcile callback.
+    private let recoveryDeadlines = [250, 750, 1_500, 2_500, 4_000]
 
     mutating func handleMediaActivity(sessionId: String?, active: Bool, at: Date) {
         guard active, let sessionId else {
@@ -145,6 +148,8 @@ struct RxConsistencyGuard: Sendable {
             snapshot.rxPathReconciliationActive = false
             validatedRxStartedAt = nil
             pcmTimeoutEmitted = false
+            snapshot.pathState = "IDLE"
+            snapshot.recoveryLevel = 0
             return
         }
         beginEpisodeIfNeeded()
@@ -152,8 +157,10 @@ struct RxConsistencyGuard: Sendable {
             snapshot.remotePcmObserved = false
             validatedRxStartedAt = at
             pcmTimeoutEmitted = false
+            snapshot.recoveryLevel = 0
+            snapshot.recoveryAttempts = 0
         }
-        let pathViable = participantResolved || trackSubscribed || batv1TimelineActive
+        let pathViable = batv1TimelineActive || (participantResolved && trackSubscribed)
         snapshot.validatedRemoteRxActive = pathViable
         snapshot.rxPathReconciliationActive = !pathViable
         snapshot.validatedRxSessionId = sessionId
@@ -161,6 +168,9 @@ struct RxConsistencyGuard: Sendable {
         snapshot.participantResolved = participantResolved
         snapshot.trackSubscribed = trackSubscribed
         snapshot.batv1TimelineActive = batv1TimelineActive
+        if snapshot.recoveryLevel == 0 {
+            snapshot.pathState = pathViable ? "PATH_VIABLE" : "PATH_BINDING"
+        }
     }
 
     @discardableResult
@@ -170,6 +180,7 @@ struct RxConsistencyGuard: Sendable {
               sessionId == snapshot.validatedRxSessionId else { return .rejected }
         let recovered = pcmTimeoutEmitted && snapshot.recoveryAttempts > 0
         snapshot.remotePcmObserved = true
+        snapshot.pathState = "PCM_FLOWING"
         if snapshot.remoteMediaSpeakerSessionId == sessionId {
             mediaEvidenceAt = at
         }
@@ -187,15 +198,16 @@ struct RxConsistencyGuard: Sendable {
            !snapshot.remotePcmObserved,
            let startedAt = validatedRxStartedAt {
             let elapsed = milliseconds(from: startedAt, to: at)
-            if elapsed >= thresholdMilliseconds, !pcmTimeoutEmitted {
+            let level = snapshot.recoveryLevel
+            if level < recoveryDeadlines.count, elapsed >= recoveryDeadlines[level] {
                 pcmTimeoutEmitted = true
-                if (!snapshot.participantResolved || !snapshot.trackSubscribed), snapshot.recoveryAttempts < 16 {
-                    snapshot.recoveryAttempts += 1
-                    evaluation.recoverySessionId = snapshot.validatedRxSessionId
-                    evaluation.recoveryGeneration = snapshot.validatedRxGeneration
-                    validatedRxStartedAt = at
-                    pcmTimeoutEmitted = false
-                }
+                snapshot.recoveryAttempts += 1
+                snapshot.recoveryLevel += 1
+                snapshot.pathState = ["RECOVERING_SOFT", "PATH_BINDING", "RECOVERING_RUNTIME",
+                                      "RECOVERING_FRESH_JOIN", "TERMINAL"][level]
+                evaluation.recoverySessionId = snapshot.validatedRxSessionId
+                evaluation.recoveryGeneration = snapshot.validatedRxGeneration
+                evaluation.recoveryLevel = snapshot.recoveryLevel
                 evaluation.signals.append(RxDivergenceSignal(
                     event: "rx_pcm_timeout",
                     elapsedMilliseconds: elapsed,
@@ -244,8 +256,9 @@ struct RxConsistencyGuard: Sendable {
         }
         if (snapshot.validatedRemoteRxActive || snapshot.rxPathReconciliationActive),
            !snapshot.remotePcmObserved,
+           snapshot.recoveryLevel < recoveryDeadlines.count,
            let validatedRxStartedAt {
-            deadlines.append(validatedRxStartedAt.addingTimeInterval(Double(thresholdMilliseconds) / 1_000))
+            deadlines.append(validatedRxStartedAt.addingTimeInterval(Double(recoveryDeadlines[snapshot.recoveryLevel]) / 1_000))
         }
         return deadlines.min()
     }
@@ -648,8 +661,11 @@ final class RemoteReceiveActivationCoordinator {
     }
 
     func reset() {
-        if snapshot.remoteSpeakerSessionId != nil {
-            setRemoteParticipant(nil)
+        if let sessionId = snapshot.remoteSpeakerSessionId {
+            if let setRemoteParticipantRequest {
+                _ = setRemoteParticipantRequest(nil, RemoteParticipantRequestContext(
+                    generation: activeGeneration, sessionId: sessionId, leaseId: activeLeaseId ?? "", clearing: true))
+            } else { setRemoteParticipant(nil) }
         }
         resetLocalState()
     }
@@ -894,6 +910,12 @@ final class RxAudioController {
         lastSequenceBySession.removeAll()
         snapshot = RxSnapshot()
         publish()
+    }
+
+    func resetAndAwait() async {
+        let pending = [drainTask, capTask, startupTimeoutTask]
+        reset()
+        for task in pending { await task?.value }
     }
 
     private func start(_ event: PttControlEvent) {

@@ -19,6 +19,9 @@ struct FloorClient: FloorControlling, Sendable {
     }
 
     func release(leaseId: String) async throws {
-        _ = try await api.releaseFloor(sessionId: sessionId, leaseId: leaseId)
+        let response = try await api.releaseFloor(sessionId: sessionId, leaseId: leaseId)
+        guard response.outcome == .released || response.outcome == .available else {
+            throw APIClientError.invalidResponse
+        }
     }
 }
