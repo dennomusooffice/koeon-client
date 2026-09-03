@@ -296,11 +296,14 @@ actor PTTController {
                 guard await bufferedAudio?.awaitCaptureAndMarkCueBoundary(generationId: bufferedGenerationId) == true else {
                     throw BufferedAudioError.captureNotConfirmed
                 }
+                guard operation == generation, isPressed else { return }
                 snapshot.cueStartAt = clock.now
                 do {
                     try await cuePlayer.playStart()
+                    guard operation == generation, isPressed else { return }
                     snapshot.startCueResult = .success
                 } catch {
+                    guard operation == generation, isPressed else { return }
                     snapshot.startCueResult = .failure(Self.safeMessage(error))
                 }
                 snapshot.cueEndAt = clock.now
@@ -321,6 +324,7 @@ actor PTTController {
                     leaseId: leaseId,
                     generationId: bufferedGenerationId
                 )
+                guard operation == generation, isPressed else { return }
                 snapshot.controlStartSentAt = clock.now
                 snapshot.controlStartResult = "Published"
                 snapshot.controlPublishFastStartedAt = timing.fastStartedAt
@@ -330,6 +334,7 @@ actor PTTController {
                 snapshot.controlPublishReliableCompletedAt = timing.reliableCompletedAt
                 snapshot.controlPublishReliableMilliseconds = timing.reliableMilliseconds
                 let ready = await control.awaitRxReady(leaseId: leaseId, maximumWaitMilliseconds: nil)
+                guard operation == generation, isPressed else { return }
                 snapshot.rxReadyExpectedCount = ready.expectedCount
                 snapshot.rxReadyReceivedCount = ready.receivedCount
                 snapshot.rxReadyLateCount = ready.lateCount
@@ -347,6 +352,7 @@ actor PTTController {
                 try await microphone.setMicrophoneEnabled(true)
             }
             guard isPressed, operation == generation else {
+                guard operation == generation else { return }
                 await discardActiveBuffered()
                 try? await microphone.setMicrophoneEnabled(false)
                 return
@@ -358,6 +364,7 @@ actor PTTController {
             preparedOperation = nil
             publish()
         } catch {
+            guard operation == generation else { return }
             await stopForSafety(reason: "TX activation failed: \(Self.safeMessage(error))")
         }
     }
@@ -366,6 +373,7 @@ actor PTTController {
     /// after its didActivate callback and never before activation.
     func appleAudioSessionDidActivate() async {
         guard isPressed, activeBufferedGenerationId != nil else { return }
+        let operation = generation
         do {
             try await bufferedAudio?.audioSessionDidActivate()
         } catch {
@@ -543,6 +551,7 @@ actor PTTController {
             snapshot.floorLastRenewResult = "renewed"
             publish()
         } catch {
+            guard operation == generation else { return }
             guard operation == generation, snapshot.leaseId == leaseId else { return }
             snapshot.floorLastRenewCompletedAt = clock.now
             snapshot.floorLastRenewResult = "failed"
@@ -586,6 +595,7 @@ actor PTTController {
         error: String?
     ) async {
         if let terminalTask { await terminalTask.value; return }
+        guard ownedLeaseId == leaseId else { return }
         let needsFinalMarker = snapshot.talkingAt != nil
         terminalTask = Task { [weak self] in
             await self?.performTerminalCleanup(leaseId: leaseId, playEndCue: playEndCue,

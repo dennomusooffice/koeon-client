@@ -659,6 +659,32 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertEqual(values.filter { $0 == "release" }.count, 100)
     }
 
+    func testDLateActivationFailureCannotAbortTheNextAttempt() async {
+        let events = EventLog()
+        let buffered = SuspendedCaptureMock()
+        let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+            microphone: MicrophoneMock(events: events), cuePlayer: CueMock(events: events),
+            control: ControlMock(events: events), bufferedAudio: buffered,
+            clock: ControlledClock(), onUpdate: { _ in })
+        _ = await controller.preArmForAppleActivation()
+        let oldActivation = Task { await controller.activatePrearmedTransmission() }
+        await waitUntil { buffered.isWaiting }
+        await controller.pttUp(playEndCue: false)
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        let newAttempt = await controller.currentSnapshot().attemptGeneration
+        buffered.failOldCapture()
+        await oldActivation.value
+        var snapshot = await controller.currentSnapshot()
+        XCTAssertEqual(snapshot.attemptGeneration, newAttempt)
+        XCTAssertEqual(snapshot.state, .requestingFloor)
+        XCTAssertNotNil(snapshot.leaseId)
+        await controller.activatePrearmedTransmission()
+        snapshot = await controller.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .transmitting)
+        await controller.pttUp(playEndCue: false)
+    }
+
     private func makeController(
         role: KOEONRole = .staff,
         floor: FloorMock,
@@ -1005,6 +1031,37 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(player.endCount, 100)
         XCTAssertEqual(player.enqueueCount, 100)
         XCTAssertEqual(player.shutdownCount, 1)
+    }
+
+    @MainActor
+    func testDLateDrainCompletionCannotClearReplacementGeneration() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0, bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())])
+        }
+        var receiver: BufferedAudioReceiver!
+        var terminals = 0
+        var replacementPreserved = false
+        receiver = BufferedAudioReceiver(api: api, sessionId: "local",
+            onTimelineDrained: {
+                terminals += 1
+                if terminals == 1 {
+                    receiver.start(generationId: "replacement", senderSessionId: "next-speaker")
+                    await Task.yield()
+                    replacementPreserved = receiver.diagnostics.generationId == "replacement"
+                }
+            }, player: Batv1PcmPlayerMock())
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "old", senderSessionId: "old-speaker")
+        await receiver.awaitCurrentGenerationTermination()
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertTrue(replacementPreserved)
+        XCTAssertEqual(terminals, 2)
+        await receiver.shutdownAndAwait()
     }
 
     @MainActor
@@ -1450,6 +1507,26 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
         return try subscribeHandler(request)
     }
     func logout() async throws { throw MockError.expected }
+}
+
+@MainActor
+private final class SuspendedCaptureMock: BufferedAudioTransmitting {
+    var diagnostics = BufferedAudioTxDiagnostics()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var first = true
+    var isWaiting: Bool { continuation != nil }
+    func prepare(generationId: String) async {}
+    func audioSessionDidActivate() async throws {}
+    func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool {
+        guard first else { return true }
+        first = false
+        return await withCheckedContinuation { continuation = $0 }
+    }
+    func failOldCapture() { continuation?.resume(returning: false); continuation = nil }
+    func authorize(leaseId: String, generationId: String) async throws {}
+    func performReleaseHangover(generationId: String) async -> Bool { true }
+    func finish(generationId: String) async throws {}
+    func discard(generationId: String) async {}
 }
 
 private actor FloorMock: FloorControlling {
