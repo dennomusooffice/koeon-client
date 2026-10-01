@@ -67,6 +67,8 @@ jobs:
           scripts/ios-app-store-connect-preflight.test.mjs
       - name: Test secret-safe signed candidate diagnostics
         run: python3 scripts/ios-signed-candidate-validation.test.py
+      - name: Test local TestFlight validation and cleanup without credentials
+        run: python3 scripts/ios-local-testflight.test.py
       - name: Validate official iOS AppIcon source contract
         run: python3 scripts/ios-appicon-contract.py --source .
 

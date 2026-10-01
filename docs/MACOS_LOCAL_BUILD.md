@@ -1,5 +1,7 @@
 # Macでのローカルビルド
 
+ローカルから内部TestFlightへ配布する場合は[ローカルTestFlight手順](LOCAL_TESTFLIGHT.md)を参照してください。
+
 Apple Silicon Mac用の手順です。リポジトリのルートで実行します。
 ネイティブアプリのビルドにNode.js、pnpm、CocoaPods、Flutterは不要です。
 

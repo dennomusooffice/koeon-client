@@ -46,6 +46,7 @@ KOEON rights holderが権利を管理するsource codeには、[Mozilla Public L
 ## BuildとTest
 
 Macでの環境構築・ローカルビルドは[Macローカルビルド手順](docs/MACOS_LOCAL_BUILD.md)を参照してください。
+Macからの内部TestFlight配布は[ローカルTestFlight手順](docs/LOCAL_TESTFLIGHT.md)を参照してください。
 
 Protocol（Node.js 22以上、pnpm 10.15.0）:
 
