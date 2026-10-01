@@ -45,6 +45,8 @@ KOEON rights holderが権利を管理するsource codeには、[Mozilla Public L
 
 ## BuildとTest
 
+Macでの環境構築・ローカルビルドは[Macローカルビルド手順](docs/MACOS_LOCAL_BUILD.md)を参照してください。
+
 Protocol（Node.js 22以上、pnpm 10.15.0）:
 
 ```sh
@@ -79,4 +81,3 @@ bash scripts/publication-safety.sh
 - [日本語用語集](docs/JAPANESE_TERMINOLOGY.md)
 
 このrepositoryのCIは、softwareのsigning、archive、upload、deployを行いません。
-
