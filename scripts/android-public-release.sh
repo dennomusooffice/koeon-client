@@ -55,7 +55,8 @@ chmod 600 "$keystore_path"
 [[ -s "$keystore_path" ]] || { echo "ANDROID_KEYSTORE_READABLE=FAIL"; exit 1; }
 
 export LC_ALL=C
-if ! keytool -list -v -keystore "$keystore_path" -storepass:env ANDROID_STORE_PASSWORD \
+# keytool uses the JVM locale on macOS even when LC_ALL=C. Keep parsed labels stable.
+if ! keytool -J-Duser.language=en -J-Duser.country=US -list -v -keystore "$keystore_path" -storepass:env ANDROID_STORE_PASSWORD \
   -alias "$ANDROID_KEY_ALIAS" >"$keytool_report" 2>/dev/null; then
   echo "ANDROID_KEYSTORE_READABLE=FAIL"
   exit 1
