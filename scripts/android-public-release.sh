@@ -12,6 +12,11 @@ for name in "${required[@]}"; do
   [[ -n "${!name:-}" ]] || { echo "Missing required Android release input: $name" >&2; exit 1; }
 done
 
+# macOS /var is a symlink to /private/var. Node's ESM CLI guards compare
+# canonical module URLs, so invoke validation scripts through physical paths.
+CLIENT_SOURCE_DIR="$(cd "$CLIENT_SOURCE_DIR" && pwd -P)"
+INFRA_ROOT="$(cd "$INFRA_ROOT" && pwd -P)"
+
 release_temp="$RUNNER_TEMP/koeon-android-public-release"
 keystore_path="$release_temp/koeon-android-app-signing.jks"
 certificate_path="$release_temp/signing-certificate.pem"
