@@ -7,11 +7,24 @@ KOEON Androidの正式なdirect-distribution APKは、Public repositoryのGitHub
 ```text
 namespace = com.dennomuso.koeon
 applicationId = com.dennomuso.koeon
-versionName = 1.0.0
-versionCode = 1
+versionName = 1.0.9
+versionCode = 10
 ```
 
 最初の正式Public direct-distribution release以降、`versionCode`は単調増加させます。Google Play distributionは別gateであり、このworkflowはGitHub Releaseだけを対象にします。
+
+## 1.0.9の署名鍵変更（再インストール必須）
+
+1.0.9（versionCode 10）は新しい署名鍵で配布します。以前の鍵では署名できなくなったため、
+テスト利用者が再インストールする前提で鍵を変更しました。applicationIdは変更しません。
+旧版への上書き更新はできません。旧版をアンインストールしてから新しいAPKをインストールしてください。
+アンインストールにより端末内の設定・登録情報等が消える可能性があります。
+必要な招待情報等を事前に確認し、インストール後に登録とマイク等の権限設定を行ってください。
+
+新しい鍵とパスワードはMacのGit管理対象外の`.secret/android-release/`に保存しています。
+紛失すると今後の上書き更新に影響するため、安全な場所へのバックアップが必要です。
+GitHub Environmentの既存署名Secretsは旧鍵のままです。今後Actionsで配布する場合は、
+ローカルの新しい鍵・alias・passwordへ揃えてから実行してください。
 
 ## Runtime configuration
 
