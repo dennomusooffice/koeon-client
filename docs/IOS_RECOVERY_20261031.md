@@ -23,4 +23,4 @@ Apple SDKと[公式仕様](https://developer.apple.com/documentation/pushtotalk/
 
 新ビルドへ更新して両端末をPOWER OFF→ONする。iPhone→Android、Android→iPhone、ロック・復帰後の両方向、短い押下と連続押下を確認する。不具合があればPOWER OFF前にField Diagnostic JSONを取得し、ビルド番号、送信ゲート、送信試行、受信世代、復帰世代を照合する。
 
-配信対象: 1.0 (2026103102)。配信結果はApp Store Connectで確認して追記する。
+2026-10-31に1.0 (2026103102)をTestFlightへ配信済み。配信ソースは9b92f000ca35a014b38b5851c3328529b0216d5f。署名付きアーカイブ・export・uploadが成功し、App Store ConnectのprocessingState=VALID、internalBuildState=IN_BETA_TESTINGを確認した。前回と同じ内部グループdefault/MTOYに関連付け済み。実機での更新後テスト結果は待機中。
