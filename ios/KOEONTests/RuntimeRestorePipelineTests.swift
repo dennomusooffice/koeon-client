@@ -120,7 +120,7 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         runtime.invalidate()
         for lifecycle in ["background", "inactive", "active"] {
             XCTAssertEqual(incomingPushRuntimeAction(hasJoinedRuntime: true, connectionState: .connected,
-                appLifecycleState: lifecycle, runtimeDirty: runtime.dirty), .resumeImmediately)
+                appLifecycleState: lifecycle, runtimeDirty: runtime.dirty), .awaitReconnectThenResume)
         }
         runtime.validate(bindingsReady: false)
         XCTAssertTrue(runtime.dirty)

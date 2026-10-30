@@ -27,10 +27,15 @@ protocol KOEONAPIClientProtocol: Sendable {
     func unregisterPttToken(sessionId: String) async throws
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse
     func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse
+    func resolveBufferedAudio(_ request: Batv1ResolveRequest) async throws -> Batv1ResolveResponse
     func logout() async throws
 }
 
 extension KOEONAPIClientProtocol {
+    func resolveBufferedAudio(_ request: Batv1ResolveRequest) async throws -> Batv1ResolveResponse {
+        throw APIClientError.invalidResponse
+    }
+
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
         throw APIClientError.invalidResponse
     }
@@ -191,6 +196,10 @@ final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
         )
     }
 
+    func resolveBufferedAudio(_ request: Batv1ResolveRequest) async throws -> Batv1ResolveResponse {
+        try await send(path: "/api/audio/batv1/resolve", method: "POST", body: try encoder.encode(request), timeout: 1)
+    }
+
     func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
         try await send(
             path: "/api/audio/batv1/subscribe",
@@ -211,20 +220,22 @@ final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
         path: String,
         method: String,
         body: Data?,
-        authenticated: Bool = true
+        authenticated: Bool = true,
+        timeout: TimeInterval = 15
     ) async throws -> Response {
-        try await send(url: baseURL.appending(path: path), method: method, body: body, authenticated: authenticated)
+        try await send(url: baseURL.appending(path: path), method: method, body: body, authenticated: authenticated, timeout: timeout)
     }
 
     private func send<Response: Decodable>(
         url: URL,
         method: String,
         body: Data?,
-        authenticated: Bool = true
+        authenticated: Bool = true,
+        timeout: TimeInterval = 15
     ) async throws -> Response {
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 15
+        request.timeoutInterval = timeout
         if authenticated, let credential = credentialStore.read() {
             request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
         }
