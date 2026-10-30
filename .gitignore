@@ -4,6 +4,7 @@
 .swiftpm/
 .build/
 DerivedData/
+xcuserdata/
 android/.gradle/
 android/local.properties
 android/**/build/

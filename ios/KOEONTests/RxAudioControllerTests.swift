@@ -4,6 +4,89 @@ import PushToTalk
 
 @MainActor
 final class RxAudioControllerTests: XCTestCase {
+    func testMissingAppleTransmissionCompletesReleaseAndAllowsNextPress() {
+        let failure = ApplePttErrorClassifier.classify(
+            NSError(domain: PTChannelError.errorDomain,
+                    code: PTChannelError.Code.transmissionNotFound.rawValue), operation: .stop)
+        for queuedPress in [false, true] {
+            var gate = PttRequestGate()
+            _ = gate.pressDown()
+            _ = gate.didBegin()
+            _ = gate.pressUp()
+            _ = gate.didFail(recoverable: failure.recoverable)
+            if queuedPress { _ = gate.pressDown() }
+            // Floor cleanup is confirmed; this Apple callback is the only
+            // remaining release fence (there will be no didEnd callback).
+            let actions = failure.completesAppleRelease ? gate.finishRearming() : []
+            XCTAssertEqual(gate.state, queuedPress ? .beginRequested : .idle)
+            XCTAssertEqual(actions, queuedPress ? [.requestBegin] : [])
+            if !queuedPress { XCTAssertEqual(gate.pressDown(), [.requestBegin]) }
+        }
+    }
+
+    func testStopFailureWithoutProofOfEndedTransmissionDoesNotCompleteRelease() {
+        for error in [
+            NSError(domain: "UnrelatedDomain", code: PTChannelError.Code.transmissionNotFound.rawValue),
+            NSError(domain: PTChannelError.errorDomain, code: PTChannelError.Code.transmissionInProgress.rawValue),
+            NSError(domain: PTChannelError.errorDomain, code: 999)
+        ] {
+            XCTAssertFalse(ApplePttErrorClassifier.classify(error, operation: .stop).completesAppleRelease)
+        }
+        XCTAssertTrue(ApplePttErrorClassifier.classify(
+            NSError(domain: PTChannelError.errorDomain, code: PTChannelError.Code.callActive.rawValue),
+            operation: .begin).completesAppleRelease)
+    }
+
+    func testDelayedAvailableFloorResponseDoesNotTerminateNewReception() async throws {
+        let receiver = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            clock: SuspendingClock(), onUpdate: { _ in })
+        let available = FloorResponse(outcome: .available, owner: nil, leaseId: nil,
+            acquiredAt: nil, leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false)
+        var response: CheckedContinuation<FloorResponse, Never>?
+        let pending = Task { @MainActor in
+            try await withCurrentFloorStatus(
+                context: { receiver.currentSnapshot().generation },
+                request: { await withCheckedContinuation { response = $0 } },
+                apply: { receiver.reconcileFloor($0) })
+        }
+        while response == nil { await Task.yield() }
+        receiver.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        response?.resume(returning: available)
+        let applied = try await pending.value
+        XCTAssertFalse(applied)
+        XCTAssertEqual(receiver.currentSnapshot().state, .arming)
+        XCTAssertNil(receiver.currentSnapshot().rxFloorEndObservedAt)
+        // A subsequent status requested for this reception must still end it.
+        let appliedCurrent = try await withCurrentFloorStatus(
+            context: { receiver.currentSnapshot().generation }, request: { available },
+            apply: { receiver.reconcileFloor($0) })
+        XCTAssertTrue(appliedCurrent)
+        XCTAssertNotNil(receiver.currentSnapshot().rxFloorEndObservedAt)
+        await receiver.resetAndAwait()
+    }
+
+    func testDelayedFloorResponseCannotAffectReplacementRuntimeOrNewPress() async throws {
+        for changeRuntime in [false, true] {
+            var runtime = 1
+            var press = 1
+            var response: CheckedContinuation<FloorResponse, Never>?
+            var applied = false
+            let pending = Task { @MainActor in
+                try await withCurrentFloorStatus(
+                    context: { [runtime, press] },
+                    request: { await withCheckedContinuation { response = $0 } },
+                    apply: { _ in applied = true })
+            }
+            while response == nil { await Task.yield() }
+            if changeRuntime { runtime += 1 } else { press += 1 }
+            response?.resume(returning: FloorResponse(outcome: .available, owner: nil, leaseId: nil,
+                acquiredAt: nil, leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false))
+            let result = try await pending.value
+            XCTAssertFalse(result)
+            XCTAssertFalse(applied)
+        }
+    }
+
     func testWarmReadyExpectedIncludesRemoteSessionsAndExcludesLocalDuplicates() {
         let expected = LiveKitRoomController.expectedRxReadySessions(
             serverExpected: ["wake-a", "remote-b", "remote-b"],

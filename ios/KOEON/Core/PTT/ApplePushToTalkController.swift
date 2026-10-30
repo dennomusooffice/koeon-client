@@ -129,6 +129,7 @@ struct PttTransmitFailure: Sendable {
     let recoverable: Bool
     let affectsAudioAvailability: Bool
     let code: String
+    let completesAppleRelease: Bool
 }
 
 enum ApplePttErrorClassifier {
@@ -146,7 +147,10 @@ enum ApplePttErrorClassifier {
             message: String(error.localizedDescription.prefix(240)),
             recoverable: recoverable,
             affectsAudioAvailability: false,
-            code: code.map { String(describing: $0) } ?? "unknown"
+            code: code.map { String(describing: $0) } ?? "unknown",
+            // Imported NSError enums can describe themselves as rawValue: 5.
+            // Release correctness must use the typed error, never its display text.
+            completesAppleRelease: operation == .begin || code == .transmissionNotFound
         )
     }
 }

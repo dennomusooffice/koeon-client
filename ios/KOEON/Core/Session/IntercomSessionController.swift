@@ -16,6 +16,27 @@ func isTerminalRuntimeRestoreError(_ error: Error) -> Bool {
     return status == 401 || status == 403 || status == 404
 }
 
+/// A response describes the state at request time, not a later RX/TX generation.
+@MainActor
+func withCurrentFloorStatus<Context: Equatable>(
+    context: () -> Context,
+    request: () async throws -> FloorResponse,
+    apply: (FloorResponse) async -> Void
+) async throws -> Bool {
+    let requestedContext = context()
+    let floor = try await request()
+    guard !Task.isCancelled, requestedContext == context() else { return false }
+    await apply(floor)
+    return true
+}
+
+private struct FloorStatusContext: Equatable {
+    let sessionId: String?
+    let runtime: Int
+    let txAttempt: Int
+    let rxGeneration: Int
+}
+
 let postCallStableMilliseconds = 500
 
 func shouldFinishPostCallRecovery(onAppleActivation state: AudioAvailabilityState) -> Bool {
@@ -579,11 +600,21 @@ final class IntercomSessionController: ObservableObject {
             self.runtimeLiveness.invalidate()
             self.remoteReceive?.reset()
             self.resetRxConsistency()
-            Task { await self.ptt?.stopForSafety(reason: reason) }
+            let controller = self.ptt
+            let runtime = self.runtimeLiveness.generation
+            Task { [weak self] in
+                guard self?.runtimeLiveness.generation == runtime else { return }
+                await controller?.stopForSafety(reason: reason)
+            }
         }
         room.onReconnected = { [weak self] in
             guard let self else { return }
-            Task { await self.ptt?.resetAfterReconnect() }
+            let controller = self.ptt
+            let runtime = self.runtimeLiveness.generation
+            Task { [weak self] in
+                guard self?.runtimeLiveness.generation == runtime else { return }
+                await controller?.resetAfterReconnect()
+            }
         }
         room.onConnectionStateChanged = { [weak self] state in
             guard let self else { return }
@@ -783,11 +814,13 @@ final class IntercomSessionController: ObservableObject {
             self.appleLastEndAt = Date()
             self.appleLastEndSource = source
             let actions = self.pttRequestGate.didEnd()
-            self.markAppleReleaseCompleted(source: source)
             self.handlePttGateActions(actions, source: source)
             if !actions.contains(.finishFloor) {
                 self.startFloorCleanup(source: source)
             }
+            // Completing release may start a queued press. Dispatch all old
+            // cleanup actions first so they cannot cancel that new press.
+            self.markAppleReleaseCompleted(source: source)
         }
         pushToTalk.onAudioSessionActivated = { [weak self] audioSession in
             guard let self else { return }
@@ -834,12 +867,12 @@ final class IntercomSessionController: ObservableObject {
                 return
             }
             let actions = self.pttRequestGate.didFail(recoverable: failure.recoverable)
-            if failure.operation == .begin || failure.code == "transmissionNotFound" {
-                self.markAppleReleaseCompleted(source: failure.operation.rawValue)
-            }
             self.handlePttGateActions(actions, source: failure.operation.rawValue)
             if !actions.contains(.finishFloor) {
                 self.startFloorCleanup(source: failure.operation.rawValue)
+            }
+            if failure.completesAppleRelease {
+                self.markAppleReleaseCompleted(source: failure.operation.rawValue)
             }
             if failure.affectsAudioAvailability { self.audio.markInterrupted(failure.message) }
             if !failure.recoverable { self.lastError = "Apple PushToTalk: \(failure.message)" }
@@ -1308,6 +1341,8 @@ final class IntercomSessionController: ObservableObject {
         resetCurrentTxDiagnostics()
         txAttemptGeneration += 1
         let attempt = txAttemptGeneration
+        let runtime = runtimeLiveness.generation
+        let controller = ptt
         txAttempts.begin(generation: attempt, channelId: joinedSession?.channel.id ?? "",
             sessionGeneration: runtimeLiveness.generation)
         appPrearmAwaitingApple = true
@@ -1324,13 +1359,15 @@ final class IntercomSessionController: ObservableObject {
         appPrearmTask?.cancel()
         appPrearmTask = Task { [weak self] in
             guard let self else { return }
-            let prepared = await self.ptt?.preArmForAppleActivation(
+            guard self.runtimeLiveness.generation == runtime, !Task.isCancelled else { return }
+            let prepared = await controller?.preArmForAppleActivation(
                 maximumReadyWaitMilliseconds: self.maximumReadyWaitMilliseconds,
                 onFloorGranted: { [weak self] in
                     await self?.requestAppleBeginAfterFloorGrant(attempt: attempt)
                 }
             ) == true
-            guard attempt == self.txAttemptGeneration else { return }
+            guard self.runtimeLiveness.generation == runtime,
+                  attempt == self.txAttemptGeneration else { return }
             self.appPrearmTask = nil
             guard !Task.isCancelled, prepared else {
                 if self.pttRequestGate.state == .beginRequested || self.pttRequestGate.state == .transmitting {
@@ -1728,6 +1765,8 @@ final class IntercomSessionController: ObservableObject {
         staleRuntimeTeardownStartedAt = Date()
         defer { staleRuntimeTeardownCompletedAt = Date() }
         guard joinedSession != nil || room.connectionState != .disconnected else { return }
+        audioRecoveryTask?.cancel()
+        audioRecoveryTask = nil
         await invalidateRuntimeCallbacks()
         floorStatusTask?.cancel()
         floorStatusTask = nil
@@ -1939,23 +1978,30 @@ final class IntercomSessionController: ObservableObject {
     private func recoverAudio(generation: Int) {
         guard isJoined, audio.beginRecovery(generation: generation) else { return }
         postCallRearmState = .waitingRoom
+        let runtime = runtimeLiveness.generation
         audioRecoveryTask?.cancel()
         audioRecoveryTask = Task { [weak self] in
             guard let self else { return }
             for _ in 0..<10 {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.runtimeLiveness.generation == runtime else { return }
                 if self.room.connectionState == .connected {
                     self.postCallRearmState = .stabilizing
                     do { try await Task.sleep(nanoseconds: UInt64(postCallStableMilliseconds) * 1_000_000) } catch { return }
-                    guard !Task.isCancelled, self.room.connectionState == .connected else { continue }
+                    guard !Task.isCancelled, self.runtimeLiveness.generation == runtime,
+                          self.room.connectionState == .connected else { continue }
                     self.pushToTalk.setServiceConnection(.connected)
-                    if let session = self.joinedSession,
-                       let floor = try? await self.api.floorStatus(sessionId: session.sessionId) {
-                        self.rx?.reconcileFloor(floor)
+                    if let session = self.joinedSession {
+                        _ = try? await withCurrentFloorStatus(
+                            context: { self.floorStatusContext },
+                            request: { try await self.api.floorStatus(sessionId: session.sessionId) },
+                            apply: { self.rx?.reconcileFloor($0) }
+                        )
                     }
+                    guard !Task.isCancelled, self.runtimeLiveness.generation == runtime else { return }
                     self.resetPttRequestGate()
                     if self.audio.completeRecovery(generation: generation) {
                         await self.finishRecoveredPTTState()
+                        guard !Task.isCancelled, self.runtimeLiveness.generation == runtime else { return }
                         self.lastError = nil
                         self.postCallRearmState = .rearmed
                     }
@@ -1970,7 +2016,10 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func finishRecoveredPTTState() async {
-        await ptt?.resetAfterReconnect()
+        let runtime = runtimeLiveness.generation
+        let controller = ptt
+        await controller?.resetAfterReconnect()
+        guard !Task.isCancelled, runtimeLiveness.generation == runtime else { return }
         pttStoppedForAudioInterruption = false
         resetPttRequestGate()
     }
@@ -1981,10 +2030,12 @@ final class IntercomSessionController: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 self.pushToTalk.setServiceConnection(self.room.connectionState)
-                if let session = self.joinedSession,
-                   let floor = try? await self.api.floorStatus(sessionId: session.sessionId) {
-                    guard !Task.isCancelled, self.joinedSession?.sessionId == session.sessionId else { return }
-                    await self.applyAuthoritativeFloor(floor)
+                if let session = self.joinedSession {
+                    _ = try? await withCurrentFloorStatus(
+                        context: { self.floorStatusContext },
+                        request: { try await self.api.floorStatus(sessionId: session.sessionId) },
+                        apply: { await self.applyAuthoritativeFloor($0) }
+                    )
                 }
                 try? await Task.sleep(for: .seconds(1))
             }
@@ -2071,8 +2122,13 @@ final class IntercomSessionController: ObservableObject {
               !pttRequestGate.releaseRequestedBeforeBegin,
               !appActivationCommitted else { return }
         appActivationCommitted = true
+        let controller = ptt
+        let runtime = runtimeLiveness.generation
+        let attempt = txAttemptGeneration
         Task { [weak self] in
-            await self?.ptt?.activatePrearmedTransmission()
+            guard let self, self.runtimeLiveness.generation == runtime,
+                  self.txAttemptGeneration == attempt, self.appActivationCommitted else { return }
+            await controller?.activatePrearmedTransmission()
         }
     }
 
@@ -2089,6 +2145,8 @@ final class IntercomSessionController: ObservableObject {
             tryFinishPttRelease(generation: generation)
             return
         }
+        let controller = ptt
+        let runtime = runtimeLiveness.generation
         releaseCleanupTask = Task { [weak self] in
             guard let self else { return }
             await self.backgroundCleanup.performIfNeeded(
@@ -2099,13 +2157,15 @@ final class IntercomSessionController: ObservableObject {
                 ),
                 stateChanged: { [weak self] in self?.backgroundTaskState = $0 }
             ) {
-                await self.ptt?.pttUp(
+                await controller?.pttUp(
                     playEndCue: source == "developerRequest" && self.audio.pushToTalkAudioSessionActive
                 )
             }
-            guard generation == self.releaseGeneration else { return }
+            let confirmed = await controller?.cleanupIsConfirmed() != false
+            guard self.runtimeLiveness.generation == runtime,
+                  generation == self.releaseGeneration else { return }
             self.releaseCleanupTask = nil
-            self.releaseFloorCompleted = await self.ptt?.cleanupIsConfirmed() != false
+            self.releaseFloorCompleted = confirmed
             self.tryFinishPttRelease(generation: generation)
         }
     }
@@ -2173,6 +2233,12 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func resetPttRequestGate() {
+        // Cancellation is cooperative: a pending Floor/API operation can still return.
+        // Fence its completion before resetting the UI gate for a new runtime/press.
+        txAttemptGeneration += 1
+        releaseGeneration += 1
+        activationWatchdogTask?.cancel()
+        activationWatchdogTask = nil
         appPrearmTask?.cancel()
         appPrearmTask = nil
         appPrearmAwaitingApple = false
@@ -2486,24 +2552,39 @@ final class IntercomSessionController: ObservableObject {
             for delay in [250, 500, 1_000, 2_000, 4_000] {
                 do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
                 guard let self, self.runtimeLiveness.generation == runtime,
-                      let session = self.joinedSession,
-                      let floor = try? await self.api.floorStatus(sessionId: session.sessionId) else { return }
-                guard !Task.isCancelled, self.runtimeLiveness.generation == runtime else { return }
-                await self.applyAuthoritativeFloor(floor)
-                if floor.outcome == .available || floor.outcome == .released { return }
+                      let session = self.joinedSession else { return }
+                var floorIsFree = false
+                _ = try? await withCurrentFloorStatus(
+                    context: { self.floorStatusContext },
+                    request: { try await self.api.floorStatus(sessionId: session.sessionId) },
+                    apply: { floor in
+                        await self.applyAuthoritativeFloor(floor)
+                        floorIsFree = floor.outcome == .available || floor.outcome == .released
+                    }
+                )
+                if floorIsFree { return }
             }
         }
     }
 
+    private var floorStatusContext: FloorStatusContext {
+        FloorStatusContext(sessionId: joinedSession?.sessionId, runtime: runtimeLiveness.generation,
+            txAttempt: txAttemptGeneration, rxGeneration: rx?.currentSnapshot().generation ?? 0)
+    }
+
     private func applyAuthoritativeFloor(_ floor: FloorResponse) async {
+        let context = floorStatusContext
+        let controller = ptt
         remoteFloorBusy = floor.outcome == .busy && !floor.isOwner
         rx?.reconcileFloor(floor)
-        await ptt?.reconcileOwnFloor(floor)
+        await controller?.reconcileOwnFloor(floor)
+        guard !Task.isCancelled, floorStatusContext == context else { return }
         if floor.outcome == .available || floor.outcome == .released, rxSnapshot.state == .idle {
             remoteReceive?.reset()
             resetRxConsistency()
         }
-        if let snapshot = await ptt?.currentSnapshot() {
+        if let snapshot = await controller?.currentSnapshot() {
+            guard !Task.isCancelled, floorStatusContext == context else { return }
             applyPttSnapshot(snapshot)
             if snapshot.txTerminalCleanupComplete && snapshot.txErrorRecoverable == true {
                 beginRecoverableAppleAbort()
