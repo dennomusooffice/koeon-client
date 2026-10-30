@@ -3,6 +3,115 @@ import XCTest
 
 @MainActor
 final class RuntimeRestorePipelineTests: XCTestCase {
+    func testPowerIntentSurvivesFailedRuntimeReplacementAndAllowsRetry() async throws {
+        var intent = RuntimeRecoveryIntent()
+        intent.powerOn()
+        var session: String? = "old"
+        XCTAssertTrue(intent.beginRestore())
+        let result = try await performFreshRuntimeRestore(
+            requestFreshSession: { "fresh" },
+            onFreshSessionReceived: { _ in },
+            teardownStaleRuntime: { session = nil },
+            establishFreshRuntime: { _ in false })
+        XCTAssertFalse(result)
+        XCTAssertNil(session)
+        XCTAssertTrue(intent.isPoweredOn, "A failed connection must not look like POWER OFF")
+        XCTAssertEqual(intent.nextRetryDelay(isForeground: true), 1)
+        XCTAssertTrue(intent.beginRestore())
+        let recovered = try await performFreshRuntimeRestore(
+            requestFreshSession: { "retry" }, onFreshSessionReceived: { _ in },
+            teardownStaleRuntime: {}, establishFreshRuntime: { session = $0; return true })
+        XCTAssertTrue(recovered)
+        intent.powerOn()
+        XCTAssertEqual(session, "retry")
+        XCTAssertEqual(intent.retryAttempt, 0)
+    }
+
+    func testRuntimeRetriesAreBoundedAndDeferredWhileBackgrounded() {
+        var intent = RuntimeRecoveryIntent()
+        XCTAssertTrue(intent.beginRestore(), "Cold Apple channel restoration remains supported")
+        XCTAssertNil(intent.nextRetryDelay(isForeground: false))
+        XCTAssertEqual(intent.retryAttempt, 0)
+        XCTAssertEqual(intent.nextRetryDelay(isForeground: true), 1)
+        XCTAssertEqual(intent.nextRetryDelay(isForeground: true), 2)
+        XCTAssertEqual(intent.nextRetryDelay(isForeground: true), 4)
+        XCTAssertNil(intent.nextRetryDelay(isForeground: true))
+        XCTAssertTrue(intent.isPoweredOn)
+        intent.resetRetries()
+        XCTAssertEqual(intent.nextRetryDelay(isForeground: true), 1)
+        intent.powerOff()
+        XCTAssertFalse(intent.beginRestore(), "Late pushes must not undo explicit POWER OFF")
+        XCTAssertNil(intent.nextRetryDelay(isForeground: true))
+    }
+
+    func testRetryKeepsDescriptorWhenSystemChannelWasLeftForSelfHeal() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let descriptor = PttRestoreDescriptor(channelId: "channel", channelName: "Channel",
+            channelUUID: PushToTalkChannelUUID.make(channelId: "channel"), canPublish: true,
+            lastBackendSessionId: "old-session")
+        descriptor.persist(to: defaults)
+        var intent = RuntimeRecoveryIntent()
+        XCTAssertTrue(intent.beginRestore(descriptor))
+        PttRestoreDescriptor.clear(from: defaults)
+        XCTAssertNil(PttRestoreDescriptor.load(from: defaults))
+        XCTAssertEqual(intent.descriptor, descriptor)
+        XCTAssertEqual(intent.nextRetryDelay(isForeground: true), 1)
+        intent.powerOff()
+        XCTAssertNil(intent.descriptor)
+    }
+
+    func testPowerOffDuringFreshResponsePreventsLateRuntimeReestablishment() async {
+        var intent = RuntimeRecoveryIntent()
+        intent.powerOn()
+        var continuation: CheckedContinuation<String, Never>?
+        var teardownCalled = false
+        var established = false
+        var discarded: String?
+        let task = Task { @MainActor in
+            try await performFreshRuntimeRestore(
+                requestFreshSession: { await withCheckedContinuation { continuation = $0 } },
+                onFreshSessionReceived: { _ in },
+                teardownStaleRuntime: { teardownCalled = true },
+                establishFreshRuntime: { _ in established = true; return true },
+                discardFreshSession: { discarded = $0 })
+        }
+        while continuation == nil { await Task.yield() }
+        intent.powerOff()
+        task.cancel()
+        continuation?.resume(returning: "late response")
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled restore must not reconnect")
+        } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertFalse(teardownCalled)
+        XCTAssertFalse(established)
+        XCTAssertEqual(discarded, "late response")
+        XCTAssertFalse(intent.isPoweredOn)
+        XCTAssertFalse(intent.beginRestore())
+    }
+
+    func testCancellationDuringTeardownDoesNotCreateReplacementRuntime() async {
+        var continuation: CheckedContinuation<Void, Never>?
+        var established = false
+        var discarded = false
+        let task = Task { @MainActor in
+            try await performFreshRuntimeRestore(
+                requestFreshSession: { "fresh" }, onFreshSessionReceived: { _ in },
+                teardownStaleRuntime: { await withCheckedContinuation { continuation = $0 } },
+                establishFreshRuntime: { _ in established = true; return true },
+                discardFreshSession: { _ in discarded = true })
+        }
+        while continuation == nil { await Task.yield() }
+        task.cancel()
+        continuation?.resume()
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled teardown must not be followed by connect")
+        } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertFalse(established)
+        XCTAssertTrue(discarded)
+    }
+
     func testDDirtyConnectedNeverBecomesWarmOnTransientActive() {
         var runtime = RuntimeLiveness()
         runtime.beginRuntime()

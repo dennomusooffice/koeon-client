@@ -14,7 +14,7 @@ struct RootView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     brand
-                    if session.isJoined { joinedView } else { selectionView }
+                    if session.isPoweredOn || session.isJoined { joinedView } else { selectionView }
                     if let error = session.lastError {
                         Text(error).font(.footnote).foregroundStyle(.red)
                     }
@@ -132,6 +132,12 @@ struct RootView: View {
     private var joinedView: some View {
         VStack(spacing: 18) {
             statusCard
+            if session.needsRuntimeRecovery {
+                Text(session.isRestoringRuntime ? "接続を復旧しています…" : "接続を復旧できませんでした。再試行できます。")
+                    .font(.footnote).foregroundStyle(.orange)
+                Button("接続を再試行") { session.retryRuntimeRecovery() }
+                    .disabled(session.isRestoringRuntime || session.isLoading)
+            }
             if session.audio.interruption.state != .ready {
                 VStack(spacing: 8) {
                     Text("AUDIO INTERRUPTED").font(.headline).foregroundStyle(.orange)
@@ -173,7 +179,7 @@ struct RootView: View {
                     Button { switchRelative(-1, current: current) } label: { Image(systemName: "chevron.left") }
                         .disabled(session.operationalState != .active)
                     Spacer()
-                    Text(session.joinedSession?.channel.name ?? "—")
+                    Text(session.joinedSession?.channel.name ?? session.selectedChannel?.name ?? "—")
                         .font(.title2.monospaced().bold()).foregroundStyle(KOEONPalette.cyan)
                     Spacer()
                     Button { switchRelative(1, current: current) } label: { Image(systemName: "chevron.right") }
@@ -194,8 +200,8 @@ struct RootView: View {
             }
             valueRow("System", session.operationalState.rawValue)
             valueRow("Connection", session.room.connectionState.rawValue)
-            valueRow("Channel", session.joinedSession?.channel.name ?? "—")
-            valueRow("User", session.joinedSession?.user.name ?? "—")
+            valueRow("Channel", session.joinedSession?.channel.name ?? session.selectedChannel?.name ?? "—")
+            valueRow("User", session.joinedSession?.user.name ?? session.selectedUser?.name ?? "—")
             valueRow("Current speaker", session.room.currentSpeaker ?? "None")
             valueRow("PTT", session.pttSnapshot.state.rawValue)
             valueRow("RX", session.rxSnapshot.state.rawValue)
@@ -382,8 +388,8 @@ private struct DiagnosticsView: View {
                 Section("Session") {
                     row("Connection", session.room.connectionState.rawValue)
                     row("Room", session.joinedSession?.roomName ?? "—")
-                    row("User", session.joinedSession?.user.name ?? "—")
-                    row("Channel", session.joinedSession?.channel.name ?? "—")
+                    row("User", session.joinedSession?.user.name ?? session.selectedUser?.name ?? "—")
+                    row("Channel", session.joinedSession?.channel.name ?? session.selectedChannel?.name ?? "—")
                     row("Participants", session.room.participantNames.joined(separator: ", "))
                     row("Current speaker", session.room.currentSpeaker ?? "None")
                     row("Reconnect count", "\(session.room.reconnectCount)")

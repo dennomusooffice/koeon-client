@@ -97,12 +97,21 @@ func performFreshRuntimeRestore<Response>(
     requestFreshSession: () async throws -> Response,
     onFreshSessionReceived: (Response) -> Void,
     teardownStaleRuntime: () async -> Void,
-    establishFreshRuntime: (Response) async -> Bool
+    establishFreshRuntime: (Response) async -> Bool,
+    discardFreshSession: (Response) async -> Void = { _ in }
 ) async throws -> Bool {
+    try Task.checkCancellation()
     let response = try await requestFreshSession()
-    onFreshSessionReceived(response)
-    await teardownStaleRuntime()
-    return await establishFreshRuntime(response)
+    do {
+        try Task.checkCancellation()
+        onFreshSessionReceived(response)
+        await teardownStaleRuntime()
+        try Task.checkCancellation()
+        return await establishFreshRuntime(response)
+    } catch {
+        await discardFreshSession(response)
+        throw error
+    }
 }
 
 func incomingPushRuntimeAction(
@@ -313,6 +322,39 @@ func shouldRequestAppleBeginAfterFloorGrant(
         !alreadyIssued
 }
 
+/// User intent survives a temporary loss of the transport/session.
+struct RuntimeRecoveryIntent: Sendable {
+    private(set) var isPoweredOn = false
+    private(set) var allowsRestoration = true // Allow Apple's persisted channel on cold launch.
+    private(set) var retryAttempt = 0
+    private(set) var descriptor: PttRestoreDescriptor?
+
+    mutating func powerOn() {
+        isPoweredOn = true
+        allowsRestoration = true
+        retryAttempt = 0
+    }
+    mutating func beginRestore(_ descriptor: PttRestoreDescriptor? = nil) -> Bool {
+        guard allowsRestoration else { return false }
+        if let descriptor { self.descriptor = descriptor }
+        isPoweredOn = true
+        return true
+    }
+    mutating func powerOff() {
+        isPoweredOn = false
+        allowsRestoration = false
+        retryAttempt = 0
+        descriptor = nil
+    }
+    mutating func resetRetries() { retryAttempt = 0 }
+    mutating func nextRetryDelay(isForeground: Bool) -> Int? {
+        guard isPoweredOn, allowsRestoration, isForeground, retryAttempt < 3 else { return nil }
+        let delay = [1, 2, 4][retryAttempt]
+        retryAttempt += 1
+        return delay
+    }
+}
+
 @MainActor
 final class IntercomSessionController: ObservableObject {
     @Published private(set) var fixture: FixtureResponse?
@@ -320,6 +362,11 @@ final class IntercomSessionController: ObservableObject {
     @Published private(set) var enrollmentRequired = false
     @Published var selectedUserId: String?
     @Published var selectedChannelId: String?
+    @Published private(set) var recoveryIntent = RuntimeRecoveryIntent()
+    @Published private(set) var isRestoringRuntime = false
+    private var runtimeRetryTask: Task<Void, Never>?
+    private var isStoppingRuntime = false
+    private var isJoiningRuntime = false
     @Published private(set) var joinedSession: JoinResponse?
     @Published private(set) var pttSnapshot = PTTSnapshot.initial(role: .staff)
     @Published private(set) var lastReleaseSnapshot = PTTSnapshot.initial(role: .staff)
@@ -548,6 +595,7 @@ final class IntercomSessionController: ObservableObject {
                 self.completeReconnectAttempt(result: "connected")
             } else if state == .disconnected {
                 self.completeReconnectAttempt(result: "disconnected")
+                if self.restoreTask == nil { self.scheduleRuntimeRetry() }
             }
         }
         room.onPttControl = { [weak self] event, senderSessionId in
@@ -819,11 +867,15 @@ final class IntercomSessionController: ObservableObject {
         Task { try? await pushToTalk.initialize() }
     }
 
+    var isPoweredOn: Bool { recoveryIntent.isPoweredOn }
+    var needsRuntimeRecovery: Bool {
+        isPoweredOn && (isRestoringRuntime || !isJoined || room.connectionState == .disconnected || operationalState == .error)
+    }
     var isJoined: Bool { joinedSession != nil }
     var selectedUser: User? { fixture?.users.first { $0.id == selectedUserId } }
     var selectedChannel: Channel? { fixture?.channels.first { $0.id == selectedChannelId } }
     var canPressPTT: Bool {
-        operationalState == .active && isJoined && joinedSession?.canPublish == true && room.connectionState == .connected &&
+        isPoweredOn && !isStoppingRuntime && operationalState == .active && isJoined && joinedSession?.canPublish == true && room.connectionState == .connected &&
             audio.interruption.state == .ready && !rxConsistencySnapshot.remoteBusyBlocksLocalPtt &&
             !remoteFloorBusy && pttSnapshot.state != .error && pttSnapshot.state != .releasing && restoreTask == nil
     }
@@ -846,6 +898,7 @@ final class IntercomSessionController: ObservableObject {
     }
 
     var pttSemanticState: PTTSemanticState {
+        if needsRuntimeRecovery { return .recovering }
         if joinedSession?.canPublish != true { return .rxOnly }
         if pttSnapshot.state == .error || operationalState == .error { return .error }
         if room.connectionState == .disconnected || !isJoined { return .offline }
@@ -933,7 +986,11 @@ final class IntercomSessionController: ObservableObject {
     @discardableResult
     func join(channelId: String? = nil, preserveSystemPttChannelOnFailure: Bool = false) async -> Bool {
         if let channelId { selectedChannelId = channelId }
-        guard !isJoined, let user = selectedUser, let channel = selectedChannel else { return false }
+        guard !isJoined, !isLoading, !isStoppingRuntime, restoreTask == nil,
+              let user = selectedUser, let channel = selectedChannel else { return false }
+        if !isPoweredOn { recoveryIntent = RuntimeRecoveryIntent() }
+        isJoiningRuntime = true
+        defer { isJoiningRuntime = false }
         isLoading = true
         operationalState = .connecting
         lastError = nil
@@ -1087,7 +1144,9 @@ final class IntercomSessionController: ObservableObject {
             pttSnapshot = .initial(role: response.user.role)
             startUptimeTimer()
             startServiceStatusPolling()
+            recoveryIntent.powerOn()
             operationalState = .active
+            lastError = nil
             validateCurrentRuntime()
             return true
         } catch {
@@ -1119,9 +1178,20 @@ final class IntercomSessionController: ObservableObject {
     }
 
     func leave(powerOff: Bool = true) async {
-        guard let session = joinedSession else { return }
+        guard !isStoppingRuntime else { return }
+        isStoppingRuntime = true
+        isLoading = true
+        defer { isStoppingRuntime = false; isLoading = false }
+        runtimeRetryTask?.cancel()
+        runtimeRetryTask = nil
+        if powerOff { recoveryIntent.powerOff() }
+        let restoring = restoreTask
+        restoring?.cancel()
+        await restoring?.value
+        let session = joinedSession
         await ptt?.stopForSafety(reason: "Channel left.")
         guard await ptt?.cleanupIsConfirmed() != false else {
+            recoveryIntent.powerOn()
             lastError = "CHANNEL_LEAVE_BLOCKED_PENDING_OWN_LEASE"
             operationalState = .error
             return
@@ -1151,13 +1221,13 @@ final class IntercomSessionController: ObservableObject {
         resetRxConsistency()
         rx?.reset()
         rx = nil
-        try? await api.unregisterPttToken(sessionId: session.sessionId)
+        if let session { try? await api.unregisterPttToken(sessionId: session.sessionId) }
         await pushToTalk.leave()
         await room.disconnect()
         await audio.endPushToTalkManagedSession()
         await audio.endIntercom()
         do {
-            try await api.leave(sessionId: session.sessionId)
+            if let session { try await api.leave(sessionId: session.sessionId) }
         } catch {
             lastError = "Backend leave failed: \(safeMessage(error))"
         }
@@ -1347,6 +1417,7 @@ final class IntercomSessionController: ObservableObject {
         appLifecycleState = value
         if value == "active" {
             lastForegroundAt = Date()
+            recoveryIntent.resetRetries()
             requestForegroundRuntimeRecoveryIfNeeded()
         } else if value == "background" || value == "inactive" {
             lastBackgroundAt = Date()
@@ -1354,9 +1425,29 @@ final class IntercomSessionController: ObservableObject {
         }
     }
 
+    func retryRuntimeRecovery() {
+        guard isPoweredOn, !isStoppingRuntime else { return }
+        recoveryIntent.resetRetries()
+        runtimeLiveness.invalidate()
+        requestForegroundRuntimeRecoveryIfNeeded()
+    }
+
+    private func scheduleRuntimeRetry() {
+        guard !isStoppingRuntime, !isJoiningRuntime, runtimeRetryTask == nil,
+              let delay = recoveryIntent.nextRetryDelay(isForeground: appLifecycleState == "active") else { return }
+        runtimeRetryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            self.runtimeRetryTask = nil
+            guard self.appLifecycleState == "active" else { return }
+            self.requestForegroundRuntimeRecoveryIfNeeded()
+        }
+    }
+
     private func requestForegroundRuntimeRecoveryIfNeeded() {
-        if runtimeLiveness.dirty, joinedSession != nil,
-           let descriptor = PttRestoreDescriptor.load(from: .standard),
+        guard isPoweredOn, !isStoppingRuntime else { return }
+        if (runtimeLiveness.dirty || joinedSession == nil),
+           let descriptor = PttRestoreDescriptor.load(from: .standard) ?? recoveryIntent.descriptor,
            pttSnapshot.state != .transmitting, pttSnapshot.state != .releasing {
             requestRuntimeRestore(descriptor, reason: .foregroundRecovery)
             return
@@ -1373,7 +1464,7 @@ final class IntercomSessionController: ObservableObject {
             lastForegroundRecoveryCompletedAt = nil
             lastForegroundRecoveryResult = "REQUESTED"
             foregroundRecoveryPending = true
-            guard let descriptor = PttRestoreDescriptor.load(from: .standard) else {
+            guard let descriptor = PttRestoreDescriptor.load(from: .standard) ?? recoveryIntent.descriptor else {
                 completeForegroundRecovery(result: "FAILED_MISSING_DESCRIPTOR")
                 return
             }
@@ -1454,7 +1545,7 @@ final class IntercomSessionController: ObservableObject {
         guard !isLoading else { return }
         isLoading = true
         lastError = nil
-        if isJoined { await leave(powerOff: true) }
+        if isPoweredOn || isJoined { await leave(powerOff: true) }
         do {
             try await api.logout()
             try credentialStore.clear()
@@ -1477,6 +1568,7 @@ final class IntercomSessionController: ObservableObject {
         _ descriptor: PttRestoreDescriptor,
         reason: RuntimeRestoreReason
     ) {
+        guard !isStoppingRuntime, !isJoiningRuntime, recoveryIntent.allowsRestoration else { return }
         runtimeRestoreReason = reason.rawValue
         roomConnectionStateAtRestoreEntry = room.connectionState.rawValue
         joinedSessionPresentAtRestoreEntry = joinedSession != nil
@@ -1503,6 +1595,11 @@ final class IntercomSessionController: ObservableObject {
             runtimeRestoreEarlyExitReason = "RESTORE_GATE_ACTIVE"
             return
         }
+        guard recoveryIntent.beginRestore(descriptor) else { return }
+        runtimeRetryTask?.cancel()
+        runtimeRetryTask = nil
+        isRestoringRuntime = true
+        operationalState = .connecting
         runtimeRestoreEarlyExitReason = "NONE"
         pttRestoreState = "restoring"
         pttRestoreStartedAt = Date()
@@ -1514,12 +1611,22 @@ final class IntercomSessionController: ObservableObject {
             defer {
                 self.restoreTask = nil
                 self.restoreSingleFlight.finish()
+                self.isRestoringRuntime = false
+                if self.pttRestoreState != "restored", self.isPoweredOn, !self.isStoppingRuntime {
+                    self.runtimeLiveness.invalidate()
+                    self.operationalState = .error
+                    self.scheduleRuntimeRetry()
+                }
             }
             guard self.credentialStore.read() != nil else {
+                self.recoveryIntent.powerOff()
                 self.pttRestoreState = "failed_missing_credential"
                 self.completeReconnectAttempt(result: "failed_missing_credential")
                 self.completeForegroundRecovery(result: "FAILED_MISSING_CREDENTIAL")
+                await self.prepareStaleRuntimeForResume()
                 await self.pushToTalk.leave()
+                await self.audio.endPushToTalkManagedSession()
+                await self.audio.endIntercom()
                 self.enrollmentRequired = true
                 self.operationalState = .unenrolled
                 return
@@ -1530,6 +1637,7 @@ final class IntercomSessionController: ObservableObject {
                     self.runtimeRestoreEarlyExitReason = "PENDING_OWN_LEASE_CLEANUP"
                     return
                 }
+                try Task.checkCancellation()
                 let cached = self.joinedSession
                 var established = false
                 if reason == .incomingPushColdWake, !self.runtimeLiveness.dirty,
@@ -1571,9 +1679,11 @@ final class IntercomSessionController: ObservableObject {
                     establishFreshRuntime: { response in
                         self.applyResumeIdentity(response)
                         return await self.establishResumedRuntime(response)
-                    }
+                    },
+                    discardFreshSession: { await self.discardResumedSession($0) }
                     )
                 }
+                try Task.checkCancellation()
                 guard established else {
                     self.completeForegroundRecovery(result: "FAILED_RUNTIME_CONNECT")
                     return
@@ -1588,11 +1698,16 @@ final class IntercomSessionController: ObservableObject {
                 self.completeForegroundRecovery(result: "RESTORED")
                 self.rxWakeFailureStage = nil
             } catch {
+                if Task.isCancelled { return }
                 if isTerminalRuntimeRestoreError(error) {
+                    self.recoveryIntent.powerOff()
                     self.pttRestoreState = "failed_invalid_identity"
                     self.completeReconnectAttempt(result: "failed_invalid_identity")
                     self.completeForegroundRecovery(result: "FAILED_INVALID_IDENTITY")
+                    await self.prepareStaleRuntimeForResume()
                     await self.pushToTalk.leave()
+                    await self.audio.endPushToTalkManagedSession()
+                    await self.audio.endIntercom()
                     try? self.credentialStore.clear()
                     self.fixture = nil
                     self.identity = nil
@@ -1621,6 +1736,7 @@ final class IntercomSessionController: ObservableObject {
         resetPttRequestGate()
         await ptt?.stopForSafety(reason: "Incoming Push is replacing a stale LiveKit runtime.")
         ptt = nil
+        pttSnapshot = .initial(role: selectedUser?.role ?? .staff)
         await bufferedReceiver?.shutdownAndAwait()
         bufferedReceiver = nil
         bufferedTransmitter = nil
@@ -1656,6 +1772,14 @@ final class IntercomSessionController: ObservableObject {
         )
         selectedUserId = user.id
         selectedChannelId = channel.id
+    }
+
+    private func discardResumedSession(_ response: JoinResponse) async {
+        // Cleanup must run even when the restore that created the session was cancelled.
+        await Task { @MainActor in
+            try? await api.unregisterPttToken(sessionId: response.sessionId)
+            try? await api.leave(sessionId: response.sessionId)
+        }.value
     }
 
     /** Cold PushToTalk restoration consumes the fresh Resume response directly. */
@@ -1729,6 +1853,7 @@ final class IntercomSessionController: ObservableObject {
             applied: appliedAudioPublishProfile
         )
         do {
+            try Task.checkCancellation()
             resumeLiveKitConnectStartedAt = Date()
             beginReconnectAttempt(reason: "livekit_resume_connect", startedAt: resumeLiveKitConnectStartedAt ?? Date())
             try await room.connect(
@@ -1737,6 +1862,7 @@ final class IntercomSessionController: ObservableObject {
                 deviceId: response.deviceId ?? identity?.device.id,
                 audioPublishProfile: connectionAudioPublishProfile
             )
+            try Task.checkCancellation()
             appliedAudioPublishProfile = connectionAudioPublishProfile
             resumeLiveKitConnectedAt = Date()
             completeReconnectAttempt(result: "connected", completedAt: resumeLiveKitConnectedAt ?? Date())
@@ -1753,6 +1879,7 @@ final class IntercomSessionController: ObservableObject {
                coordinator.audioSessionDidActivate() {
                 activateRemoteReceiveAudio(AVAudioSession.sharedInstance())
             }
+            try Task.checkCancellation()
             joinedSession = response
             pushToTalk.updateBackendSessionId(response.sessionId)
             pendingJoinResponse = nil
@@ -1787,10 +1914,13 @@ final class IntercomSessionController: ObservableObject {
             pttSnapshot = .initial(role: response.user.role)
             startUptimeTimer()
             startServiceStatusPolling()
+            recoveryIntent.powerOn()
             operationalState = .active
+            lastError = nil
             validateCurrentRuntime()
             return true
         } catch {
+            await discardResumedSession(response)
             pendingJoinResponse = nil
             joinedSession = nil
             await bufferedReceiver?.shutdownAndAwait()
@@ -2184,7 +2314,7 @@ final class IntercomSessionController: ObservableObject {
         elapsedMilliseconds: Int,
         state: RxConsistencySnapshot
     ) {
-        let baseEligible = operationalState == .active && isJoined && joinedSession?.canPublish == true &&
+        let baseEligible = isPoweredOn && !isStoppingRuntime && operationalState == .active && isJoined && joinedSession?.canPublish == true &&
             room.connectionState == .connected && audio.interruption.state == .ready
         let sessionId = state.validatedRxSessionId ?? state.remoteMediaSpeakerSessionId
         let diagnostic = RxDivergenceDiagnostic(
@@ -2514,6 +2644,9 @@ final class IntercomSessionController: ObservableObject {
             "currentWake": attempt(wakeAttempts.current),
             "lastCompletedWake": attempt(wakeAttempts.lastCompleted),
             "runtimeLiveness": [
+                "powerOnRequested": isPoweredOn,
+                "isRestoringRuntime": isRestoringRuntime,
+                "automaticRetryAttempt": recoveryIntent.retryAttempt,
                 "runtimeDirtySinceBackground": runtimeLiveness.dirty,
                 "runtimeGeneration": runtimeLiveness.generation,
                 "runtimeValidatedGeneration": runtimeLiveness.validatedGeneration,
