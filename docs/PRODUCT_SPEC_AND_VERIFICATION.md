@@ -19,7 +19,7 @@ iOSとAndroidで、同じチャンネルへ参加し、押して話し、離し�
 | 入力ゲイン | OFF/手動/AUTO、経路別保存、発話中の固定値、ピーク抑制 | 手動上限+24dB、AUTO上限+12dBを維持。AUTOは必要な総ゲインへ最大1dBずつ追従、−60dBFS以下・非有限値を除外。正常終端時のみ学習。雑音と声の識別、収束・他経路は残る（#40/#43） |
 | 音質設定 | 12/24/48kbps、既定24、設定保存・診断を両OSに提供 | parity検査対象。設定表示値とBATv1固定PCM形式、RTP経路での実効値を混同しない |
 | 操作機器 | タッチ・ヘッドセット等の入力と状態表示を整合させる | 利用可能なハードウェア差を含め、設定項目と操作結果の画面監査を実施予定。全入力方式の同等性は未確定 |
-| 診断 | 原因を辿れる時刻・ビルド・結果を残し、秘密情報や音声は公開しない | 現在の受信カウンターが復帰で初期化され、64件の履歴がポーリングで埋まる。直近完了統計と重要履歴の保持を改善予定（#50） |
+| 診断 | 原因を辿れる時刻・ビルド・結果を残し、秘密情報や音声は公開しない | 正常ポーリングの重複抑制と、現行統計とは別の直近終端保持を両OSに実装。未配信。JSON契約・再接続統合検証を継続（#50） |
 
 ## 内部設計
 
@@ -33,7 +33,7 @@ Floor TTLは3秒、更新は1秒、連続送信上限60秒。RX_READYの上限�
 
 ## 今後の実装・検証順序
 
-1. #50: 重要イベントがポーリングで失われない上限付き履歴と、復帰後にも残る直近完了／失敗受信の統計を実装する。音声や秘密値は保存しない。
+1. #50: 実装した上限付き履歴・直近終端統計について、共通JSON契約とruntime再接続を含む統合検証を完了し、Android実機で確認する。音声や秘密値は保存しない。
 2. #37/#46: 両OSの短押下・準備待ち・送信開始の状態遷移を比較する。iOSの短発話欠落を再現テストから修正し、Floor・Apple音声所有権は維持する。
 3. #39/#45/#49: 切断、復帰失敗、音声経路変更、受信中断、連続話者交代をシミュレーターで検証し、Android実機でも操作・音声経路を確認する。
 4. #43: AUTOの目標収束、無音・雑音、ルート変更、学習保存を比較する。SO-52Cの手動+18/+24dBを理由に、未評価のAUTO上限を自動拡張しない。
@@ -64,7 +64,7 @@ Floor TTLは3秒、更新は1秒、連続送信上限60秒。RX_READYの上限�
 
 #50の正常ポーリング重複抑制をiOSで実装。世代とstageの完全一致をRAM上で照合し、正常なBEGIN/ENDを各世代の初回だけ保存する。照合キーは最大64件、永続履歴も64件を維持。エラーは抑制しない。再起動後は新しい最初のポーリングを記録する。古い世代が64キー以上後に再出現すれば再記録される有限窓であり、重要履歴を永久保存する仕組みではない。
 
-大量ポーリング後の背景・失敗履歴の再読込、同じ8文字prefixを持つ別世代の分離、エラー保持を回帰対象とした。Androidにも同じ高頻度記録があり、同じ64キーの有限窓で正常ポーリングを抑制する対応を実装した。保存前に判定し、抑制したイベントではSharedPreferencesへの再保存も行わない。直近完了／失敗受信の統計保持も未実装で、#50全体は未完了。
+大量ポーリング後の背景・失敗履歴の再読込、同じ8文字prefixを持つ別世代の分離、エラー保持を回帰対象とした。Androidにも同じ高頻度記録があり、同じ64キーの有限窓で正常ポーリングを抑制する対応を実装した。保存前に判定し、抑制したイベントではSharedPreferencesへの再保存も行わない。直近完了／失敗受信の統計保持は後続の`d7c8305`／`5a9938f`で両OSに追加した（下記参照）。再接続統合検証・実機確認は残り、#50全体は未完了。
 
 検証: 追加2件は修正前に5 assertions失敗。修正後はiOS Simulator全293件成功（27.7秒）。この変更は未配信・実機未検証で、配信済み3112に含まれない。
 
@@ -80,9 +80,21 @@ LiveKit接続設定の照合では、iOSはRoomOptionsの音声設定だけを�
 
 iOSは受信オブジェクトが再作成されてもSessionControllerが値コピーを保持する実装を追加した。正常drain／失敗の通知前にコピーし、通知中の世代交代でも証拠を失わない。古いruntimeの通知は採用しない。開始前の取消や空の新runtimeで直近終端を上書きしない。コピーから受信世代IDと再生世代tokenを除き、音声・認証情報を保存しない。保持はプロセス内のRAMだけで、アプリ再起動を越える永続保持は今回の対象外。
 
-新規の交換・停止・識別子除去テスト、既存のdrain失敗テストを検証。iOS295ケース成功（22:58 JST）、xcodebuildの最終結果収集は進行中。未配信・実機未検証。Androidの同じ`lastBufferedReceive`契約への対応とJSON出力の契約検証は残件であり、両OS対応完了とはしない。既存Android187件の結果はこの新しい保持機能の証明には使わない。
+新規の交換・停止・識別子除去テスト、既存のdrain失敗テストを検証。iOS295ケース成功（22:58 JST）、23:08 JSTに最終TEST SUCCEEDED・終了コード0を確認。未配信・実機未検証。Androidの同じ`lastBufferedReceive`契約への対応とJSON出力の契約検証は残件であり、両OS対応完了とはしない。既存Android187件の結果はこの新しい保持機能の証明には使わない。
 
 
 Androidにも同じ直近終端保持を実装した。SessionDiagnosticsに独立した値を保持し、runtime再接続／POWER OFF・ONで作り直す診断にも引き継ぐ。交換済みreceiverからの通知は採用せず、受信世代IDは値コピーから除外する。`lastBufferedReceive`の項目名はiOSと同じとし、Androidのプレイヤーで未測定の出力観測・エンジン失敗回数・PCMレベルはnullとする。異なるOSの0と未測定を同一視しない。
 
 Androidは正常終端・drain失敗・破棄後保持・JSONでの現行値との分離・未測定値・識別子除去を検証し、189件／Lint／assembleDebugが成功（2026-10-31 23:03 JST）。iOSのJSON出力自体の契約テストと両OSでのruntime再接続を含む統合検証は残る。今回のdebug APKは未導入・未公開。配信版はAndroid1.0.13（14）、iOS1.0（2026103112）のまま。
+
+
+### LiveKit Android接続設定の追加照合
+
+SDK2.28.0の公式[RoomOptions](https://raw.githubusercontent.com/livekit/client-sdk-android/v2.28.0/livekit-android-sdk/src/main/java/io/livekit/android/RoomOptions.kt)・[ConnectOptions](https://raw.githubusercontent.com/livekit/client-sdk-android/v2.28.0/livekit-android-sdk/src/main/java/io/livekit/android/ConnectOptions.kt)とローカルに解決済みのAARを照合した。RoomOptionsにsinglePeerConnection指定はなく、ConnectOptionsはprotocolVersion v13、autoSubscribe trueが既定。ローカルAARのコンストラクターもv13を設定する。KOEONは`nextRoom.connect(url, token)`で既定ConnectOptionsを使っている。
+
+[RTCEngine](https://raw.githubusercontent.com/livekit/client-sdk-android/v2.28.0/livekit-android-sdk/src/main/java/io/livekit/android/room/RTCEngine.kt)にはpublisherとsubscriberを分けた接続経路がある。従って今回のサーバー1.13.11の単一PeerConnection向け変更を使うためだけに、このクライアントの接続設定を変更する根拠は現時点ではない。これはソース／解決済みライブラリーの照合による限定判断であり、サーバー更新全体の互換性合格ではない。Swift SDKの既定v16とAndroidのv13の差は、直ちに製品機能差を意味しない。両SDKの接続・再接続、信頼性付き制御送信、RX_READYを実際に通して比較する必要がある。SDKや権限の変更はまだ行わない。
+
+
+### 診断JSON契約の検証
+
+直近受信のJSON生成をiOSでも直接呼び出せる値変換へ分離し、実際のJSON encode/decodeで共通17項目、正常／失敗、未測定null、識別子除去を検証した。AndroidのJSONテストにも同じ17項目の完全一致を追加した。iOS296ケース成功（23:09 JST、最終結果収集中）、Android189件・Lint・build成功。iOSで観測済みのエンジン失敗0と、Androidで未測定のnullは意図した区別である。再接続を通したセッション統合検証と実機確認は引き続き残る。今回も未配信・main未マージ。

@@ -2037,6 +2037,33 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertNil(receiver.diagnostics.generationId)
     }
 
+    func testTerminalReceiveDiagnosticJSONSeparatesFailureAndUnknownOutput() throws {
+        let keys: Set<String> = ["capturedAt", "build", "outcome", "terminalReason", "playbackCursor",
+            "latestSequence", "finalSequence", "missingSequenceCount", "duplicateSequenceCount",
+            "playerDrainCompletedAt", "endCueAt", "lastEnqueueOutput", "lastCompletionOutput",
+            "engineStartFailures", "lastErrorCode", "inputRmsDbfs", "inputPeakDbfs"]
+        for failed in [false, true] {
+            let snapshot = BufferedAudioRxSnapshot(
+                receive: BufferedAudioRxDiagnostics(generationId: "private-generation",
+                    playbackCursor: 42, latestSequence: 41, timelineLost: failed, finalSequence: 41,
+                    playerDrainCompletedAt: failed ? nil : Date(timeIntervalSince1970: 1),
+                    terminalReason: failed ? "receive_failed" : "final_sequence"),
+                playback: Batv1PlaybackDiagnostics(generationToken: 123))
+            let data = try JSONSerialization.data(withJSONObject: snapshot.fieldDiagnostic(build: "test-build"))
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(Set(json.keys), keys)
+            XCTAssertEqual(json["outcome"] as? String, failed ? "failed" : "completed")
+            XCTAssertEqual(json["playbackCursor"] as? Int, 42)
+            XCTAssertEqual(json["engineStartFailures"] as? Int, 0)
+            XCTAssertTrue(json["inputRmsDbfs"] is NSNull)
+            XCTAssertTrue(json["lastCompletionOutput"] is NSNull)
+            if failed { XCTAssertTrue(json["playerDrainCompletedAt"] is NSNull) }
+            else { XCTAssertEqual(json["playerDrainCompletedAt"] as? String, "1970-01-01T00:00:01Z") }
+            XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("private-generation"))
+            XCTAssertNil(json["generationToken"])
+        }
+    }
+
     @MainActor
     func testTerminalReceiveSnapshotSurvivesReplacementAndShutdownWithoutIdentifiers() async {
         let api = Batv1APIStub()

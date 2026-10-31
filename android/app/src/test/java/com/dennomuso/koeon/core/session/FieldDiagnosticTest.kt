@@ -27,6 +27,10 @@ class FieldDiagnosticTest {
         val json = buildAndroidFieldDiagnostic(state)
         val root = Json.parseToJsonElement(json).jsonObject
         val retained = root.getValue("lastBufferedReceive").jsonObject
+        assertEquals(setOf("capturedAt", "build", "outcome", "terminalReason", "playbackCursor",
+            "latestSequence", "finalSequence", "missingSequenceCount", "duplicateSequenceCount",
+            "playerDrainCompletedAt", "endCueAt", "lastEnqueueOutput", "lastCompletionOutput",
+            "engineStartFailures", "lastErrorCode", "inputRmsDbfs", "inputPeakDbfs"), retained.keys)
         assertEquals("42", retained.getValue("playbackCursor").jsonPrimitive.content)
         assertEquals("completed", retained.getValue("outcome").jsonPrimitive.content)
         assertEquals("1970-01-01T00:00:01Z", retained.getValue("playerDrainCompletedAt").jsonPrimitive.content)

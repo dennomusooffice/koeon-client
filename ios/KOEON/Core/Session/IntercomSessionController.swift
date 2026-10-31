@@ -2880,28 +2880,8 @@ final class IntercomSessionController: ObservableObject {
                 "pttEligible": event.pttEligible,
             ]
         }
-        let lastBufferedReceive: Any = lastBufferedRxSnapshot.map { snapshot in
-            let rx = snapshot.receive
-            let output = snapshot.playback
-            return [
-                "capturedAt": timestamp(snapshot.capturedAt),
-                "build": "\(version) (\(build))",
-                "outcome": rx.timelineLost ? "failed" : "completed",
-                "terminalReason": optional(rx.terminalReason),
-                "playbackCursor": rx.playbackCursor,
-                "latestSequence": rx.latestSequence,
-                "finalSequence": number(rx.finalSequence),
-                "missingSequenceCount": rx.missingSequenceCount,
-                "duplicateSequenceCount": rx.duplicateSequenceCount,
-                "playerDrainCompletedAt": timestamp(rx.playerDrainCompletedAt),
-                "endCueAt": timestamp(rx.endCueAt),
-                "lastEnqueueOutput": outputObservation(output.lastEnqueueOutput),
-                "lastCompletionOutput": outputObservation(output.lastCompletionOutput),
-                "engineStartFailures": output.engineStartFailures,
-                "lastErrorCode": optional(output.lastErrorCode),
-                "inputRmsDbfs": output.inputRmsDbfs.map { $0 as Any } ?? NSNull(),
-                "inputPeakDbfs": output.inputPeakDbfs.map { $0 as Any } ?? NSNull(),
-            ] as [String: Any]
+        let lastBufferedReceive: Any = lastBufferedRxSnapshot.map {
+            $0.fieldDiagnostic(build: "\(version) (\(build))")
         } ?? NSNull()
         let payload: [String: Any] = [
             "lastBufferedReceive": lastBufferedReceive,

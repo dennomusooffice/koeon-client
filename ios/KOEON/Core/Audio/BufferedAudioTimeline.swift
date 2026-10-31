@@ -236,6 +236,37 @@ struct BufferedAudioRxSnapshot: Equatable, Sendable {
         playback.generationToken = nil
         self.playback = playback
     }
+
+    func fieldDiagnostic(build: String) -> [String: Any] {
+        func optional<T>(_ value: T?) -> Any { value.map { $0 as Any } ?? NSNull() }
+        func timestamp(_ value: Date?) -> Any {
+            optional(value.map { ISO8601DateFormatter().string(from: $0) })
+        }
+        func observation(_ value: Batv1PlaybackOutputObservation?) -> Any {
+            guard let value else { return NSNull() }
+            return [
+                "sampledAt": timestamp(value.sampledAt), "outputPortTypes": value.outputPortTypes,
+                "outputVolume": value.outputVolume, "sampleRate": value.sampleRate,
+                "engineRunning": value.engineRunning, "playerPlaying": value.playerPlaying,
+            ] as [String: Any]
+        }
+        return [
+            "capturedAt": timestamp(capturedAt), "build": build,
+            "outcome": receive.timelineLost ? "failed" : "completed",
+            "terminalReason": optional(receive.terminalReason),
+            "playbackCursor": receive.playbackCursor, "latestSequence": receive.latestSequence,
+            "finalSequence": optional(receive.finalSequence),
+            "missingSequenceCount": receive.missingSequenceCount,
+            "duplicateSequenceCount": receive.duplicateSequenceCount,
+            "playerDrainCompletedAt": timestamp(receive.playerDrainCompletedAt),
+            "endCueAt": timestamp(receive.endCueAt),
+            "lastEnqueueOutput": observation(playback.lastEnqueueOutput),
+            "lastCompletionOutput": observation(playback.lastCompletionOutput),
+            "engineStartFailures": playback.engineStartFailures,
+            "lastErrorCode": optional(playback.lastErrorCode),
+            "inputRmsDbfs": optional(playback.inputRmsDbfs), "inputPeakDbfs": optional(playback.inputPeakDbfs),
+        ]
+    }
 }
 
 /// Realtime capture only copies post-processed PCM into bounded RAM.
