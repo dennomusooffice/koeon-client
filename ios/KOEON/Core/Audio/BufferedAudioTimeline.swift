@@ -185,6 +185,9 @@ struct Batv1PlaybackDiagnostics: Equatable, Sendable {
     var configurationChanges = 0
     var recoveries = 0
     var ignoredCompletions = 0
+    var engineStartFailures = 0
+    var lastEngineStartErrorDomain: String?
+    var lastEngineStartErrorCode: Int?
     var lastErrorCode: String?
     var inputRmsDbfs: Double?
     var inputPeakDbfs: Double?
@@ -975,12 +978,23 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
         queued.removeAll()
         completionFence.begin(token)
         try prepareGraphIfNeeded()
-        if startEngine, !engine.isRunning { try self.startEngine(engine) }
         player.stop()
         player.reset()
         completedFrames = 0
         setRate(1)
-        if startEngine { player.play() }
+        if startEngine {
+            do {
+                if !engine.isRunning { try self.startEngine(engine) }
+                guard engine.isRunning else { throw BufferedAudioError.playbackEngineUnavailable }
+                player.play()
+            } catch {
+                recordEngineStartFailure(error)
+                needsReschedule = true
+                // Initial activation can precede a usable hardware route. Retain
+                // PCM and use the same bounded, Apple-authorized recovery path.
+                requestRecovery(maximumAttempts: 5, initialDelay: .milliseconds(100))
+            }
+        }
     }
 
     func setRate(_ rate: Float) {
@@ -1097,12 +1111,29 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
         requestRecovery()
     }
 
-    private func requestRecovery() {
+    private func recordEngineStartFailure(_ error: Error) {
+        let error = error as NSError
+        // Never persist localized descriptions or userInfo (which may contain
+        // device names or other private data). Only known domains and numeric codes.
+        let domain = [NSOSStatusErrorDomain, AVFoundationErrorDomain, NSCocoaErrorDomain].contains(error.domain)
+            ? error.domain : "OTHER"
+        playbackDiagnostics.engineStartFailures += 1
+        playbackDiagnostics.lastEngineStartErrorDomain = domain
+        playbackDiagnostics.lastEngineStartErrorCode = error.code
+        Batv1CrashBreadcrumbStore.shared.record(
+            role: "RX", stage: "RX_ENGINE_START_FAILED", resultClass: "\(domain):\(error.code)"
+        )
+    }
+
+    private func requestRecovery(maximumAttempts: Int = 6, initialDelay: Duration = .zero) {
         recoveryTask?.cancel()
         guard playbackPermitted, let token = completionFence.activeToken else { return }
         playbackFailure = nil
         recoveryTask = Task { @MainActor [weak self] in
-            for attempt in 0..<6 {
+            if initialDelay > .zero {
+                do { try await Task.sleep(for: initialDelay) } catch { return }
+            }
+            for attempt in 0..<maximumAttempts {
                 guard let self, !Task.isCancelled, self.playbackPermitted,
                       self.completionFence.accepts(token) else { return }
                 do {
@@ -1122,7 +1153,8 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_ENGINE_RECOVERED")
                     return
                 } catch {
-                    if attempt == 5 {
+                    self.recordEngineStartFailure(error)
+                    if attempt == maximumAttempts - 1 {
                         self.playbackFailure = error
                         self.playbackDiagnostics.lastErrorCode = "RX_ENGINE_RECOVERY_FAILED"
                         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_ENGINE_RECOVERY_FAILED")
