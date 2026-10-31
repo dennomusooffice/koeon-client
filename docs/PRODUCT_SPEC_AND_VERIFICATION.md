@@ -107,3 +107,10 @@ SDK2.28.0の公式[RoomOptions](https://raw.githubusercontent.com/livekit/client
 登録画面への再入力を要さずPOWER ONでき、診断でCONNECTED・READY・pttEligible=trueを確認。POWER OFF→ONを3回実施して全回READY復帰、20秒画面オフ後もREADY復帰し、再採取した診断でもCONNECTEDを確認した。MANUAL入力ゲイン設定も保持されている。新しい`lastBufferedReceive`キーは存在し、更新後の受信がないので値はnullである。
 
 この実機試験で確認したのは更新時の登録維持・接続・明示再接続・短い画面オフからの状態復帰とJSON出力である。終端統計の非null値を実際の受信後に再接続して保持できるか、双方向音声の聴取、長時間省電力、LiveKit reliable data/RX_READYの互換性までは未検証。iPhone実機は使用していない。診断補助アプリは採取後に削除し、KOEONはREADYへ戻した。生の診断と更新前APKは保護フォルダへ保存し公開しない。
+
+
+### 接続先バージョンの診断
+
+両OSの`liveKit.serverVersion`に、SDKが接続先から受け取ったバージョンを出す。AndroidはRoom.serverInfo.version、iOSはRoom.serverVersionを参照する。接続済みで未取得ならnull、切断・再接続中もnullとし、前の接続先の値を現在値と誤認しない。バージョンから互換性全体を判定せず、接続・再接続と制御交換を別々に確認する。
+
+Androidで既知値・未取得・古い値を持つ切断／再接続状態のJSONを検証し、190件・Lint・assembleDebug成功。iOS296ケース成功（最終結果収集中）。これは診断実装の検証であり、実際のネイティブ接続先バージョンの採取は続けて行う。SDK更新や接続設定変更は行っていない。

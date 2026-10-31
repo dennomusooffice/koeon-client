@@ -81,6 +81,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     @Published private(set) var lastError: String?
     @Published private(set) var deployment = "UNKNOWN"
     @Published private(set) var endpointHost: String?
+    var serverVersion: String? { connectionState == .connected ? room?.serverVersion : nil }
 
     var onUnsafeDisconnect: (@MainActor @Sendable (String) -> Void)?
     var onReconnected: (@MainActor @Sendable () -> Void)?

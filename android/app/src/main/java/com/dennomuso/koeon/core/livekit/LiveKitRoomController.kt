@@ -127,6 +127,7 @@ data class LiveKitSnapshot(
     val lastError: String? = null,
     val deployment: String = "UNKNOWN",
     val endpointHost: String? = null,
+    val serverVersion: String? = null,
     val effectiveAudioBitrateKbps: Int? = null,
 )
 
@@ -375,10 +376,14 @@ class LiveKitRoomController(
                 _snapshot.value = _snapshot.value.copy(microphoneTrackState = "prepared_muted")
             }
             refreshParticipants(nextRoom)
-            _snapshot.value = _snapshot.value.copy(connectionState = IntercomConnectionState.CONNECTED)
+            _snapshot.value = _snapshot.value.copy(
+                connectionState = IntercomConnectionState.CONNECTED,
+                serverVersion = nextRoom.serverInfo?.version?.toString(),
+            )
         } catch (error: Throwable) {
             _snapshot.value = _snapshot.value.copy(
                 connectionState = IntercomConnectionState.DISCONNECTED,
+                serverVersion = null,
                 lastError = error.message ?: "LiveKit connection failed",
             )
             disconnect()
@@ -570,22 +575,27 @@ class LiveKitRoomController(
         when (event) {
             is RoomEvent.Connected -> {
                 refreshParticipants(event.room)
-                _snapshot.value = _snapshot.value.copy(connectionState = IntercomConnectionState.CONNECTED)
+                _snapshot.value = _snapshot.value.copy(
+                    connectionState = IntercomConnectionState.CONNECTED,
+                    serverVersion = event.room.serverInfo?.version?.toString(),
+                )
             }
             is RoomEvent.Reconnecting -> {
-                _snapshot.value = _snapshot.value.copy(connectionState = IntercomConnectionState.RECONNECTING)
+                _snapshot.value = _snapshot.value.copy(connectionState = IntercomConnectionState.RECONNECTING, serverVersion = null)
             }
             is RoomEvent.Reconnected -> {
                 refreshParticipants(event.room)
                 _snapshot.value = _snapshot.value.copy(
                     connectionState = IntercomConnectionState.CONNECTED,
                     reconnectCount = _snapshot.value.reconnectCount + 1,
+                    serverVersion = event.room.serverInfo?.version?.toString(),
                 )
             }
             is RoomEvent.Disconnected -> {
                 cancelRxReady()
                 _snapshot.value = _snapshot.value.copy(
                     connectionState = IntercomConnectionState.DISCONNECTED,
+                    serverVersion = null,
                     participantNames = emptyList(),
                     activeSpeaker = null,
                     lastError = event.error?.message,

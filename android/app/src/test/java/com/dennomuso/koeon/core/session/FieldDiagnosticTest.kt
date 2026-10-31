@@ -16,6 +16,16 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FieldDiagnosticTest {
+    @Test fun serverVersionIsReportedSeparatelyAndUnknownRemainsNull() {
+        fun value(version: String?, connection: IntercomConnectionState = IntercomConnectionState.CONNECTED) = Json.parseToJsonElement(buildAndroidFieldDiagnostic(
+            IntercomUiState(connectionState = connection, diagnostics = SessionDiagnostics(liveKitServerVersion = version)),
+        )).jsonObject.getValue("liveKit").jsonObject.getValue("serverVersion")
+        assertEquals(kotlinx.serialization.json.JsonNull, value(null))
+        assertEquals("1.13.11", value("1.13.11").jsonPrimitive.content)
+        assertEquals(kotlinx.serialization.json.JsonNull, value("1.13.11", IntercomConnectionState.RECONNECTING))
+        assertEquals(kotlinx.serialization.json.JsonNull, value("1.13.11", IntercomConnectionState.DISCONNECTED))
+    }
+
     @Test fun retainedReceiveIsSeparateFromCurrentAndDoesNotInventUnmeasuredOutput() {
         val snapshot = com.dennomuso.koeon.core.audio.BufferedAudioRxSnapshot.capture(
             com.dennomuso.koeon.core.audio.BufferedAudioRxDiagnostics(

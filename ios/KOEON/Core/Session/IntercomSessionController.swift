@@ -3156,6 +3156,7 @@ final class IntercomSessionController: ObservableObject {
             "liveKit": [
                 "deployment": room.deployment,
                 "endpointHost": optional(room.endpointHost),
+                "serverVersion": optional(room.serverVersion),
                 "connectionState": room.connectionState.rawValue,
             ],
             "audio": [
