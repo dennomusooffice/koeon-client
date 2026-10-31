@@ -94,3 +94,11 @@ Apple SDKと[公式仕様](https://developer.apple.com/documentation/pushtotalk/
 - 省電力モードOFF、自動ロック30秒、Mac音量100・ミュートへ復元。Androidの診断補助アプリを削除し、自動操作セッションを終了。
 
 この条件では改善を確認できた。ただし、単回の試験で長時間・反復利用全体の安定を断定しない。特に受信準備の受理まで約2.7秒を要しており、さらに短い発話や遅い回線での確認が残る。3104でのOS強制終了の具体的原因も確定したとは扱わない。
+
+## Bluetooth接続時の送信不能（Issue #38）
+
+利用者の申告を受け、10:15までの実機操作許可のもと3106で再現。10:07:13 JSTの診断ではBluetoothマイクから16kHz・monoのコールバックが78回届いたが、12,480サンプルをunsupportedとして破棄し、BATV1_CAPTURE_ZERO_FRAMESで送信0フレームとなった。受信は可能だった。
+
+Batv1CaptureBufferが48kHzだけを受け入れていたことが原因。AVAudioConverterで8/16/24/32/44.1kHz monoを送信用PCM16LE・48kHzへ変換する。48kHzは無変換とし、不正形式は拒否する。変換履歴はコールバック間で維持し、録音世代・開始音の境界でリセットする。Floor取得前の音声送出は引き続き禁止する。
+
+各入力レート、48kHz既存経路、不正形式拒否、開始音境界で旧音声を混ぜないことを含むiOS全236テスト成功。実機の効果・配信結果は確認後に追記する。追跡: [Issue #38](https://github.com/dennomusooffice/koeon-client/issues/38)。

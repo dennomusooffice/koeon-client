@@ -183,6 +183,8 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     private var callbackFrameCount: Int?
     private var unsupportedFormatFrames = 0
     private var normalizedFrames = 0
+    private var captureConverter: AVAudioConverter?
+    private var converterSourceRate: Int?
 
     func arm(generationId: String) {
         lock.withLock {
@@ -198,12 +200,15 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
             callbackFrameCount = nil
             unsupportedFormatFrames = 0
             normalizedFrames = 0
+            captureConverter = nil
+            converterSourceRate = nil
         }
     }
 
     /// Defines seq0 immediately before the user-visible start cue.
     func markCueBoundary() {
         lock.withLock {
+            captureConverter?.reset()
             frames.removeAll(keepingCapacity: true)
             partial.removeAll(keepingCapacity: true)
             dropped = 0
@@ -212,20 +217,21 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
 
     func append(samples: [Int16], sampleRate: Int, channels: Int) {
         guard !samples.isEmpty else { return }
-        let formatAccepted = lock.withLock { () -> Bool in
-            guard generationId != nil else { return false }
+        lock.withLock {
+            guard generationId != nil else { return }
             callbackCount += 1
             callbackSampleRate = sampleRate
             callbackChannels = channels
             callbackFrameCount = samples.count
-            let accepted = sampleRate == batv1SampleRate && channels == batv1Channels
-            if !accepted { unsupportedFormatFrames += samples.count }
-            return accepted
-        }
-        guard formatAccepted else { return }
-        let bytes = samples.withUnsafeBytes { Data($0) }
-        lock.withLock {
-            guard generationId != nil else { return }
+            guard channels == batv1Channels,
+                  [8_000, 16_000, 24_000, 32_000, 44_100, 48_000].contains(sampleRate),
+                  let bytes = canonicalPCM(samples: samples, sampleRate: sampleRate) else {
+                unsupportedFormatFrames += samples.count
+                captureConverter = nil
+                converterSourceRate = nil
+                return
+            }
+            guard !bytes.isEmpty else { return }
             if firstPcmAt == nil { firstPcmAt = Date() }
             partial.append(bytes)
             while partial.count >= batv1BytesPerFrame {
@@ -239,6 +245,49 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
                 forward?(frame)
             }
         }
+    }
+
+    /// Called under the capture lock. Keep converter history between callbacks,
+    /// but reset it at a new capture/cue boundary so old speech cannot leak.
+    private func canonicalPCM(samples: [Int16], sampleRate: Int) -> Data? {
+        if sampleRate == batv1SampleRate {
+            captureConverter = nil
+            converterSourceRate = nil
+            return samples.withUnsafeBytes { Data($0) }
+        }
+        if converterSourceRate != sampleRate {
+            guard let input = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                    sampleRate: Double(sampleRate), channels: 1, interleaved: true),
+                  let output = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                    sampleRate: Double(batv1SampleRate), channels: 1, interleaved: true),
+                  let converter = AVAudioConverter(from: input, to: output) else { return nil }
+            converter.primeMethod = .none
+            captureConverter = converter
+            converterSourceRate = sampleRate
+        }
+        guard let converter = captureConverter,
+              let input = AVAudioPCMBuffer(pcmFormat: converter.inputFormat,
+                    frameCapacity: AVAudioFrameCount(samples.count)),
+              let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat,
+                    frameCapacity: AVAudioFrameCount(ceil(Double(samples.count) *
+                        Double(batv1SampleRate) / Double(sampleRate))) + 64),
+              let inputSamples = input.int16ChannelData?[0] else { return nil }
+        input.frameLength = AVAudioFrameCount(samples.count)
+        samples.withUnsafeBufferPointer { source in
+            inputSamples.update(from: source.baseAddress!, count: source.count)
+        }
+        var supplied = false
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+            guard !supplied else { inputStatus.pointee = .noDataNow; return nil }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return input
+        }
+        guard status != .error, conversionError == nil,
+              let outputSamples = output.int16ChannelData?[0] else { return nil }
+        normalizedFrames += Int(output.frameLength)
+        return Data(bytes: outputSamples, count: Int(output.frameLength) * MemoryLayout<Int16>.size)
     }
 
     func awaitCapture(timeoutMilliseconds: Int = 750) async -> Bool {
@@ -266,6 +315,8 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     func discard() {
         lock.withLock {
             generationId = nil
+            captureConverter = nil
+            converterSourceRate = nil
             forward = nil
             frames.removeAll(keepingCapacity: false)
             partial.removeAll(keepingCapacity: false)

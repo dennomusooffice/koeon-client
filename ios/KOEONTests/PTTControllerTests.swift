@@ -1157,19 +1157,50 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(capture.callbackDiagnostics.normalized, 0)
     }
 
-    func testC5C6Non48kCaptureIsDiagnosedWithoutUnprovenNormalization() {
-        for sourceRate in [16_000, 32_000] {
+    func testBluetoothVoiceRatesProduceCanonicalFramesAcrossCallbacks() {
+        for sourceRate in [8_000, 16_000, 24_000, 32_000, 44_100] {
             let capture = Batv1CaptureBuffer()
-            capture.arm(generationId: "diagnostic-\(sourceRate)")
-            let samples = Array(repeating: Int16(1_024), count: sourceRate * 20 / 1_000)
-            capture.append(samples: samples, sampleRate: sourceRate, channels: 1)
-            XCTAssertEqual(capture.callbackDiagnostics.count, 1)
+            capture.arm(generationId: "bluetooth-\(sourceRate)")
+            for _ in 0..<10 {
+                capture.append(samples: Array(repeating: Int16(1_024), count: sourceRate / 100),
+                    sampleRate: sourceRate, channels: 1)
+            }
+            XCTAssertEqual(capture.callbackDiagnostics.count, 10)
             XCTAssertEqual(capture.callbackDiagnostics.sampleRate, sourceRate)
-            XCTAssertEqual(capture.callbackDiagnostics.channels, 1)
-            XCTAssertEqual(capture.callbackDiagnostics.unsupported, samples.count)
-            XCTAssertEqual(capture.callbackDiagnostics.normalized, 0)
-            XCTAssertEqual(capture.frameCount, 0)
+            XCTAssertEqual(capture.callbackDiagnostics.unsupported, 0)
+            XCTAssertGreaterThan(capture.callbackDiagnostics.normalized, 0)
+            XCTAssertGreaterThanOrEqual(capture.frameCount, 4, "Rate \(sourceRate)")
+            XCTAssertLessThanOrEqual(capture.frameCount, 5, "Rate \(sourceRate)")
+            XCTAssertNotNil(capture.firstPcmTimestamp)
         }
+    }
+
+    func testCaptureStillRejectsInvalidFormats() {
+        for (rate, channels) in [(0, 1), (96_000, 1), (16_000, 2)] {
+            let capture = Batv1CaptureBuffer()
+            capture.arm(generationId: "invalid")
+            capture.append(samples: [1, 2, 3], sampleRate: rate, channels: channels)
+            XCTAssertEqual(capture.frameCount, 0)
+            XCTAssertEqual(capture.callbackDiagnostics.unsupported, 3)
+        }
+    }
+
+    func testBluetoothConversionDoesNotCarrySpeechAcrossCueBoundary() {
+        let capture = Batv1CaptureBuffer()
+        capture.arm(generationId: "bluetooth-cue")
+        capture.append(samples: Array(repeating: 10_000, count: 160), sampleRate: 16_000, channels: 1)
+        capture.markCueBoundary()
+        for _ in 0..<4 {
+            capture.append(samples: Array(repeating: 0, count: 160), sampleRate: 16_000, channels: 1)
+        }
+        let collected = BluetoothFrameCollector()
+        _ = capture.startForwarding { collected.append($0) }
+        XCTAssertGreaterThan(capture.frameCount, 0)
+        XCTAssertTrue(collected.frames.allSatisfy { $0.allSatisfy { $0 == 0 } })
+        capture.discard()
+        capture.arm(generationId: "next")
+        XCTAssertEqual(capture.frameCount, 0)
+        XCTAssertEqual(capture.callbackDiagnostics.normalized, 0)
     }
 
     func testC7ZeroCallbackCannotBeMisreportedAsCaptureConfirmed() async {
@@ -1830,4 +1861,11 @@ final class ApplePttTokenLifecycleTests: XCTestCase {
         lifecycle.didJoin(channelUUID: channelUUID)
         return lifecycle
     }
+}
+
+private final class BluetoothFrameCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Data] = []
+    func append(_ data: Data) { lock.lock(); storage.append(data); lock.unlock() }
+    var frames: [Data] { lock.lock(); defer { lock.unlock() }; return storage }
 }
