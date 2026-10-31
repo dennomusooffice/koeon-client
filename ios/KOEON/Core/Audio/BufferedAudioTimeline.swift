@@ -191,6 +191,8 @@ struct Batv1PlaybackDiagnostics: Equatable, Sendable {
 /// Realtime capture only copies post-processed PCM into bounded RAM.
 /// It never performs network I/O and never writes audio to disk.
 final class Batv1CaptureBuffer: @unchecked Sendable {
+    private weak var inputGain: InputGainProcessor?
+    init(inputGain: InputGainProcessor? = nil) { self.inputGain = inputGain }
     private let lock = NSLock()
     private var frames: [Data] = []
     private var partial = Data()
@@ -210,6 +212,8 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
 
     func arm(generationId: String) {
         lock.withLock {
+            if self.generationId != nil { inputGain?.endTransmission(learn: false) }
+            inputGain?.beginTransmission()
             frames.removeAll(keepingCapacity: true)
             partial.removeAll(keepingCapacity: true)
             self.generationId = generationId
@@ -231,6 +235,7 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     /// Defines seq0 immediately before the user-visible start cue.
     func markCueBoundary() {
         lock.withLock {
+            inputGain?.markCaptureBoundary()
             captureConverter?.reset()
             frames.removeAll(keepingCapacity: true)
             partial.removeAll(keepingCapacity: true)
@@ -333,7 +338,7 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
         }
     }
 
-    func stopForwarding() { lock.withLock { forward = nil } }
+    func stopForwarding() { lock.withLock { forward = nil; inputGain?.pauseCaptureMeasurements() } }
 
     func freeze(generationId: String) -> Bool {
         lock.withLock {
@@ -346,13 +351,15 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
                 partial = Data()
             }
             frozen = true
+            inputGain?.pauseCaptureMeasurements()
             forward = nil
             return true
         }
     }
 
-    func discard() {
+    func discard(learnFromCapture: Bool = false) {
         lock.withLock {
+            if generationId != nil { inputGain?.endTransmission(learn: learnFromCapture) }
             generationId = nil
             captureConverter = nil
             converterSourceRate = nil
@@ -637,7 +644,7 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
             diagnostics.finalMarkerSequence = finalSequence
             diagnostics.finalMarkerAt = Date()
             Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_FINAL_MARKER_END", generationId: generationId)
-            await cleanup(generationId: generationId, state: .stopped)
+            await cleanup(generationId: generationId, state: .stopped, learnFromCapture: true)
         } catch {
             diagnostics.lastErrorCode = "BATV1_FINAL_MARKER_FAILED"
             Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_FINAL_MARKER_FAILED", generationId: generationId, resultClass: String(describing: type(of: error)))
@@ -713,10 +720,10 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
         }
     }
 
-    private func cleanup(generationId: String?, state: Batv1LifecycleState) async {
+    private func cleanup(generationId: String?, state: Batv1LifecycleState, learnFromCapture: Bool = false) async {
         capture.stopForwarding()
         stopLocalRecording(generationId: generationId)
-        capture.discard()
+        capture.discard(learnFromCapture: learnFromCapture)
         pending.removeAll()
         sendTask = nil
         authorized = false

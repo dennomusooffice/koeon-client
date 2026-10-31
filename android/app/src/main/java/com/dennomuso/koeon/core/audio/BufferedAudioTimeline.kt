@@ -102,7 +102,10 @@ data class BufferedAudioRxDiagnostics(
 )
 
 /** Realtime callback only copies bytes into a bounded RAM ring; it never performs network I/O. */
-class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = null) {
+class Batv1CaptureBuffer(
+    private val processPcm16: ((ByteBuffer) -> Unit)? = null,
+    private val inputGain: InputGainProcessor? = null,
+) {
     private val frames = ArrayDeque<ByteArray>()
     private var partial = ByteArray(0)
     private var armedGeneration: String? = null
@@ -117,6 +120,8 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
 
     @Synchronized
     fun arm(generationId: String = UUID.randomUUID().toString()): String {
+        if (armedGeneration != null) inputGain?.endTransmission(learn = false)
+        inputGain?.beginTransmission()
         frames.clear()
         partial = ByteArray(0)
         dropped = 0
@@ -131,7 +136,8 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
     }
 
     @Synchronized
-    fun discard() {
+    fun discard(learnFromCapture: Boolean = false) {
+        if (armedGeneration != null) inputGain?.endTransmission(learn = learnFromCapture)
         armedGeneration = null
         inputProcessingActive = false
         frames.clear()
@@ -142,6 +148,7 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
     /** Defines canonical seq0 after the audible start cue. */
     @Synchronized
     fun markCueBoundary() {
+        inputGain?.markCaptureBoundary()
         frames.clear()
         partial = ByteArray(0)
         dropped = 0
@@ -184,7 +191,10 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
     @Synchronized
     private fun appendBytes(bytes: ByteArray, applyInputGain: Boolean = false) {
         if (armedGeneration == null || frozen) return
-        if (applyInputGain && inputProcessingActive) processPcm16?.invoke(ByteBuffer.wrap(bytes))
+        if (applyInputGain && inputProcessingActive) {
+            if (inputGain != null) inputGain.processPcm16(ByteBuffer.wrap(bytes))
+            else processPcm16?.invoke(ByteBuffer.wrap(bytes))
+        }
         if (bytes.isNotEmpty() && firstPcmAtEpochMs == null) firstPcmAtEpochMs = System.currentTimeMillis()
         var joined = partial + bytes
         while (joined.size >= BATV1_BYTES_PER_FRAME) {
@@ -218,6 +228,7 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
             firstFrameSignal.trySend(Unit)
         }
         frozen = true
+        inputGain?.pauseCaptureMeasurements()
         inputProcessingActive = false
         onCanonicalFrame = null
         return true
@@ -228,7 +239,11 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
         onCanonicalFrame = if (frozen) null else consumer
         return frames.map(ByteArray::copyOf)
     }
-    @Synchronized fun stopForwarding() { onCanonicalFrame = null; inputProcessingActive = false }
+    @Synchronized fun stopForwarding() {
+        onCanonicalFrame = null
+        inputProcessingActive = false
+        inputGain?.pauseCaptureMeasurements()
+    }
     @Synchronized fun frameCount(): Int = frames.size
     @Synchronized fun droppedFrames(): Int = dropped
     @Synchronized fun armedAtEpochMs(): Long? = armedAtEpochMs
@@ -437,7 +452,7 @@ class HttpBufferedAudioTransmitter(
                 )
                 Batv1CrashBreadcrumbs.record("TX", "TX_FINAL_MARKER_END", generationId)
             }
-            boundedCleanup(generationId, "STOPPED")
+            boundedCleanup(generationId, "STOPPED", learnFromCapture = finalSequence >= 0)
             true
         } catch (cancelled: CancellationException) {
             diagnostics = diagnostics.copy(finalMarkerResult = "CANCELLED")
@@ -504,9 +519,9 @@ class HttpBufferedAudioTransmitter(
         finalSequence = finalSequence,
     )
 
-    private fun boundedCleanup(generationId: String?, state: String) {
+    private fun boundedCleanup(generationId: String?, state: String, learnFromCapture: Boolean = false) {
         capture.stopForwarding()
-        capture.discard()
+        capture.discard(learnFromCapture)
         sendJob = null
         authorized = false
         releaseHangoverActive = false

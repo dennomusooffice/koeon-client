@@ -266,7 +266,7 @@ class IntercomSessionManager(
             it.name == devicePreferences.getString("input_gain_mode", null)
         } ?: productionAudioCaptureProfile.koeonGainMode,
     )
-    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer(gainProcessor::processPcm16)
+    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer(inputGain = gainProcessor)
     private var batv1Transmitter: com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter? = null
     private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
     private val room = LiveKitRoomController(appContext, scope, gainProcessor, batv1Capture) { event ->
@@ -1073,11 +1073,15 @@ class IntercomSessionManager(
             bufferedAudio = batv1Transmitter,
             clock = SystemPttClock(),
             onSnapshot = { ptt ->
+                // BATv1 owns gain measurement at the capture boundaries. The
+                // legacy RTP fallback still follows its microphone/PTT lifecycle.
                 val txLifecycle = setOf(PttState.TRANSMITTING, PttState.RELEASING)
-                if (ptt.state in txLifecycle && previousPttState !in txLifecycle) {
-                    gainProcessor.beginTransmission()
-                } else if (ptt.state !in txLifecycle && previousPttState in txLifecycle) {
-                    gainProcessor.endTransmission()
+                if (batv1Transmitter == null) {
+                    if (ptt.state in txLifecycle && previousPttState !in txLifecycle) {
+                        gainProcessor.beginTransmission()
+                    } else if (ptt.state !in txLifecycle && previousPttState in txLifecycle) {
+                        gainProcessor.endTransmission()
+                    }
                 }
                 previousPttState = ptt.state
                 refreshInputGainDiagnostics()

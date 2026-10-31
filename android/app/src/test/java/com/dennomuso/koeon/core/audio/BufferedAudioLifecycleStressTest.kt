@@ -22,6 +22,28 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 class BufferedAudioLifecycleStressTest {
+    @Test fun `only acknowledged final marker commits capture gain learning`() = runBlocking {
+        for (rejectFinal in listOf(false, true)) {
+            val api = Batv1StressApi(publishFailure = { rejectFinal && it.finalSequence != null })
+            val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
+            val capture = Batv1CaptureBuffer(inputGain = gain)
+            val transmitter = HttpBufferedAudioTransmitter(this, api, capture, "channel", "session", "device")
+            launch { delay(1); capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME))) }
+            assertTrue(transmitter.armAndConfirmCapture("gain"))
+            assertTrue(transmitter.markCueBoundary("gain"))
+            val pcm = ByteBuffer.allocate(9_600 * 2).order(java.nio.ByteOrder.nativeOrder())
+            repeat(9_600) { pcm.putShort(2_000.toShort()) }
+            pcm.rewind()
+            capture.appendLiveKitPcm(pcm, 16, 48_000, 1, 9_600)
+            assertTrue(transmitter.freezePendingCapture("gain"))
+            assertEquals(0f, gain.snapshot().autoTrimDb, 0f)
+            assertTrue(transmitter.authorize("lease", "gain"))
+            assertEquals(!rejectFinal, transmitter.finish("gain"))
+            assertEquals(if (rejectFinal) 0f else 1f, gain.snapshot().autoTrimDb, 0f)
+            assertEquals(9_600L, gain.snapshot().meterSampleCount)
+        }
+    }
+
     @Test fun `frozen pre-roll is published only after authorization and excludes post-UP samples`() = runBlocking {
         val api = Batv1StressApi()
         val capture = Batv1CaptureBuffer()

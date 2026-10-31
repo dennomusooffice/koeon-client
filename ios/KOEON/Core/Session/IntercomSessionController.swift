@@ -478,7 +478,7 @@ final class IntercomSessionController: ObservableObject {
     let network: ConnectionMonitor
     let pushToTalk: ApplePushToTalkController
     let inputGain = InputGainProcessor()
-    private let bufferedCapture = Batv1CaptureBuffer()
+    private lazy var bufferedCapture = Batv1CaptureBuffer(inputGain: inputGain)
 
     private let api: any KOEONAPIClientProtocol
     private let credentialStore: any DeviceCredentialStoring
@@ -2122,8 +2122,6 @@ final class IntercomSessionController: ObservableObject {
         let previous = pttSnapshot.state
         pttSnapshot = snapshot
         if snapshot.floorReleaseCompletedAt != nil { lastReleaseSnapshot = snapshot }
-        if snapshot.state == .transmitting, previous != .transmitting { inputGain.beginTransmission() }
-        if snapshot.state != .transmitting, previous == .transmitting { inputGain.endTransmission() }
         if snapshot.state == .busy, previous != .busy { playStatusCue(.busy) }
         if snapshot.state == .error, previous != .error { playStatusCue(.error) }
         if snapshot.state == .transmitting { activationWatchdogTask?.cancel() }

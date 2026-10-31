@@ -105,6 +105,8 @@ class InputGainProcessor(
     private var route = "Unavailable"
     private var profile = AudioDeviceProfile("gain.unavailable", route, "unknown")
     private var transmissionActive = false
+    private var measurementsPaused = false
+    private var learningAllowed = true
     private var fixedTransmissionGainDb = 0f
     private var sumSquares = 0.0
     private var sampleCount = 0L
@@ -126,25 +128,40 @@ class InputGainProcessor(
         if (value == route) return
         route = value
         profile = profileStore?.load(value) ?: AudioDeviceProfile("gain.$value", value, value.substringBefore(':'))
+        calibrationUntilMs = null
+        calibrationFrameRms.clear()
+        recommendation = null
+        if (transmissionActive) {
+            fixedTransmissionGainDb = effectiveGainDb()
+            learningAllowed = false
+        }
         resetUtterance()
         publish()
     }
 
-    @Synchronized fun setMode(value: InputGainMode) { mode = value; publish() }
+    @Synchronized fun setMode(value: InputGainMode) {
+        if (transmissionActive && value != mode) learningAllowed = false
+        mode = value
+        publish()
+    }
     @Synchronized fun setManualGainDb(value: Float) { profile = profile.copy(manualGainDb = value.coerceIn(-6f, MAX_MANUAL_INPUT_GAIN_DB)); profileStore?.save(profile); publish() }
 
     @Synchronized
     fun beginTransmission() {
         transmissionActive = true
+        measurementsPaused = false
+        learningAllowed = true
         fixedTransmissionGainDb = effectiveGainDb()
         resetUtterance()
         publish()
     }
 
     @Synchronized
-    fun endTransmission() {
+    fun endTransmission(learn: Boolean = true) {
+        if (!transmissionActive) return
         transmissionActive = false
-        if (mode == InputGainMode.AUTO && sampleCount >= 4_800) {
+        measurementsPaused = true
+        if (learn && learningAllowed && mode == InputGainMode.AUTO && sampleCount >= 4_800) {
             val rms = rmsDbfs()
             if (rms != null) {
                 val limiterRatio = limiterHits.toDouble() / sampleCount.toDouble()
@@ -162,6 +179,9 @@ class InputGainProcessor(
         }
         publish()
     }
+
+    @Synchronized fun markCaptureBoundary() { resetUtterance() }
+    @Synchronized fun pauseCaptureMeasurements() { measurementsPaused = true }
 
     @Synchronized
     fun startCalibration(nowMs: Long = System.currentTimeMillis()) {
@@ -216,25 +236,31 @@ class InputGainProcessor(
             if (processingEnabled) {
                 var output = normalized * multiplier
                 val limited = softLimit(output)
-                if (limited != output) limiterHits++
+                if (!measurementsPaused && limited != output) limiterHits++
                 output = limited
                 if (pcm16) {
                     view.putShort(position, (output * 32768f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort())
                 } else {
                     view.putFloat(position, output * 32768f)
                 }
-                postSumSquares += output * output
-                postPeak = maxOf(postPeak, abs(output))
+                if (!measurementsPaused) {
+                    postSumSquares += output * output
+                    postPeak = maxOf(postPeak, abs(output))
+                }
             } else {
-                postSumSquares += normalized * normalized
-                postPeak = maxOf(postPeak, abs(normalized))
+                if (!measurementsPaused) {
+                    postSumSquares += normalized * normalized
+                    postPeak = maxOf(postPeak, abs(normalized))
+                }
             }
             count++
         }
         if (count > 0) {
-            sumSquares += frameSquare
-            sampleCount += count
-            peak = maxOf(peak, framePeak)
+            if (!measurementsPaused) {
+                sumSquares += frameSquare
+                sampleCount += count
+                peak = maxOf(peak, framePeak)
+            }
             val frameRms = sqrt(frameSquare / count).toFloat()
             calibrationUntilMs?.let { deadline ->
                 calibrationFrameRms += dbfs(frameRms)

@@ -10,7 +10,7 @@ import java.nio.ByteOrder
 class BufferedAudioTimelineTest {
     @Test fun `freeze retains speech tail and never accepts microphone samples after UP`() {
         var processed = 0
-        val capture = Batv1CaptureBuffer { processed += 1 }
+        val capture = Batv1CaptureBuffer(processPcm16 = { processed += 1 })
         capture.arm("generation")
         val source = ByteArray(BATV1_BYTES_PER_FRAME + 200) { 7 }
         capture.appendLiveKitPcm(ByteBuffer.wrap(source), 16, 48000, 1, source.size / 2)
@@ -91,7 +91,7 @@ class BufferedAudioTimelineTest {
 
     @Test fun `unarmed and invalid capture never enters gain processing`() {
         var calls = 0
-        val capture = Batv1CaptureBuffer { calls++ }
+        val capture = Batv1CaptureBuffer(processPcm16 = { calls++ })
         val source = ByteBuffer.wrap(ByteArray(1920))
         capture.appendLiveKitPcm(source, 16, 48000, 1, 960)
         capture.arm("validations")

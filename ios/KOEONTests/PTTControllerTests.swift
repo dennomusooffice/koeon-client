@@ -957,6 +957,109 @@ final class PTTControllerTests: XCTestCase {
 }
 
 final class InputGainProcessorTests: XCTestCase {
+    func testRouteChangeCancelsCalibrationAndUsesNewMicrophoneGain() {
+        withCapture { gain, capture in
+            gain.setMode(.manual)
+            gain.setRoute("Wired")
+            gain.setManualGainDb(12)
+            gain.setRoute("Built-in")
+            gain.setManualGainDb(6)
+            capture.arm(generationId: "route-change")
+            gain.startCalibration()
+            gain.setRoute("Wired")
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 12)
+            XCTAssertEqual(gain.snapshot().calibrationState, "IDLE")
+            XCTAssertNil(gain.snapshot().recommendationDb)
+        }
+    }
+
+    func testRouteChangeCannotTrainAnotherMicrophoneProfile() {
+        withCapture { gain, capture in
+            gain.setMode(.auto)
+            gain.setRoute("Built-in")
+            capture.arm(generationId: "route-change")
+            feed(gain, value: 2_000, count: 9_600)
+            gain.setRoute("Wired")
+            feed(gain, value: 2_000, count: 9_600)
+            capture.discard(learnFromCapture: true)
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            gain.setRoute("Built-in")
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+        }
+    }
+
+    func testCaptureRetainsPreRollMetersAndLearnsOnlyAfterSuccessfulCompletion() {
+        withCapture { gain, capture in
+            gain.setMode(.auto)
+            capture.arm(generationId: "short")
+            feed(gain, value: 32_000, count: 960)
+            capture.markCueBoundary()
+            feed(gain, value: 2_000, count: 9_600)
+            XCTAssertTrue(capture.freeze(generationId: "short"))
+            _ = capture.startForwarding { _ in }
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            let before = gain.snapshot().rmsDbfs
+            feed(gain, value: 32_000, count: 960)
+            XCTAssertEqual(gain.snapshot().rmsDbfs, before)
+            XCTAssertEqual(gain.snapshot().peakDbfs!, -24.2884, accuracy: 0.001)
+            capture.discard(learnFromCapture: true)
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 1)
+            capture.discard(learnFromCapture: true)
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 1)
+        }
+    }
+
+    func testCancelledCaptureDoesNotTrainAuto() {
+        withCapture { gain, capture in
+            gain.setMode(.auto)
+            capture.arm(generationId: "cancelled")
+            feed(gain, value: 2_000, count: 9_600)
+            capture.discard()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+        }
+    }
+
+    func testGainRemainsFixedThroughReleaseTailAndStopsMeteringAfterCapture() {
+        withCapture { gain, capture in
+            gain.setMode(.manual)
+            gain.setManualGainDb(6)
+            capture.arm(generationId: "normal")
+            capture.markCueBoundary()
+            feed(gain, value: 2_000, count: 960)
+            gain.setManualGainDb(12)
+            _ = capture.startForwarding { _ in }
+            feed(gain, value: 2_000, count: 960)
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 6)
+            XCTAssertEqual(capture.frameCount, 2)
+            capture.stopForwarding()
+            feed(gain, value: 32_000, count: 960)
+            XCTAssertEqual(gain.snapshot().peakDbfs!, -24.2884, accuracy: 0.001)
+            capture.discard(learnFromCapture: true)
+            capture.arm(generationId: "next")
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 12)
+        }
+    }
+
+    private func feed(_ gain: InputGainProcessor, value: Float, count: Int) {
+        var samples = [Float](repeating: value, count: count)
+        samples.withUnsafeMutableBufferPointer { buffer in
+            gain.processFloatS16(channels: 1, frames: count) { _ in buffer.baseAddress! }
+        }
+    }
+
+    private func withCapture(_ body: (InputGainProcessor, Batv1CaptureBuffer) -> Void) {
+        let name = "input-gain-capture-tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let gain = InputGainProcessor(defaults: defaults)
+        let capture = Batv1CaptureBuffer(inputGain: gain)
+        gain.audioProcessingInitialize(sampleRate: 48_000, channels: 1)
+        gain.setPostProcessedPcmConsumer { [weak capture] samples, rate, channels in
+            capture?.append(samples: samples, sampleRate: rate, channels: channels)
+        }
+        body(gain, capture)
+    }
+
     func testAutoConvergesToOutputTargetAndReducesExcessGain() {
         var trim: Float = 0
         for _ in 0..<30 { trim = InputGainProcessor.nextAutoTrim(current: trim, speechRmsDbfs: -24) }
@@ -1429,6 +1532,48 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(authority.startCount, 100)
         XCTAssertEqual(authority.stopCount, 100)
         XCTAssertFalse(authority.isRecording)
+    }
+
+    @MainActor
+    func testOnlyAcknowledgedFinalMarkerCommitsCaptureGainLearning() async throws {
+        for rejectFinal in [false, true] {
+            let name = "gain-transmitter-tests.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: name)!
+            defer { defaults.removePersistentDomain(forName: name) }
+            let gain = InputGainProcessor(defaults: defaults)
+            gain.setMode(.auto)
+            gain.audioProcessingInitialize(sampleRate: 48_000, channels: 1)
+            let capture = Batv1CaptureBuffer(inputGain: gain)
+            gain.setPostProcessedPcmConsumer { [weak capture] samples, rate, channels in
+                capture?.append(samples: samples, sampleRate: rate, channels: channels)
+            }
+            let api = Batv1APIStub()
+            api.rejectFinal = rejectFinal
+            let transmitter = BufferedAudioTransmitter(
+                api: api, capture: capture, channelId: "channel-a", sessionId: "session-a",
+                deviceId: "device-a", recordingAuthority: RecordingAuthorityMock()
+            )
+            await transmitter.prepare(generationId: "gain")
+            try await transmitter.audioSessionDidActivate()
+            capture.append(samples: [Int16](repeating: 1, count: 960), sampleRate: 48_000, channels: 1)
+            let confirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "gain")
+            XCTAssertTrue(confirmed)
+            var samples = [Float](repeating: 2_000, count: 9_600)
+            samples.withUnsafeMutableBufferPointer { buffer in
+                gain.processFloatS16(channels: 1, frames: buffer.count) { _ in buffer.baseAddress! }
+            }
+            XCTAssertTrue(try transmitter.freezePendingCapture(generationId: "gain"))
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            try await transmitter.authorize(leaseId: "lease-a", generationId: "gain")
+            do {
+                try await transmitter.finish(generationId: "gain")
+                XCTAssertFalse(rejectFinal)
+            } catch {
+                XCTAssertTrue(rejectFinal)
+            }
+            XCTAssertEqual(gain.snapshot().autoTrimDb, rejectFinal ? 0 : 1)
+            XCTAssertEqual(gain.snapshot().rmsDbfs!, -24.2884, accuracy: 0.001)
+        }
     }
 
     @MainActor
@@ -2099,6 +2244,7 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
 }
 
 private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
+    var rejectFinal = false
     var subscribeHandler: ((Batv1SubscribeRequest) throws -> Batv1SubscribeResponse)?
     var floorStatusHandler: (() throws -> FloorResponse)?
     private(set) var publishedRequests: [Batv1PublishRequest] = []
@@ -2119,6 +2265,7 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     func unregisterPttToken(sessionId: String) async throws { throw MockError.expected }
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
         publishedRequests.append(request)
+        if rejectFinal, request.finalSequence != nil { throw MockError.expected }
         return Batv1PublishResponse(outcome: "accepted", acceptedChunks: request.chunks.count, latestSequence: request.chunks.last?.sequence ?? -1)
     }
     func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
