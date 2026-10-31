@@ -32,7 +32,7 @@ class InputGainProcessorTest {
         val processor = InputGainProcessor().apply { setMode(InputGainMode.OFF) }
         val buffer = samples(1_000, -2_000, 12_000)
 
-        processor.processAudio(1, 3, buffer)
+        processor.processPcm16(buffer)
 
         assertEquals(listOf<Short>(1_000, -2_000, 12_000), values(buffer))
     }
@@ -46,7 +46,7 @@ class InputGainProcessorTest {
         }
         val buffer = samples(2_000, -2_000)
 
-        processor.processAudio(1, 2, buffer)
+        processor.processPcm16(buffer)
 
         val output = values(buffer)
         assertTrue(abs(output[0] - 3_991) < 8)
@@ -62,7 +62,7 @@ class InputGainProcessorTest {
             beginTransmission()
         }
         val buffer = samples(10_000, -10_000, 32_000, -32_000)
-        processor.processAudio(1, 2, buffer)
+        processor.processPcm16(buffer)
         val output = values(buffer)
         assertTrue(abs(output[0] - 5_011) < 8)
         assertTrue(abs(output[1] + 5_011) < 8)
@@ -81,7 +81,7 @@ class InputGainProcessorTest {
         }
         val buffer = samples(30_000, -30_000)
 
-        processor.processAudio(1, 2, buffer)
+        processor.processPcm16(buffer)
 
         assertTrue(values(buffer).all { abs(it.toInt()) < 30_000 })
         assertTrue(processor.snapshot().limiterHitCount >= 2)
@@ -122,12 +122,12 @@ class InputGainProcessorTest {
         }
         val processor = InputGainProcessor(repository).apply { setRoute("Built-in"); setMode(InputGainMode.AUTO) }
         processor.beginTransmission()
-        processor.processAudio(1, 100, samples(*IntArray(100) { 100 }))
+        processor.processPcm16(samples(*IntArray(100) { 100 }))
         processor.endTransmission()
         assertEquals(2f, processor.snapshot().autoTrimDb, 0f)
 
         processor.beginTransmission()
-        processor.processAudio(1, 5_000, samples(*IntArray(5_000) { 32_000 }))
+        processor.processPcm16(samples(*IntArray(5_000) { 32_000 }))
         processor.endTransmission()
         assertEquals(1f, processor.snapshot().autoTrimDb, 0f)
     }
@@ -137,6 +137,21 @@ class InputGainProcessorTest {
         assertEquals(3f, InputGainProcessor.nextAutoTrim(4f, -24f, -0.2f, 0.0), 0f)
         assertEquals(3f, InputGainProcessor.nextAutoTrim(4f, -24f, -10f, 0.02), 0f)
         assertEquals(5f, InputGainProcessor.nextAutoTrim(4f, -24f, -10f, 0.0), 0f)
+    }
+
+    @Test
+    fun `legacy WebRTC callback uses FloatS16 not packed shorts`() {
+        val processor = InputGainProcessor().apply { setMode(InputGainMode.MANUAL); setManualGainDb(6f) }
+        val buffer = ByteBuffer.allocateDirect(12).order(ByteOrder.nativeOrder()).apply {
+            putFloat(2000f); putFloat(-2000f); putFloat(777f); rewind()
+        }
+        processor.processAudio(3, 2, buffer)
+        assertEquals(3990.52f, buffer.getFloat(0), 0.1f)
+        assertEquals(-3990.52f, buffer.getFloat(4), 0.1f)
+        assertEquals(777f, buffer.getFloat(8), 0f)
+        assertEquals(2L, processor.snapshot().meterSampleCount)
+        assertEquals("WEBRTC_APM_FLOAT_S16", processor.snapshot().meterSource)
+        assertEquals(0, buffer.position())
     }
 
     private fun samples(vararg values: Int): ByteBuffer =

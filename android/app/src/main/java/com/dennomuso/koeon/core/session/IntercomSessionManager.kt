@@ -264,7 +264,7 @@ class IntercomSessionManager(
         AudioDeviceProfileStore(appContext.getSharedPreferences("koeon_audio_profiles", Context.MODE_PRIVATE)),
         initialMode = productionAudioCaptureProfile.koeonGainMode,
     )
-    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer()
+    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer(gainProcessor::processPcm16)
     private var batv1Transmitter: com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter? = null
     private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
     private val room = LiveKitRoomController(appContext, scope, gainProcessor, batv1Capture) { event ->

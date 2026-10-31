@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class BufferedAudioTimelineTest {
     @Test fun `canonical PCM frames are 20ms and ordered from seq0`() {
@@ -26,6 +27,48 @@ class BufferedAudioTimelineTest {
         assertTrue(capture.appendLiveKitPcm(ByteBuffer.wrap(tenMilliseconds), 16, 48_000, 1, 480))
         assertEquals(1, capture.frameCount())
         assertEquals(null, capture.lastErrorCode())
+    }
+
+    @Test fun `BAT capture applies gain to owned PCM before framing and preserves SDK source`() {
+        val gain = InputGainProcessor().apply { setMode(InputGainMode.MANUAL); setManualGainDb(6f); beginTransmission() }
+        val capture = Batv1CaptureBuffer(gain::processPcm16)
+        val source = ByteBuffer.allocate(1920).order(ByteOrder.nativeOrder()).apply {
+            repeat(960) { putShort(if (it % 2 == 0) 2000 else -2000) }; rewind()
+        }
+        capture.arm("gain-test")
+        assertTrue(capture.appendLiveKitPcm(source, 16, 48000, 1, 960))
+        val output = ByteBuffer.wrap(capture.snapshotFrames().single()).order(ByteOrder.nativeOrder())
+        assertEquals(3990, output.short.toInt())
+        assertEquals(-3990, output.short.toInt())
+        assertEquals(2000, source.getShort(0).toInt())
+        assertEquals(0, source.position())
+        assertEquals("BATV1_PCM16", gain.snapshot().meterSource)
+        assertEquals(960L, gain.snapshot().meterSampleCount)
+        assertEquals(6f, gain.snapshot().postKoeonRmsDbfs!! - gain.snapshot().inputRmsDbfs!!, 0.01f)
+    }
+
+    @Test fun `BAT capture OFF is bit exact and measures actual sent samples`() {
+        val gain = InputGainProcessor()
+        val capture = Batv1CaptureBuffer(gain::processPcm16)
+        val bytes = ByteArray(1920) { (it % 127).toByte() }
+        capture.arm("off")
+        capture.appendLiveKitPcm(ByteBuffer.wrap(bytes), 16, 48000, 1, 960)
+        assertArrayEquals(bytes, capture.snapshotFrames().single())
+        assertEquals(gain.snapshot().inputRmsDbfs, gain.snapshot().postKoeonRmsDbfs)
+        capture.stopForwarding()
+        capture.appendLiveKitPcm(ByteBuffer.wrap(bytes), 16, 48000, 1, 960)
+        assertEquals(960L, gain.snapshot().meterSampleCount)
+    }
+
+    @Test fun `unarmed and invalid capture never enters gain processing`() {
+        var calls = 0
+        val capture = Batv1CaptureBuffer { calls++ }
+        val source = ByteBuffer.wrap(ByteArray(1920))
+        capture.appendLiveKitPcm(source, 16, 48000, 1, 960)
+        capture.arm("validations")
+        capture.appendLiveKitPcm(source, 16, 16000, 1, 320)
+        capture.appendLiveKitPcm(source, 16, 48000, 1, 2000)
+        assertEquals(0, calls)
     }
 
     @Test fun `unsupported sink format never fabricates canonical PCM`() {

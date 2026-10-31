@@ -102,11 +102,12 @@ data class BufferedAudioRxDiagnostics(
 )
 
 /** Realtime callback only copies bytes into a bounded RAM ring; it never performs network I/O. */
-class Batv1CaptureBuffer {
+class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = null) {
     private val frames = ArrayDeque<ByteArray>()
     private var partial = ByteArray(0)
     private var armedGeneration: String? = null
     private var firstFrameSignal = Channel<Unit>(Channel.CONFLATED)
+    private var inputProcessingActive = false
     private var dropped = 0
     private var armedAtEpochMs: Long? = null
     private var firstPcmAtEpochMs: Long? = null
@@ -122,6 +123,7 @@ class Batv1CaptureBuffer {
         firstPcmAtEpochMs = null
         lastErrorCode = null
         armedGeneration = generationId
+        inputProcessingActive = true
         firstFrameSignal = Channel(Channel.CONFLATED)
         return generationId
     }
@@ -129,6 +131,7 @@ class Batv1CaptureBuffer {
     @Synchronized
     fun discard() {
         armedGeneration = null
+        inputProcessingActive = false
         frames.clear()
         partial = ByteArray(0)
         onCanonicalFrame = null
@@ -166,7 +169,7 @@ class Batv1CaptureBuffer {
         }
         val bytes = ByteArray(expectedBytes)
         input.get(bytes)
-        appendBytes(bytes)
+        appendBytes(bytes, applyInputGain = true)
         return true
     }
 
@@ -177,8 +180,9 @@ class Batv1CaptureBuffer {
     }
 
     @Synchronized
-    private fun appendBytes(bytes: ByteArray) {
+    private fun appendBytes(bytes: ByteArray, applyInputGain: Boolean = false) {
         if (armedGeneration == null) return
+        if (applyInputGain && inputProcessingActive) processPcm16?.invoke(ByteBuffer.wrap(bytes))
         if (bytes.isNotEmpty() && firstPcmAtEpochMs == null) firstPcmAtEpochMs = System.currentTimeMillis()
         var joined = partial + bytes
         while (joined.size >= BATV1_BYTES_PER_FRAME) {
@@ -204,7 +208,7 @@ class Batv1CaptureBuffer {
         onCanonicalFrame = consumer
         return frames.map(ByteArray::copyOf)
     }
-    @Synchronized fun stopForwarding() { onCanonicalFrame = null }
+    @Synchronized fun stopForwarding() { onCanonicalFrame = null; inputProcessingActive = false }
     @Synchronized fun frameCount(): Int = frames.size
     @Synchronized fun droppedFrames(): Int = dropped
     @Synchronized fun armedAtEpochMs(): Long? = armedAtEpochMs

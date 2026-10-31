@@ -338,7 +338,9 @@ class LiveKitRoomController(
         )
         nextRoom.localParticipant.audioTrackCaptureDefaults = audioCaptureProfile.capturePolicy.toTrackOptions()
         nextRoom.localParticipant.audioTrackPublishDefaults = audioTrackPublishDefaults(audioBitratePreset)
-        inputGainProcessor?.let {
+        // BATv1 has its own PCM16 gain/meter path. Its AudioRecord sink is before
+        // APM; attaching a second processor here would double-count/double-trim.
+        inputGainProcessor?.takeIf { batv1CaptureBuffer == null || deviceId.isNullOrBlank() }?.let {
             nextRoom.audioProcessingController.capturePostProcessor = it
             nextRoom.audioProcessingController.bypassCapturePostProcessing = false
         }
