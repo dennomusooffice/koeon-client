@@ -1,23 +1,23 @@
-# 実機接続なしでのフィールド不具合調査（2026-10-31）
+# フィールド不具合調査・オフライン修正と実機再検証（2026-10-31）
 
 実機操作は12:17:04 JSTに一度終了し、その後は保存済み証拠と自動テストで修正した。同日夕方、利用者から接続済みOPPOとiPhoneでの試験再開を明示的に指示され、終了期限を21:00 JSTと確認した。オフライン調査履歴と再開後の実機結果を区別する。
 
 ## 最新の検証・配信状態（2026-10-31）
 
-iOS3109の署名ソースは`c58ba5ab9a748dfcdca62f079e04569cb1516179`（tree `abab40ab4a7de002e0c7bd7fd9d1b8ad62bbffd4`）。Android候補の署名ソースは`2cfff78df072e4a6e0bafdf2ed56dc10ac619e5a`（tree `08969b9417e744c2effbaad07efed84bddfe5514`）。以下の調査本文にある個別テスト数・配信前の記述は各修正時点の履歴であり、現在の状態はこの表を優先する。
+最新iOS3110の署名ソースは`65cb7bf310b7ab0eb02f962bebb788d6c2385cc9`（tree `4a39e7db73101c664b2352d62e44415cde593b50`）。旧3109はc58ba5a。Android候補の署名ソースは`2cfff78df072e4a6e0bafdf2ed56dc10ac619e5a`（tree `08969b9417e744c2effbaad07efed84bddfe5514`）。以下の調査本文にある個別テスト数・配信前の記述は各修正時点の履歴であり、現在の状態はこの表を優先する。
 
 | 項目 | 現在確認できている結果 |
 | --- | --- |
 | Android単体テスト / Lint / assembleDebug | 184件成功、Lint・ビルド成功（#48の追加修正を含む） |
-| iOS Simulator | 272件成功 |
+| iOS Simulator | 275件成功、追加3件は修正前に失敗を確認 |
 | feature-parity-contract / diff whitespace | 成功 |
-| iOS1.0（2026103109） | 署名・アップロード成功、Apple VALID / IN_BETA_TESTING、前版と同じ内部グループへの割当とテスト説明を再取得して確認 |
-| Android1.0.13（14） | 2cfff78の署名済み候補完成。APK SHA-256 `083c57348f01aaa444be99649e93dd52dc02234f3ec47dc623294d320bc2510e`。実機未導入、GitHub Release未公開 |
+| iOS1.0（2026103110） | Apple VALID / IN_BETA_TESTING、同じ2内部グループ・テスト説明を再取得確認。実機に更新し、停止診断と1.5秒PCM輸送を確認。1秒以下の短押下は未解決 |
+| Android1.0.13（14） | 2cfff78の署名済み候補完成。APK SHA-256 `083c57348f01aaa444be99649e93dd52dc02234f3ec47dc623294d320bc2510e`。A303OPへローカル導入しAPKハッシュ一致確認、GitHub Release未公開 |
 | GitHub Public CI / Android公開 | 5ジョブともrunner未割当・実行step 0。アカウント側の請求問題で開始できない。所有者は現時点では対応不可。[Issue #47](https://github.com/dennomusooffice/koeon-client/issues/47)で復旧待ち。コードのテスト失敗とは区別し、公開ゲートは迂回しない |
 | 実機の再検証 / 11:00頃クラッシュ | 夕方にA303OP/iPhoneで再開。人声＋6dBの聴取と限定的な双方向フレーム一致を確認し、短押下等を試験中。11:00の新しい.ipsは未取得。接続iPhoneのKOEON記録は既知の09:30のみ |
 | mainへのマージ | 未実施（PR #33 / #41 / #44） |
 
-保護ログ・署名候補のprovenanceは`.secret/offline-field/`、`.secret/testflight/`、`.secret/android-release/`に保持。公開資料へ生ログ・識別子・認証情報・接続先を転載しない。
+保護ログ・署名候補のprovenanceは`.secret/offline-field/`、`.secret/testflight/`、`.secret/android-release/`、`.secret/field-oppo-20261031/`に保持。公開資料へ生ログ・識別子・認証情報・接続先を転載しない。
 
 ## 今回のiPhoneクラッシュを既存記録と分離
 
@@ -227,3 +227,25 @@ Android全184件・Lint・assembleDebug・parity成功。凍結した短発話�
 待機前後に世代・lifecycle token・稼働状態・キャンセルを照合し、古い完了処理による変更を防いだ。PCM待機ループはキャンセル時に終了し、CancellationErrorを握り潰して待ち続けない。修正後は追加3件を含むiOS全275テスト成功。実機の500msで録音開始が間に合わない現象、クラッシュ原因、すべての先頭欠けをこの修正だけで解決したとはしない。新修正のTestFlight配信・実機確認はこの記録時点では未実施。
 
 AUTO補正、ロック／バックグラウンド、反復送受信、設定復元を続ける。生の診断JSON・音声・識別子は公開せず、ここでは集計値だけを記録する。
+
+### AUTOの限定実機確認と3110内部配信
+
+A303OPをAUTO0dBへ切り替え、人声の送信を3回依頼。利用者はiPhone3109のBluetoothイヤフォンで「きれいに聞こえます」と回答した。最後の470400サンプルは入力RMS −26.264→出力 −24.264dBFS、peak −8.369→−6.369dBFS、limiter0。最後の発話自体は+2dBで処理され、終了後に次回用の補正が+3dBへ更新された。診断のeffectiveDb +3と処理済み音声の増幅+2を混同しない。490送信/490受信・最終489一致、正常drain。前2回の個別診断は残っておらず、全3回の個別フレーム一致とはしない。
+
+段階更新・限定条件の聴取は確認したが、実機で目標到達後の収束・無音／騒音・他機種／入力ルートを受け入れたものではない。以降の比較はMANUAL +6dBへ戻した。AUTOの保存値+3dBは保持される。
+
+iOS旧録音確認競合の修正コミットは`65cb7bf310b7ab0eb02f962bebb788d6c2385cc9`、tree `4a39e7db73101c664b2352d62e44415cde593b50`。1.0（2026103110）の署名・アップロード成功後、18:45 JSTにApple VALID / IN_BETA_TESTING、前版と同じ2内部グループの割当と日本語テスト説明の一致を再取得して確認した。最初はREADY_FOR_BETA_TESTING・割当未確認だったため、反映前に配信完了とは扱わなかった。新修正の実機導入・検証はこの追記時点では未実施。iOS275テスト・parity成功、main未マージ。
+
+続く3109の人声によるBluetoothマイク→OPPO本体では、利用者が「欠けない」と回答。149送信/149受信・最終148一致、正常drain・受信エラーなし。録音確認170ms、RX_READY465ms、押下→TALKING1120ms、UP→READY1822ms。音量の十分さや可聴遅延の数値まで回答されたとは解釈しない。ログ保存後にTestFlightから3110へ更新し、devicectlのbundleVersion2026103110と起動後READYを確認した。更新中の旧プロセス終了でUIツールが一度「app not running」を報告したが、新規クラッシュの証拠とは扱わない。
+
+### 3110導入後の短押下（19時頃、継続中）
+
+更新後の初回は、TestFlightのテスト説明・フィードバック案内が画面を覆っていた一方、UIツールは背面のKOEONを返していた。案内が残った状態での最初の500ms操作は試験不成立として除外した。実画面を確認して案内を閉じ、以降を有効な試行とした。
+
+- iPhone Bluetooth 500ms: 送信0、新規Android受信なし。captureState STOPPED、captureConfirmedAtなし、lastErrorなし、READY。停止後にACTIVEへ上書きされる挙動はこの試行で再発しなかった。
+- 同1000ms: 送信0、新規受信なし。録音確認557ms・開始キューの記録はあるが、control START/RX_READYは未開始。UP→READY95ms。録音準備／キュー終了前後の短押下は引き続き課題で、3109の1秒試行成功から安定性を一般化しない。新しい世代照合の回帰と断定する証拠もない。
+- 同1500ms: 56送信/56受信、最終55一致、両端末READY。短い単語の聴取確認ではなく、環境音PCMの輸送確認。
+
+診断回収用のUI待機・クリップボード取得にも失敗があり、製品の送受信障害と混同しない。取得失敗時に再送して証拠を上書きせず、同じ試行のログ回収を優先する。
+
+OPPO→iOS3110の500ms追加試行は、Android25送信・最終24 ACCEPTED、PTT_UP_DURING_READY、Floor188ms／RX_READY416ms。iPhoneの初回コピー取得が失敗し、再取得では現在RXメーターが初期化済みだった。保持された受信完了とRX_DRAIN_ENDは当該時刻を示すが、受信フレーム数・最終sequenceの一致は未確認。再取得時の0を通信損失と解釈せず、25/25成功とも扱わない。
