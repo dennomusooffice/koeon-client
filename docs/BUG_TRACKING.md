@@ -28,7 +28,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#36](https://github.com/dennomusooffice/koeon-client/issues/36) | ロック中のOS強制終了 | 3104で再現、3106の単回試験では再発なし、原因確定は残る |
 | [#37](https://github.com/dennomusooffice/koeon-client/issues/37) | 準備待ち中に短い発話が失われる | Android500ms・iOS1/1.5秒のPCM輸送を実機確認、iOS500msは0。旧録音確認の競合を追加修正・275テスト成功、iOS3110内部配信・停止診断と1.5秒輸送確認、1秒以下は未解決 |
 | [#38](https://github.com/dennomusooffice/koeon-client/issues/38) | Bluetoothイヤフォンで送信不能 | 3107へ修正配信、Bluetooth送信と再接続後の送信を実機確認 |
-| [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | iOS3109の前面人声は聴取成功。3110の再接続・ロック後は無音を利用者が報告、Android245送信・最終244受理。診断で初回engine.startのNSErrorを特定。限定再試行・安全な診断を修正、282テスト成功、3111内部配信・実機導入後もロック中の無音申告。最新診断未回収・原因継続調査 |
+| [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | iOS3109の前面人声は聴取成功。3110の再接続・ロック後は無音を利用者が報告、Android245送信・最終244受理。診断で初回engine.startのNSErrorを特定。限定再試行・安全な診断を修正、282テスト成功、3111内部配信・実機導入後もロック中の無音申告。承認延長で診断回収、背景移行から次のAPP_STARTまで受信開始記録なし・原因継続調査 |
 | [#40](https://github.com/dennomusooffice/koeon-client/issues/40) | SO-52Cの送信音声が非常に小さい | SO-52C内蔵+18dB・有線+24dB、A303OP1.0.13内蔵+6dBで聴取改善確認、PR未マージ |
 | [#42](https://github.com/dennomusooffice/koeon-client/issues/42) | 別利用者のiPhoneで11:00頃クラッシュ | 実ビルド・新しい.ips未取得。内部配信した対策との因果関係は未確定。終了原因の診断誤分類も修正、287テスト成功・追加分未配信 |
 | [#43](https://github.com/dennomusooffice/koeon-client/issues/43) | AUTOが目標到達後・無音でも増加 | 両OSを修正。A303OP1.0.13内蔵AUTOの段階更新・聴取を確認、収束・他ルートは未検証、Android公開保留 |
