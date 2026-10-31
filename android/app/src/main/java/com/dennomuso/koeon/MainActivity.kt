@@ -605,7 +605,7 @@ private fun HardwareAndGainSettings(state: IntercomUiState, manager: IntercomSes
         value = diagnostics.inputGain.manualGainDb,
         onValueChange = manager::setManualInputGain,
         valueRange = -6f..MAX_MANUAL_INPUT_GAIN_DB,
-        steps = 23,
+        steps = 29,
     )
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = manager::startInputCalibration, modifier = Modifier.weight(1f)) { Text("CALIBRATE 3s") }

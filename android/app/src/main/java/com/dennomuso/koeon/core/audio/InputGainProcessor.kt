@@ -11,7 +11,7 @@ import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.sqrt
 
-const val MAX_MANUAL_INPUT_GAIN_DB = 18f
+const val MAX_MANUAL_INPUT_GAIN_DB = 24f
 
 enum class InputGainMode { OFF, AUTO, MANUAL }
 

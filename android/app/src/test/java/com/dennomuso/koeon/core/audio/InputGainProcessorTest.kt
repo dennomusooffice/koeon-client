@@ -155,16 +155,16 @@ class InputGainProcessorTest {
     }
 
     @Test
-    fun `quiet raw capture can use eighteen dB while retaining limiter ceiling`() {
+    fun `quiet raw capture can use twenty four dB while retaining limiter ceiling`() {
         val processor = InputGainProcessor().apply {
             setMode(InputGainMode.MANUAL); setManualGainDb(30f); beginTransmission()
         }
-        assertEquals(18f, processor.snapshot().effectiveGainDb, 0f)
+        assertEquals(24f, processor.snapshot().effectiveGainDb, 0f)
         val buffer = samples(1000, -1000, 16000, -16000)
         processor.processPcm16(buffer)
         val output = values(buffer)
-        assertEquals(7943, output[0].toInt())
-        assertEquals(-7943, output[1].toInt())
+        assertEquals(15848, output[0].toInt())
+        assertEquals(-15848, output[1].toInt())
         assertTrue(output.all { abs(it.toInt()) <= 29205 })
         assertEquals(2L, processor.snapshot().limiterHitCount)
     }
