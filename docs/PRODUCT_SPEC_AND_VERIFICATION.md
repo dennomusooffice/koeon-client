@@ -97,4 +97,13 @@ SDK2.28.0の公式[RoomOptions](https://raw.githubusercontent.com/livekit/client
 
 ### 診断JSON契約の検証
 
-直近受信のJSON生成をiOSでも直接呼び出せる値変換へ分離し、実際のJSON encode/decodeで共通17項目、正常／失敗、未測定null、識別子除去を検証した。AndroidのJSONテストにも同じ17項目の完全一致を追加した。iOS296ケース成功（23:09 JST、最終結果収集中）、Android189件・Lint・build成功。iOSで観測済みのエンジン失敗0と、Androidで未測定のnullは意図した区別である。再接続を通したセッション統合検証と実機確認は引き続き残る。今回も未配信・main未マージ。
+直近受信のJSON生成をiOSでも直接呼び出せる値変換へ分離し、実際のJSON encode/decodeで共通17項目、正常／失敗、未測定null、識別子除去を検証した。AndroidのJSONテストにも同じ17項目の完全一致を追加した。iOS296ケース成功（23:09 JST、23:19 JSTにTEST SUCCEEDED・終了0を確認）、Android189件・Lint・build成功。iOSで観測済みのエンジン失敗0と、Androidで未測定のnullは意図した区別である。再接続を通したセッション統合検証と実機確認は引き続き残る。今回も未配信・main未マージ。
+
+
+### A303OP実機での更新・再接続確認（23:14〜23:19 JST）
+
+ソース`cd74d8dfa2a5b3dc18a7586556f5f60a3e0c81bc`から既存鍵で署名したローカル検証用APKを、アンインストールせず更新導入した。バージョンは1.0.13（14）を維持し、APK SHA-256は`6b6973423841f8f7586814d268431a4b8a1c7502d93a1bd2a33e054f1937c2e3`。GitHub Releaseには公開していない。
+
+登録画面への再入力を要さずPOWER ONでき、診断でCONNECTED・READY・pttEligible=trueを確認。POWER OFF→ONを3回実施して全回READY復帰、20秒画面オフ後もREADY復帰し、再採取した診断でもCONNECTEDを確認した。MANUAL入力ゲイン設定も保持されている。新しい`lastBufferedReceive`キーは存在し、更新後の受信がないので値はnullである。
+
+この実機試験で確認したのは更新時の登録維持・接続・明示再接続・短い画面オフからの状態復帰とJSON出力である。終端統計の非null値を実際の受信後に再接続して保持できるか、双方向音声の聴取、長時間省電力、LiveKit reliable data/RX_READYの互換性までは未検証。iPhone実機は使用していない。診断補助アプリは採取後に削除し、KOEONはREADYへ戻した。生の診断と更新前APKは保護フォルダへ保存し公開しない。
