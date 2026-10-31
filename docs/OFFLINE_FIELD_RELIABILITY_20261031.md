@@ -24,6 +24,16 @@ Apple API仕様: [Beta feedback crash submissions](https://developer.apple.com/d
 
 同時呼出し、設定失敗後の再試行、待機元キャンセルの3テストを追加。これはコード上の競合対策であり、11:00のクラッシュ原因を確定したものではない。Appleの実サービス・ロック状態での動作は未検証。
 
+## iOSの再生完了待ちがキャンセルを無視する欠陥
+
+[Issue #45](https://github.com/dennomusooffice/koeon-client/issues/45)、修正 `d0f83549f3f90882d1d50752da191e7732d7f073`。
+
+`IOSBatv1PcmPlayer.drain`は未再生フレームがある間、`try? await Task.sleep`を繰り返していた。エンジン停止などで再生コールバックが届かない場合、キャンセル後もCancellationErrorを握り潰し、待機なしのループになり得る。受信停止と次の受信開始はいずれも旧Taskの終了を待つため、この状態では処理が先へ進まない。実際のフィールドクラッシュがこの経路によるものかは未確認。
+
+キャンセルを検出して待機を終了するよう修正した。受信側の既存キャンセル・世代判定により、キャンセルを再生完了とは通知しない。通常時は実際の再生完了を待ち、短い時間で音声を打ち切らない。
+
+実際のAVAudioEngine／PlayerNodeに未再生フレームを積んだSimulatorテストを2件追加。キャンセル後の終了、未再生フレームが再生済みへ変わらないこと、次の世代への遷移、通常時の待機継続を確認した。iOS全243件成功。未配信・実機未検証。
+
 ## Androidの機種差と自動ゲイン
 
 実測の詳細は[SO-52C調査記録](ANDROID_SO52C_AUDIO_20261031.md)。内蔵+18dB、有線+24dBで利用者が「十分な音量で明瞭」と確認した。別機種A303OPの古い診断はゲイン測定値がnullで、同じ条件の定量比較には使えない。SO-52C固有の故障、または全Android共通の感度不足とは断定しない。
@@ -55,7 +65,7 @@ AUTOの上限を一律+24dBにするだけでは、一定の環境雑音も増�
 | --- | --- |
 | Android単体テスト | 159件成功（追加3件） |
 | Android Lint / assembleDebug | 成功 |
-| iOS Simulator全テスト | 241件成功（初期化3件・AUTO2件追加） |
+| iOS Simulator全テスト | 243件成功（初期化3件・AUTO2件・再生待ち2件追加） |
 | feature-parity-contract / diff whitespace | 成功 |
 | 新しい正式署名ビルド・TestFlight／GitHub Release | 今回の変更は未配信 |
 | 実機の再検証・11:00クラッシュ再現 | 未実施 |

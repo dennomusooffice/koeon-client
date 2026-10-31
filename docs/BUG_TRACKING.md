@@ -32,6 +32,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#40](https://github.com/dennomusooffice/koeon-client/issues/40) | SO-52Cの送信音声が非常に小さい | 1.0.12へ修正導入、内蔵+18dB・有線+24dBの聴取改善確認、PR未マージ |
 | [#42](https://github.com/dennomusooffice/koeon-client/issues/42) | 別利用者のiPhoneで11:00頃クラッシュ | 実ビルド・新しいクラッシュ記録は未取得、初期化競合を修正・自動テスト済み、因果関係未確定 |
 | [#43](https://github.com/dennomusooffice/koeon-client/issues/43) | AUTOが目標到達後・無音でも増加 | iOS/Androidの計算を修正・自動テスト済み、未配信・実機未検証 |
+| [#45](https://github.com/dennomusooffice/koeon-client/issues/45) | 再生待ちのキャンセル無視で停止・次の受信が戻らない | 修正・実AVAudioEngineを使うSimulatorテスト済み、未配信・実機未検証 |
 
 実機接続なしで進めた修正、機種差と自動ゲインの検討、残件は[OFFLINE_FIELD_RELIABILITY_20261031.md](OFFLINE_FIELD_RELIABILITY_20261031.md)を参照。
 
