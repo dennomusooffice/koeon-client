@@ -288,6 +288,23 @@ final class RxAudioControllerTests: XCTestCase {
         controller.reset()
     }
 
+    func testBufferedReadyRepeatsUntilMediaConfirmsReception() async throws {
+        var sent = 0
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            onReceiverReady: { _, _ in sent += 1 }, onUpdate: { _ in })
+        var start = event(type: "start", sequence: 1)
+        start.bufferedGenerationId = "10000000-0000-4000-8000-000000000001"
+        controller.handleControl(start, senderSessionId: "session-a")
+        controller.audioSessionDidActivate()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertGreaterThanOrEqual(sent, 2)
+        controller.handleRemotePcm(at: Date())
+        let atMedia = sent
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(sent, atMedia)
+        controller.reset()
+    }
+
     func testReceiverReadyFailureDoesNotReportSuccessAndResetStopsRetry() async throws {
         var attempts = 0
         let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),

@@ -1183,6 +1183,22 @@ final class RxAudioController {
                 readySentLeaseId = leaseId
                 snapshot.rxReadySentAt = clock.now
                 publish()
+                if bufferedTimelineActive {
+                    // Reliable transport delivery can precede the sender SDK's
+                    // participant registration after a cold reconnect. Repeat
+                    // the same idempotent readiness while awaiting actual media;
+                    // never weaken the sender's identity checks.
+                    Task { [weak self] in
+                        for _ in 0..<8 {
+                            guard let self else { return }
+                            do { try await self.clock.sleep(milliseconds: 150) } catch { return }
+                            guard operation == self.generation, self.appleAudioActive,
+                                  self.snapshot.state != .idle, !self.firstPcmObserved,
+                                  !Task.isCancelled else { return }
+                            try? await self.onReceiverReady(speakerSessionId, leaseId)
+                        }
+                    }
+                }
                 return
             } catch {
                 guard attempt < 9 else { return }
