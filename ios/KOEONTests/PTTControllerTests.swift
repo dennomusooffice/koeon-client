@@ -935,6 +935,53 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testRealPlayerCancelledDrainReturnsWithoutMarkingQueuedAudioPlayed() async throws {
+        let player = IOSBatv1PcmPlayer()
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        let entered = expectation(description: "Drain entered")
+        let returned = expectation(description: "Cancelled drain returned")
+        let draining = Task { @MainActor in
+            entered.fulfill()
+            await player.drain(generationToken: 1)
+            returned.fulfill()
+        }
+        await fulfillment(of: [entered], timeout: 1)
+        draining.cancel()
+        await fulfillment(of: [returned], timeout: 1)
+        await draining.value
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        player.endGeneration(token: 1)
+        try player.beginGeneration(token: 2, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 2)
+        player.endGeneration(token: 1)
+        XCTAssertEqual(player.pendingFrames, 1, "Old cleanup must not clear the next generation")
+        XCTAssertEqual(player.completedFrames, 0)
+    }
+
+    @MainActor
+    func testRealPlayerDrainContinuesWaitingForUnplayedAudioUntilGenerationEnds() async throws {
+        let player = IOSBatv1PcmPlayer()
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        var returned = false
+        let draining = Task { @MainActor in
+            await player.drain(generationToken: 1)
+            returned = true
+        }
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertFalse(returned)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        player.endGeneration(token: 1)
+        await draining.value
+        XCTAssertTrue(returned)
+    }
+
+    @MainActor
     func testRealAudioEnginePlayerReusesGraphForOneHundredGenerations() throws {
         let player = IOSBatv1PcmPlayer()
         let frame = Data(count: batv1BytesPerFrame)

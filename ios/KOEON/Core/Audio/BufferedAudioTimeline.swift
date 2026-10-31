@@ -860,8 +860,15 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
     }
 
     func drain(generationToken: Int) async {
-        while completionFence.accepts(generationToken), pendingFrames > 0 {
-            try? await Task.sleep(for: .milliseconds(10))
+        while completionFence.accepts(generationToken), pendingFrames > 0, !Task.isCancelled {
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                // A stopped engine may never deliver the queued callbacks.
+                // Cancellation must release stopAndAwait / the next generation;
+                // the receiver checks cancellation before declaring playback done.
+                return
+            }
         }
     }
 
