@@ -90,6 +90,7 @@ import com.dennomuso.koeon.core.session.fieldDiagnosticJson
 import com.dennomuso.koeon.service.HeadsetPttMode
 import com.dennomuso.koeon.core.ptt.HardwareVolumePttMode
 import com.dennomuso.koeon.core.audio.InputGainMode
+import com.dennomuso.koeon.core.audio.MAX_MANUAL_INPUT_GAIN_DB
 import com.dennomuso.koeon.core.audio.AudioBitratePreset
 import com.dennomuso.koeon.core.livekit.AudioCaptureProfile
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
@@ -603,8 +604,8 @@ private fun HardwareAndGainSettings(state: IntercomUiState, manager: IntercomSes
     Slider(
         value = diagnostics.inputGain.manualGainDb,
         onValueChange = manager::setManualInputGain,
-        valueRange = -6f..12f,
-        steps = 17,
+        valueRange = -6f..MAX_MANUAL_INPUT_GAIN_DB,
+        steps = 29,
     )
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = manager::startInputCalibration, modifier = Modifier.weight(1f)) { Text("CALIBRATE 3s") }

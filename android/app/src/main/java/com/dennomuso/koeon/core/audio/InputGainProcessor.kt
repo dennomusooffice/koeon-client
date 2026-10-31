@@ -11,6 +11,8 @@ import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.sqrt
 
+const val MAX_MANUAL_INPUT_GAIN_DB = 24f
+
 enum class InputGainMode { OFF, AUTO, MANUAL }
 
 data class AudioDeviceProfile(
@@ -37,6 +39,8 @@ data class InputGainSnapshot(
     val postKoeonRmsDbfs: Float? = null,
     val postKoeonPeakDbfs: Float? = null,
     val limiterHitCount: Long = 0,
+    val meterSource: String = "NOT_OBSERVED",
+    val meterSampleCount: Long = 0,
     val calibrationState: String = "IDLE",
     val recommendedGainDb: Float? = null,
 )
@@ -96,7 +100,7 @@ class InputGainProcessor(
     initialMode: InputGainMode = InputGainMode.OFF,
     private val onSnapshot: (InputGainSnapshot) -> Unit = {},
 ) : AudioProcessorInterface {
-    @Volatile var postProcessedPcmConsumer: ((ByteBuffer) -> Unit)? = null
+    private var meterSource = "NOT_OBSERVED"
     private var mode = initialMode
     private var route = "Unavailable"
     private var profile = AudioDeviceProfile("gain.unavailable", route, "unknown")
@@ -127,7 +131,7 @@ class InputGainProcessor(
     }
 
     @Synchronized fun setMode(value: InputGainMode) { mode = value; publish() }
-    @Synchronized fun setManualGainDb(value: Float) { profile = profile.copy(manualGainDb = value.coerceIn(-6f, 12f)); profileStore?.save(profile); publish() }
+    @Synchronized fun setManualGainDb(value: Float) { profile = profile.copy(manualGainDb = value.coerceIn(-6f, MAX_MANUAL_INPUT_GAIN_DB)); profileStore?.save(profile); publish() }
 
     @Synchronized
     fun beginTransmission() {
@@ -179,6 +183,20 @@ class InputGainProcessor(
 
     @Synchronized
     override fun processAudio(numBands: Int, numFrames: Int, buffer: ByteBuffer) {
+        // WebRTC APM exposes FloatS16 (float values on the signed-16-bit scale),
+        // not packed PCM16. This path is for legacy RTP publication only.
+        processSamples(buffer, pcm16 = false, maximumSamples = numFrames)
+    }
+
+    @Synchronized
+    fun processPcm16(buffer: ByteBuffer) {
+        // BATv1 reads the prewarmed AudioRecord sink before the APM callback.
+        // Process only our owned copy; never mutate the SDK's shared samples.
+        processSamples(buffer, pcm16 = true, maximumSamples = buffer.remaining() / 2)
+    }
+
+    private fun processSamples(buffer: ByteBuffer, pcm16: Boolean, maximumSamples: Int) {
+        meterSource = if (pcm16) "BATV1_PCM16" else "WEBRTC_APM_FLOAT_S16"
         val gainDb = if (transmissionActive) fixedTransmissionGainDb else effectiveGainDb()
         val multiplier = 10.0.pow(gainDb / 20.0).toFloat()
         val processingEnabled = mode != InputGainMode.OFF
@@ -187,9 +205,11 @@ class InputGainProcessor(
         var frameSquare = 0.0
         var framePeak = 0f
         var count = 0
-        while (view.remaining() >= 2) {
+        val bytesPerSample = if (pcm16) 2 else 4
+        while (count < maximumSamples && view.remaining() >= bytesPerSample) {
             val position = view.position()
-            val input = view.short.toInt()
+            val rawInput = if (pcm16) view.short.toFloat() else view.float
+            val input = if (rawInput.isFinite()) rawInput else 0f
             val normalized = input / 32768f
             frameSquare += normalized * normalized
             framePeak = maxOf(framePeak, abs(normalized))
@@ -198,7 +218,11 @@ class InputGainProcessor(
                 val limited = softLimit(output)
                 if (limited != output) limiterHits++
                 output = limited
-                view.putShort(position, (output * 32767f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort())
+                if (pcm16) {
+                    view.putShort(position, (output * 32768f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort())
+                } else {
+                    view.putFloat(position, output * 32768f)
+                }
                 postSumSquares += output * output
                 postPeak = maxOf(postPeak, abs(output))
             } else {
@@ -217,7 +241,6 @@ class InputGainProcessor(
                 if (System.currentTimeMillis() >= deadline) finishCalibration()
             }
         }
-        postProcessedPcmConsumer?.invoke(buffer.duplicate().apply { rewind() })
         // Realtime callback performs no UI dispatch or per-frame snapshot allocation.
     }
 
@@ -241,9 +264,9 @@ class InputGainProcessor(
 
     private fun effectiveGainDb() = when (mode) {
         InputGainMode.OFF -> 0f
-        InputGainMode.MANUAL -> profile.manualGainDb
-        InputGainMode.AUTO -> profile.autoTrimDb
-    }.coerceIn(-6f, 12f)
+        InputGainMode.MANUAL -> profile.manualGainDb.coerceIn(-6f, MAX_MANUAL_INPUT_GAIN_DB)
+        InputGainMode.AUTO -> profile.autoTrimDb.coerceIn(-6f, 12f)
+    }
 
     private fun rmsDbfs(): Float? = if (sampleCount == 0L) null else dbfs(sqrt(sumSquares / sampleCount).toFloat())
     private fun dbfs(value: Float) = if (value <= 0f) -120f else (20f * log10(value)).coerceAtLeast(-120f)
@@ -265,6 +288,7 @@ class InputGainProcessor(
         postKoeonRmsDbfs = if (sampleCount > 0) dbfs(sqrt(postSumSquares / sampleCount).toFloat()) else null,
         postKoeonPeakDbfs = if (sampleCount > 0) dbfs(postPeak) else null,
         limiterHitCount = limiterHits,
+        meterSource = meterSource, meterSampleCount = sampleCount,
         calibrationState = if (calibrationUntilMs == null) "IDLE" else "MEASURING",
         recommendedGainDb = recommendation,
     )

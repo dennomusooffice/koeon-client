@@ -262,9 +262,11 @@ class IntercomSessionManager(
     private val audioInterruption = AudioInterruptionStateMachine(android.os.SystemClock::elapsedRealtime)
     private val gainProcessor = InputGainProcessor(
         AudioDeviceProfileStore(appContext.getSharedPreferences("koeon_audio_profiles", Context.MODE_PRIVATE)),
-        initialMode = productionAudioCaptureProfile.koeonGainMode,
+        initialMode = InputGainMode.entries.firstOrNull {
+            it.name == devicePreferences.getString("input_gain_mode", null)
+        } ?: productionAudioCaptureProfile.koeonGainMode,
     )
-    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer()
+    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer(gainProcessor::processPcm16)
     private var batv1Transmitter: com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter? = null
     private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
     private val room = LiveKitRoomController(appContext, scope, gainProcessor, batv1Capture) { event ->
@@ -642,7 +644,11 @@ class IntercomSessionManager(
         )) }
     }
 
-    fun setInputGainMode(mode: InputGainMode) { gainProcessor.setMode(mode); refreshInputGainDiagnostics() }
+    fun setInputGainMode(mode: InputGainMode) {
+        devicePreferences.edit().putString("input_gain_mode", mode.name).apply()
+        gainProcessor.setMode(mode)
+        refreshInputGainDiagnostics()
+    }
 
     fun setAudioBitratePreset(preset: AudioBitratePreset) {
         audioBitratePreset = preset
@@ -666,7 +672,7 @@ class IntercomSessionManager(
         room.setAudioCaptureProfile(profile)
             .onSuccess {
                 audioCaptureProfile = profile
-                gainProcessor.setMode(profile.koeonGainMode)
+                setInputGainMode(profile.koeonGainMode)
                 _state.update { it.copy(
                     error = null,
                     diagnostics = it.diagnostics.copy(

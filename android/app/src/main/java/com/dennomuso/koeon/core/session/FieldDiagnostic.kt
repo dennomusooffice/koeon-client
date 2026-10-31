@@ -81,13 +81,15 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             put("requestedAudioBitrateKbps", JsonPrimitive(d.requestedAudioBitrateKbps))
             put("effectiveAudioBitrateKbps", d.effectiveAudioBitrateKbps?.let(::JsonPrimitive) ?: JsonNull)
             put("processing", buildJsonObject {
+                put("scope", JsonPrimitive("WEBRTC_OPTIONS_NOT_PROOF_OF_BATV1_PROCESSING"))
+                put("batv1InputGain", JsonPrimitive("KOEON_PCM16_BEFORE_CANONICAL_FRAMING"))
                 put("echoCancellation", JsonPrimitive("WEBRTC")); put("noiseSuppression", JsonPrimitive("WEBRTC"))
                 put("profile", JsonPrimitive(d.audioCaptureProfile.name))
                 put("autoGainControl", if (d.audioCaptureProfile.webRtcAgcEnabled) JsonPrimitive("WEBRTC") else JsonPrimitive("OFF")); put("highPassFilter", JsonPrimitive("WEBRTC"))
                 put("typingNoiseDetection", JsonPrimitive("WEBRTC")); put("enhancedProcessor", JsonNull)
             })
         })
-        put("audioGain", buildJsonObject { put("mode", JsonPrimitive(gain.mode.name)); put("effectiveDb", JsonPrimitive(gain.effectiveGainDb)); put("preKoeonRmsDbfs", gain.inputRmsDbfs?.let(::JsonPrimitive) ?: JsonNull); put("preKoeonPeakDbfs", gain.inputPeakDbfs?.let(::JsonPrimitive) ?: JsonNull); put("postKoeonRmsDbfs", gain.postKoeonRmsDbfs?.let(::JsonPrimitive) ?: JsonNull); put("postKoeonPeakDbfs", gain.postKoeonPeakDbfs?.let(::JsonPrimitive) ?: JsonNull); put("limiterHits", JsonPrimitive(gain.limiterHitCount)) })
+        put("audioGain", buildJsonObject { put("meterSource", JsonPrimitive(gain.meterSource)); put("meterSampleCount", JsonPrimitive(gain.meterSampleCount)); put("mode", JsonPrimitive(gain.mode.name)); put("effectiveDb", JsonPrimitive(gain.effectiveGainDb)); put("preKoeonRmsDbfs", gain.inputRmsDbfs?.let(::JsonPrimitive) ?: JsonNull); put("preKoeonPeakDbfs", gain.inputPeakDbfs?.let(::JsonPrimitive) ?: JsonNull); put("postKoeonRmsDbfs", gain.postKoeonRmsDbfs?.let(::JsonPrimitive) ?: JsonNull); put("postKoeonPeakDbfs", gain.postKoeonPeakDbfs?.let(::JsonPrimitive) ?: JsonNull); put("limiterHits", JsonPrimitive(gain.limiterHitCount)) })
         put("bufferedAudio", buildJsonObject {
             val tx = d.bufferedAudioTx
             val bufferedRx = d.bufferedAudioRx
