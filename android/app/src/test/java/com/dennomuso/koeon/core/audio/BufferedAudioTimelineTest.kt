@@ -6,8 +6,55 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class BufferedAudioTimelineTest {
+    @Test fun `live capture cannot overtake retained speech during forwarding handoff`() {
+        val capture = Batv1CaptureBuffer()
+        capture.arm("handoff")
+        fun append(marker: Int) = capture.appendPostProcessedPcm(
+            ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { marker.toByte() }),
+        )
+        append(1)
+        append(2)
+        val delivered = Collections.synchronizedList(mutableListOf<ByteArray>())
+        val seedingStarted = CountDownLatch(1)
+        val finishSeeding = CountDownLatch(1)
+        val liveCaptureStarted = CountDownLatch(1)
+        val workers = Executors.newFixedThreadPool(2)
+        try {
+            val handoff = workers.submit {
+                capture.startForwarding { frame ->
+                    delivered.add(frame)
+                    if (frame[0] == 1.toByte()) {
+                        seedingStarted.countDown()
+                        check(finishSeeding.await(3, TimeUnit.SECONDS))
+                    }
+                }
+            }
+            assertTrue("retained speech must enter the same ordered stream", seedingStarted.await(3, TimeUnit.SECONDS))
+            val live = workers.submit {
+                liveCaptureStarted.countDown()
+                append(3)
+            }
+            assertTrue(liveCaptureStarted.await(3, TimeUnit.SECONDS))
+            finishSeeding.countDown()
+            handoff.get(3, TimeUnit.SECONDS)
+            live.get(3, TimeUnit.SECONDS)
+            assertEquals(3, delivered.size)
+            delivered.forEachIndexed { index, frame ->
+                assertArrayEquals(ByteArray(BATV1_BYTES_PER_FRAME) { (index + 1).toByte() }, frame)
+            }
+        } finally {
+            finishSeeding.countDown()
+            workers.shutdownNow()
+            check(workers.awaitTermination(3, TimeUnit.SECONDS))
+        }
+    }
+
     @Test fun `freeze retains speech tail and never accepts microphone samples after UP`() {
         var processed = 0
         val capture = Batv1CaptureBuffer(processPcm16 = { processed += 1 })
@@ -15,14 +62,14 @@ class BufferedAudioTimelineTest {
         val source = ByteArray(BATV1_BYTES_PER_FRAME + 200) { 7 }
         capture.appendLiveKitPcm(ByteBuffer.wrap(source), 16, 48000, 1, source.size / 2)
         assertTrue(capture.freeze("generation"))
-        var forwarded = 0
-        val retained = capture.startForwarding { forwarded += 1 }
+        val forwarded = mutableListOf<ByteArray>()
+        val retainedCount = capture.startForwarding { forwarded.add(it) }
         capture.appendLiveKitPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { 9 }), 16, 48000, 1, 960)
-        assertEquals(2, retained.size)
-        assertArrayEquals(ByteArray(200) { 7 } + ByteArray(BATV1_BYTES_PER_FRAME - 200), retained.last())
+        assertEquals(2, retainedCount)
+        assertArrayEquals(ByteArray(200) { 7 } + ByteArray(BATV1_BYTES_PER_FRAME - 200), forwarded.last())
         assertEquals(2, capture.frameCount())
         assertEquals(1, processed)
-        assertEquals(0, forwarded)
+        assertEquals(2, forwarded.size)
         assertTrue(capture.freeze("generation"))
         assertEquals(2, capture.frameCount())
     }
@@ -136,9 +183,10 @@ class BufferedAudioTimelineTest {
         capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
         assertEquals(0, forwarded)
         val preRoll = capture.startForwarding { forwarded += 1 }
-        assertEquals(1, preRoll.size)
-        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
+        assertEquals(1, preRoll)
         assertEquals(1, forwarded)
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
+        assertEquals(2, forwarded)
     }
 
     @Test fun `per receiver rate policy is bounded and returns to one`() {

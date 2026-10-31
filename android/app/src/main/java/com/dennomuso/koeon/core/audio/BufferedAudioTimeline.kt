@@ -236,10 +236,13 @@ class Batv1CaptureBuffer(
         return true
     }
 
+    /** Seed and enable live forwarding under one lock so live PCM cannot overtake pre-roll. */
     @Synchronized
-    fun startForwarding(consumer: (ByteArray) -> Unit): List<ByteArray> {
+    fun startForwarding(consumer: (ByteArray) -> Unit): Int {
+        val count = frames.size
+        frames.forEach { consumer(it.copyOf()) }
         onCanonicalFrame = if (frozen) null else consumer
-        return frames.map(ByteArray::copyOf)
+        return count
     }
     @Synchronized fun stopForwarding() {
         onCanonicalFrame = null
@@ -342,14 +345,13 @@ class HttpBufferedAudioTransmitter(
         diagnostics = diagnostics.copy(captureState = "ACTIVE")
         Batv1CrashBreadcrumbs.record("TX", "TX_AUTHORIZED", generationId)
         synchronized(pending) { pending.clear() }
-        val initial = capture.startForwarding { frame ->
+        val initialCount = capture.startForwarding { frame ->
             synchronized(pending) { pending.addLast(frame) }
             if (releaseHangoverActive) {
                 diagnostics = diagnostics.copy(framesAcceptedAfterPttUp = diagnostics.framesAcceptedAfterPttUp + 1)
             }
             signal.trySend(Unit)
         }
-        synchronized(pending) { pending.addAll(initial) }
         sendJob = scope.launch {
             try {
                 while (isActive) {
@@ -361,7 +363,7 @@ class HttpBufferedAudioTransmitter(
                         withTimeoutOrNull(250) { signal.receive() }
                         continue
                     }
-                    publishBatch(leaseId, generationId, batch, initial.size)
+                    publishBatch(leaseId, generationId, batch, initialCount)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled

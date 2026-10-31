@@ -79,7 +79,7 @@ class InputGainProcessorTest {
         capture.appendLiveKitPcm(samples(*IntArray(960) { 2_000 }), 16, 48_000, 1, 960)
         gain.setManualGainDb(12f)
         val outputs = mutableListOf<ByteArray>()
-        outputs.addAll(capture.startForwarding { outputs.add(it) })
+        capture.startForwarding { outputs.add(it) }
         capture.appendLiveKitPcm(samples(*IntArray(960) { 2_000 }), 16, 48_000, 1, 960)
         capture.stopForwarding()
         capture.appendLiveKitPcm(samples(*IntArray(960) { 32_000 }), 16, 48_000, 1, 960)

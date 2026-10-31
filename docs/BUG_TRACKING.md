@@ -35,6 +35,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#45](https://github.com/dennomusooffice/koeon-client/issues/45) | 再生待ちのキャンセル無視で停止・次の受信が戻らない | 修正・実AVAudioEngineを使うSimulatorテスト済み、iOS3109内部配信・実機未検証 |
 | [#46](https://github.com/dennomusooffice/koeon-client/issues/46) | 前面でも双方向の音声到達が遅い | 送信滞留・準備通知対策をiOS3109内部配信、Android署名候補完成。フィールド原因と効果は未確定 |
 | [#47](https://github.com/dennomusooffice/koeon-client/issues/47) | GitHub Actions開始前失敗でAndroid公開不可 | アカウント側の復旧待ち。所有者は現時点で対応不可。署名候補を保存し、公開ゲートを維持 |
+| [#48](https://github.com/dennomusooffice/koeon-client/issues/48) | Android録音済み音声へのライブ音声の割込み | 原子的な受渡しへ修正、184件・Lint・ビルド成功。実機未検証・公開保留 |
 
 実機接続なしで進めた修正、機種差と自動ゲインの検討、残件は[OFFLINE_FIELD_RELIABILITY_20261031.md](OFFLINE_FIELD_RELIABILITY_20261031.md)を参照。
 
