@@ -49,4 +49,10 @@ REMOTE_END_TO_NEXT_PTT_P95_MS <= 500
 
 Floor取得済み・RX_READY待ち中にUPした場合、BATv1では取得済みPCMを凍結し、準備完了または従来の4,000ms上限まで待って送信します。UP後の新たなPCMは保持せず、最後の不完全な20msフレームはゼロ埋めします。凍結後にhangover録音を追加しません。音声final marker、control END、Floor releaseの順に終了します。
 
-Floor取得前のUPや、安全停止・準備待ち中のFloor更新失敗は保留音声を破棄します。非バッファ経路は従来どおり準備待ちをキャンセルします。iOS送信側と実機受入は別途確認が必要です。詳細は[オフライン調査記録](OFFLINE_FIELD_RELIABILITY_20261031.md)、[Issue #37](https://github.com/dennomusooffice/koeon-client/issues/37)を参照してください。
+Floor取得前のUPや、安全停止・準備待ち中のFloor更新失敗は保留音声を破棄します。非バッファ経路は従来どおり準備待ちをキャンセルします。詳細は[オフライン調査記録](OFFLINE_FIELD_RELIABILITY_20261031.md)、[Issue #37](https://github.com/dennomusooffice/koeon-client/issues/37)を参照してください。
+
+## iOSの短い発話（2026-10-31修正、未配信）
+
+Apple音声セッション有効化後・RX_READY待ち中のUPでは、PCMを凍結しローカル録音を停止してから準備完了を待ちます。取得済みの音声を送るためにApple音声セッションを再有効化しません。既存の4秒上限とFloor更新、final marker→control END→Floor releaseの順序を維持します。
+
+安全停止・準備待ち中のFloor失効・RX_READYキャンセルでは保留音声を破棄します。Apple音声有効化前・準備待ち開始前のUPは中止します。両OSとも、新しい修正の実機受入・先頭末尾・ロック中の聴取は未検証です。
