@@ -380,6 +380,101 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         XCTAssertFalse(result.timedOut)
     }
 
+    func testReadyIsDeferredUntilMatchingSDKDeviceMetadataArrives() async {
+        for metadataArrives in [false, true] {
+            let barrier = PttRxReadyBarrier()
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: ["old"], expectedDeviceIds: ["device"])
+            await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: nil)
+            if metadataArrives {
+                await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            }
+            let result = await barrier.wait(leaseId: "lease", maximumWaitMilliseconds: 0)
+            XCTAssertEqual(result.receivedCount, metadataArrives ? 1 : 0)
+            XCTAssertEqual(result.timedOut, !metadataArrives)
+        }
+    }
+
+    func testReadyMetadataNeverAuthenticatesMissingOrMismatchedSessionClaims() async {
+        for identity: String? in [nil, "", "other-session"] {
+            let barrier = PttRxReadyBarrier()
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            await barrier.accept(metadataReady(), participantIdentity: identity, participantDeviceId: nil)
+            await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            let result = await barrier.wait(leaseId: "lease", maximumWaitMilliseconds: 0)
+            XCTAssertEqual(result.receivedCount, 0)
+            XCTAssertTrue(result.timedOut)
+        }
+    }
+
+    func testReadyMetadataRejectsWrongLeaseDeviceAndContradictoryMetadata() async {
+        for condition in ["wrong-lease", "unknown-device", "wrong-metadata"] {
+            let barrier = PttRxReadyBarrier()
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            let event = metadataReady(lease: condition == "wrong-lease" ? "other-lease" : "lease",
+                                      device: condition == "unknown-device" ? "other-device" : "device")
+            await barrier.accept(event, participantIdentity: "session", participantDeviceId: nil)
+            if condition == "wrong-metadata" {
+                await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "wrong-device")
+            }
+            await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            let result = await barrier.wait(leaseId: "lease", maximumWaitMilliseconds: 0)
+            XCTAssertEqual(result.receivedCount, 0, condition)
+        }
+    }
+
+    func testUnrelatedMetadataCannotConsumeAnotherReceiversPendingReady() async {
+        let barrier = PttRxReadyBarrier()
+        await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+        await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: nil)
+        await barrier.reconcileParticipant(participantIdentity: "other-session", participantDeviceId: "device")
+        await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+        await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+        let result = await barrier.wait(leaseId: "lease", maximumWaitMilliseconds: 0)
+        XCTAssertEqual(result.receivedCount, 1)
+        XCTAssertFalse(result.timedOut)
+    }
+
+    func testReadyMetadataCannotReviveCancelledOrReplacedBarrier() async {
+        for replacement in [false, true] {
+            let barrier = PttRxReadyBarrier()
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: nil)
+            if replacement {
+                await barrier.prepare(leaseId: "new", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            } else {
+                await barrier.cancel(leaseId: "lease")
+            }
+            await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            let result = await barrier.wait(leaseId: replacement ? "new" : "lease", maximumWaitMilliseconds: 0)
+            XCTAssertEqual(result.receivedCount, 0)
+            XCTAssertEqual(result.cancelled, !replacement)
+        }
+    }
+
+    func testReadyAndDelayedMetadataCannotPassOriginalDeadline() async {
+        for deferred in [false, true] {
+            let clock = ReadyMetadataTestClock()
+            let barrier = PttRxReadyBarrier(clock: clock)
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            if deferred { await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: nil) }
+            clock.advance(milliseconds: 4_000)
+            if deferred {
+                await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            } else {
+                await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: "device")
+            }
+            let result = await barrier.wait(leaseId: "lease")
+            XCTAssertEqual(result.receivedCount, 0)
+            XCTAssertEqual(result.waitMilliseconds, 4_000)
+            XCTAssertTrue(result.timedOut)
+        }
+    }
+
+    private func metadataReady(lease: String = "lease", device: String = "device") -> PttRxReadyEvent {
+        PttRxReadyEvent(version: 1, type: "rx_ready", channelId: "stage", speakerSessionId: "speaker",
+                       receiverSessionId: "session", receiverDeviceId: device, leaseId: lease, readyAt: 1)
+    }
+
     func testM1MultiRecipientWaitsForFinalAck() async {
         let barrier = PttRxReadyBarrier()
         await barrier.prepare(
@@ -464,4 +559,12 @@ final class RuntimeRestorePipelineTests: XCTestCase {
             deviceId: "device-stable"
         )
     }
+}
+
+private final class ReadyMetadataTestClock: PTTClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Date(timeIntervalSince1970: 1_000)
+    var now: Date { lock.withLock { value } }
+    func advance(milliseconds: Int) { lock.withLock { value += Double(milliseconds) / 1_000 } }
+    func sleep(milliseconds: Int) async throws { try await Task.sleep(for: .milliseconds(milliseconds)) }
 }

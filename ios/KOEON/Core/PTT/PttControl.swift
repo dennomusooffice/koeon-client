@@ -115,23 +115,38 @@ actor PttRxReadyBarrier {
         let expected: Set<String>
         let expectedDevices: Set<String>
         let startedAt: Date
+        var deadlineAt: Date
+        // Only SDK-authenticated session claims may wait for device metadata.
+        // Key by expected device to bound storage to the expected receiver set.
+        var pendingByDevice: [String: PttRxReadyEvent] = [:]
         var received: Set<String> = []
         var firstAt: Date?
         var allAt: Date?
         var cancelled = false
     }
+    private let clock: any PTTClock
+    init(clock: any PTTClock = SystemPTTClock()) { self.clock = clock }
+
     private var arm: Arm?
     private var lateCount = 0
 
     func prepare(leaseId: String, expectedSessionIds: [String], expectedDeviceIds: [String] = []) {
-        arm = Arm(leaseId: leaseId, expected: Set(expectedSessionIds.filter { !$0.isEmpty }), expectedDevices: Set(expectedDeviceIds.filter { !$0.isEmpty }), startedAt: Date())
+        let expected = Set(expectedSessionIds.filter { !$0.isEmpty })
+        let devices = Set(expectedDeviceIds.filter { !$0.isEmpty })
+        let count = devices.isEmpty ? expected.count : devices.count
+        let maximum = count <= 1 ? rxReadySingleMaxWaitMilliseconds : rxReadyMultiAbsoluteMaxMilliseconds
+        let now = clock.now
+        arm = Arm(leaseId: leaseId, expected: expected, expectedDevices: devices,
+                  startedAt: now, deadlineAt: now.addingTimeInterval(Double(maximum) / 1_000))
         lateCount = 0
     }
 
     func accept(_ event: PttRxReadyEvent, participantIdentity: String?, participantDeviceId: String? = nil) {
         guard var current = arm,
-              !current.cancelled,
+              !current.cancelled, clock.now < current.deadlineAt,
+              event.version == pttRxReadyVersion, event.type == "rx_ready",
               current.leaseId == event.leaseId,
+              let participantIdentity, !participantIdentity.isEmpty,
               participantIdentity == event.receiverSessionId else {
             lateCount += 1
             return
@@ -139,11 +154,22 @@ actor PttRxReadyBarrier {
         let readyIdentity: String
         if !current.expectedDevices.isEmpty {
             guard let receiverDeviceId = event.receiverDeviceId,
-                  receiverDeviceId == participantDeviceId,
                   current.expectedDevices.contains(receiverDeviceId) else {
                 lateCount += 1
                 return
             }
+            guard let participantDeviceId, !participantDeviceId.isEmpty else {
+                if !current.received.contains(receiverDeviceId) {
+                    current.pendingByDevice[receiverDeviceId] = event
+                    arm = current
+                }
+                return
+            }
+            guard receiverDeviceId == participantDeviceId else {
+                lateCount += 1
+                return
+            }
+            current.pendingByDevice.removeValue(forKey: receiverDeviceId)
             readyIdentity = receiverDeviceId
         } else {
             guard current.expected.contains(event.receiverSessionId) else {
@@ -153,11 +179,25 @@ actor PttRxReadyBarrier {
             readyIdentity = event.receiverSessionId
         }
         guard current.received.insert(readyIdentity).inserted else { return }
-        let now = Date()
+        let now = clock.now
         current.firstAt = current.firstAt ?? now
         let expected = current.expectedDevices.isEmpty ? current.expected : current.expectedDevices
         if current.received == expected { current.allAt = now }
         arm = current
+    }
+
+    func reconcileParticipant(participantIdentity: String?, participantDeviceId: String?) {
+        guard var current = arm, !current.cancelled,
+              let participantIdentity, !participantIdentity.isEmpty,
+              let participantDeviceId, !participantDeviceId.isEmpty else { return }
+        let pending = current.pendingByDevice.filter { $0.value.receiverSessionId == participantIdentity }
+        for key in pending.keys { current.pendingByDevice.removeValue(forKey: key) }
+        arm = current
+        // Reuse the full lease, deadline, participant and expected-device checks.
+        // An unrelated participant/metadata update cannot acknowledge a pending claim.
+        for event in pending.values {
+            accept(event, participantIdentity: participantIdentity, participantDeviceId: participantDeviceId)
+        }
     }
 
     func wait(leaseId: String, maximumWaitMilliseconds: Int? = nil) async -> PttRxReadyWaitResult {
@@ -169,9 +209,13 @@ actor PttRxReadyBarrier {
         }
         let policyMaximum = initialExpected.count == 1 ? rxReadySingleMaxWaitMilliseconds : rxReadyMultiAbsoluteMaxMilliseconds
         let maximum = maximumWaitMilliseconds.map { min(max(0, $0), policyMaximum) } ?? policyMaximum
+        if var current = arm {
+            current.deadlineAt = min(current.deadlineAt, current.startedAt.addingTimeInterval(Double(maximum) / 1_000))
+            arm = current
+        }
         while true {
             guard let current = arm, current.leaseId == leaseId else { return Self.cancelledResult }
-            let elapsed = max(0, Int(Date().timeIntervalSince(current.startedAt) * 1_000))
+            let elapsed = max(0, Int(clock.now.timeIntervalSince(current.startedAt) * 1_000))
             let expected = current.expectedDevices.isEmpty ? current.expected : current.expectedDevices
             let all = current.received == expected
             let timedOut = elapsed >= maximum
@@ -190,7 +234,7 @@ actor PttRxReadyBarrier {
                 arm = nil
                 return result
             }
-            try? await Task.sleep(for: .milliseconds(10))
+            try? await clock.sleep(milliseconds: 10)
         }
     }
 

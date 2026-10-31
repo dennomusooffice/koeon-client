@@ -33,7 +33,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#42](https://github.com/dennomusooffice/koeon-client/issues/42) | 別利用者のiPhoneで11:00頃クラッシュ | 実ビルド・新しいクラッシュ記録は未取得、初期化競合対策をiOS3108内部配信、因果関係未確定 |
 | [#43](https://github.com/dennomusooffice/koeon-client/issues/43) | AUTOが目標到達後・無音でも増加 | 両OSの計算・録音区間の測定・ルート別学習を修正、iOS3108内部配信・Android未配信・実機未検証 |
 | [#45](https://github.com/dennomusooffice/koeon-client/issues/45) | 再生待ちのキャンセル無視で停止・次の受信が戻らない | 修正・実AVAudioEngineを使うSimulatorテスト済み、iOS3108内部配信・実機未検証 |
-| [#46](https://github.com/dennomusooffice/koeon-client/issues/46) | 前面でも双方向の音声到達が遅い | HTTP送信の滞留対策を両OSで自動検証・未配信、約4秒の準備待ちは未修正 |
+| [#46](https://github.com/dennomusooffice/koeon-client/issues/46) | 前面でも双方向の音声到達が遅い | HTTP送信滞留とiOS準備通知の再照合を自動検証・未配信、準備待ちの全原因は未確定 |
 
 実機接続なしで進めた修正、機種差と自動ゲインの検討、残件は[OFFLINE_FIELD_RELIABILITY_20261031.md](OFFLINE_FIELD_RELIABILITY_20261031.md)を参照。
 
