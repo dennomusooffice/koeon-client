@@ -4,18 +4,18 @@
 
 ## 最新の検証・配信状態（2026-10-31）
 
-最新iOS3111の署名ソースは`34a13c165fdfe95958f9fa2f141557c96dd459fb`。旧3110の署名ソースは`65cb7bf310b7ab0eb02f962bebb788d6c2385cc9`（tree `4a39e7db73101c664b2352d62e44415cde593b50`）。旧3109はc58ba5a。Android候補の署名ソースは`2cfff78df072e4a6e0bafdf2ed56dc10ac619e5a`（tree `08969b9417e744c2effbaad07efed84bddfe5514`）。以下の調査本文にある個別テスト数・配信前の記述は各修正時点の履歴であり、現在の状態はこの表を優先する。
+修正6fe000f8ac2c6cbc4695399c8025bd60f8b91143は291件で検証し、iOS3112の署名・アップロードを実行中。配信済みiOS3111の署名ソースは`34a13c165fdfe95958f9fa2f141557c96dd459fb`。旧3110の署名ソースは`65cb7bf310b7ab0eb02f962bebb788d6c2385cc9`（tree `4a39e7db73101c664b2352d62e44415cde593b50`）。旧3109はc58ba5a。Android候補の署名ソースは`2cfff78df072e4a6e0bafdf2ed56dc10ac619e5a`（tree `08969b9417e744c2effbaad07efed84bddfe5514`）。以下の調査本文にある個別テスト数・配信前の記述は各修正時点の履歴であり、現在の状態はこの表を優先する。
 
 | 項目 | 現在確認できている結果 |
 | --- | --- |
 | Android単体テスト / Lint / assembleDebug | 184件成功、Lint・ビルド成功（#48の追加修正を含む） |
-| iOS Simulator | 最新287件成功。3111のソースは282件で検証済み。終了原因の診断誤分類5件を追加し、その修正は未配信 |
+| iOS Simulator | 最新291件成功。3111のソースは282件で検証済み。終了原因の診断誤分類5件と通知登録保持4件の追加修正は3112としてアップロード中 |
 | feature-parity-contract / diff whitespace | 成功 |
-| iOS1.0（2026103111） | Apple VALID / IN_BETA_TESTING、20:24 JSTに同じ2内部グループ・日本語説明を再取得確認。実機のbundleVersion3111・READY/Bluetoothを確認。20:31ロック後の聴取試験中 |
+| iOS1.0（2026103111） | Apple VALID / IN_BETA_TESTING、20:24 JSTに同じ2内部グループ・日本語説明を再取得確認。実機のbundleVersion3111・READY/Bluetoothを確認。ロック後も無音申告。承認延長で診断回収、21:03に実機接続終了 |
 | 旧iOS1.0（2026103110） | Apple VALID / IN_BETA_TESTING、同じ2内部グループ・テスト説明を再取得確認。実機に更新し、停止診断と1.5秒PCM輸送を確認。1秒以下の短押下は未解決 |
 | Android1.0.13（14） | 2cfff78の署名済み候補完成。APK SHA-256 `083c57348f01aaa444be99649e93dd52dc02234f3ec47dc623294d320bc2510e`。A303OPへローカル導入しAPKハッシュ一致確認、GitHub Release未公開 |
 | GitHub Public CI / Android公開 | 5ジョブともrunner未割当・実行step 0。アカウント側の請求問題で開始できない。所有者は現時点では対応不可。[Issue #47](https://github.com/dennomusooffice/koeon-client/issues/47)で復旧待ち。コードのテスト失敗とは区別し、公開ゲートは迂回しない |
-| 実機の再検証 / 11:00頃クラッシュ | 夕方にA303OP/iPhoneで再開。人声＋6dBの聴取と限定的な双方向フレーム一致を確認し、短押下等を試験中。11:00の新しい.ipsは未取得。接続iPhoneのKOEON記録は既知の09:30のみ |
+| 実機の再検証 / 11:00頃クラッシュ | 夕方にA303OP/iPhoneで再開。人声＋6dBの聴取と限定的な双方向フレーム一致を確認し、21:03の承認延長終了後は端末操作を停止。11:00の新しい.ipsは未取得。接続iPhoneのKOEON記録は既知の09:30のみ |
 | mainへのマージ | 未実施（PR #33 / #41 / #44） |
 
 保護ログ・署名候補のprovenanceは`.secret/offline-field/`、`.secret/testflight/`、`.secret/android-release/`、`.secret/field-oppo-20261031/`に保持。公開資料へ生ログ・識別子・認証情報・接続先を転載しない。
@@ -320,3 +320,13 @@ iOS1.0（2026103111、34a13c165fdfe95958f9fa2f141557c96dd459fb）の導入・REA
 回収した永続breadcrumbの3111部分は20:31:12の背景移行記録の次が21:02:40のAPP_START／APP_RESUMEであり、その間の新しいRX_START・APPLE_DID_ACTIVATE・RX_ENGINE_START_FAILEDは記録されていない。64件の履歴に残る19:53のRX_FAILED/NSErrorは旧3110の記録で、今回の3111の失敗と取り違えない。APP_STARTはKOEONAppの初期化で記録される。21:02:40にFULL_COLD_RESUME、21:02:41に接続復帰、21:02:47にはCONNECTED／READY／RX_IDLEだった。
 
 再生カウンターは初期値でengineStartFailures 0、受信世代／直近受信完了なし。これは採取時の起動・復帰後の状態であり、ロック中のエラー不存在や音声未送信の証拠ではない。受信開始前の通知・復帰・プロセス継続も調査対象とする。終了時刻・理由はこの診断だけでは特定できず、OS強制終了や前回と同じengine.start失敗とは断定しない。旧APP_CLEAN_EXIT／previousRunTerminationも終了理由の証明には使わない。次の確認は送信側の時刻・送信確定記録、サーバーの受信通知処理との照合と、必要なら新たな実機枠での再現。別利用者11:00のクラッシュと同じ原因と扱わない。
+
+### 復帰失敗による通知登録の喪失（#49、6fe000f）
+
+実機操作終了後、KOEON本番サービスの20:25〜21:03 JSTのjournalを読み取り照合した。設定変更・再起動はしていない。20:31:12のiPhone Resumeでは既存の受信登録に新セッションが結び付いた。その同じセッションについて20:37:19にptt.token_unregistered／channel.leaveが記録され、20:56:06・20:56:20のAndroid送信ではpushEnabled trueにもかかわらずcandidateCount／recipientCount／wakeRecipientCount／readyExpectedSessionCountがすべて0だった。21:02の復帰で再登録された。受信通知先の消失が確認でき、APNsの成功送信後に音が出ない試行とは異なる。解除は20:55のテスト接続終了より前であり、その接続終了を登録消失の原因とはしない。
+
+本番とローカルの通知解除・leave APIソースのSHA-256一致を確認した。クライアントのestablishResumedRuntimeはLiveKit接続等の失敗catchで通知トークン解除とleaveを送る。サーバーは永続的な受信登録を削除するため、POWER ON意図とAppleチャンネルが残っても次の背景通知が届かなくなる。20:37の下位エラー自体は未記録で、旧3110のengine.startエラーや別利用者11:00クラッシュとは同一視しない。
+
+修正6fe000f8ac2c6cbc4695399c8025bd60f8b91143は復帰失敗で登録を解除せず、Resumeで割り当てられた最新のセッションIDを接続前に保持・復元用設定へ保存する。この保存自体は通知登録APIを送らない。明示POWER OFF／チャンネル離脱では、接続済み・接続途中・保存済みの所有情報から解除対象を求める。接続未成立や次のアプリ起動でも解除できる。失敗の永続診断RUNTIME_CONNECT_FAILEDも追加し、固定分類のみ記録する。
+
+実IntercomSessionControllerとLiveKit SDKのURL検証失敗を使った追加3テストは修正前に失敗（7 assertions）。ネットワーク通信は開かない。修正後は一時失敗・連続失敗・キャンセル後の明示停止・再起動相当の保存情報からの停止を含む4件、iOS全291件・parity・diff checkが成功した。最後のテストでは正しいチャンネルUUIDを持つ復元データを使用している。新しい修正は3112として署名・アップロード中で、配信・実機改善はまだ確認していない。元の接続失敗を防げたことや一般的な背景安定性まで証明したものではない。

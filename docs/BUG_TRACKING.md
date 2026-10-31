@@ -36,6 +36,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#46](https://github.com/dennomusooffice/koeon-client/issues/46) | 前面でも双方向の音声到達が遅い | iOS3109・A303OP1.0.13の前面ACK約394/397ms、フレーム一致。iOS押下→TALKING1552ms等は残り、全面改善とは扱わない |
 | [#47](https://github.com/dennomusooffice/koeon-client/issues/47) | GitHub Actions開始前失敗でAndroid公開不可 | アカウント側の復旧待ち。所有者は現時点で対応不可。署名候補を保存し、公開ゲートを維持 |
 | [#48](https://github.com/dennomusooffice/koeon-client/issues/48) | Android録音済み音声へのライブ音声の割込み | 原子的な受渡しへ修正、184件・Lint・ビルド成功。A303OPに導入し通常送信と500ms保持を確認、競合の実機再現未確認・公開保留 |
+| [#49](https://github.com/dennomusooffice/koeon-client/issues/49) | 復帰失敗が通知登録を消して次の背景受信を阻害 | 3111の無音時に通知候補0件を本番ログで確認。クライアント後処理を6fe000fで修正・291件成功、3112アップロード中・実機未検証 |
 
 実機接続なしで進めた修正、機種差と自動ゲインの検討、残件は[OFFLINE_FIELD_RELIABILITY_20261031.md](OFFLINE_FIELD_RELIABILITY_20261031.md)を参照。
 
