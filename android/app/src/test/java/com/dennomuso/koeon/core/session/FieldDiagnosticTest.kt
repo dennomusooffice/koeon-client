@@ -16,6 +16,19 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FieldDiagnosticTest {
+    @Test fun sessionMismatchDiagnosticContainsOnlyCategoryCounts() {
+        val state = IntercomUiState(diagnostics = SessionDiagnostics(
+            rxReadyRejectedSessionMismatch = 3,
+            rxReadySessionMismatchReasons = mapOf("SDK_PARTICIPANT_MISSING" to 2, "RECEIVER_SESSION_MISMATCH" to 1),
+        ))
+        val rx = Json.parseToJsonElement(buildAndroidFieldDiagnostic(state)).jsonObject.getValue("rxReady").jsonObject
+        val reasons = rx.getValue("rxReadySessionMismatchReasons").jsonObject
+        assertEquals(setOf("SDK_PARTICIPANT_MISSING", "RECEIVER_SESSION_MISMATCH"), reasons.keys)
+        assertEquals("2", reasons.getValue("SDK_PARTICIPANT_MISSING").jsonPrimitive.content)
+        assertEquals("1", reasons.getValue("RECEIVER_SESSION_MISMATCH").jsonPrimitive.content)
+        assertEquals("3", rx.getValue("rxReadyRejectedSessionMismatch").jsonPrimitive.content)
+    }
+
     @Test fun commonSchemaContainsNoSecretFields() {
         val state = IntercomUiState(
             joined = true, connectionState = IntercomConnectionState.CONNECTED,

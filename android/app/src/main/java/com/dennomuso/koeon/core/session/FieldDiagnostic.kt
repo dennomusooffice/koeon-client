@@ -65,6 +65,9 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             put("rxReadyReceivedEventCount", JsonPrimitive(d.rxReadyReceivedEvents))
             put("rxReadyRejectedCount", JsonPrimitive(d.rxReadyRejectedCount))
             put("rxReadyRejectedSessionMismatch", JsonPrimitive(d.rxReadyRejectedSessionMismatch))
+            put("rxReadySessionMismatchReasons", buildJsonObject {
+                d.rxReadySessionMismatchReasons.forEach { (reason, count) -> put(reason, JsonPrimitive(count)) }
+            })
             put("rxReadyRejectedDeviceMismatch", JsonPrimitive(d.rxReadyRejectedDeviceMismatch))
             put("rxReadyRejectedParticipantMetadataMissing", JsonPrimitive(d.rxReadyRejectedParticipantMetadataMissing))
             put("rxReadyRejectedLeaseMismatch", JsonPrimitive(d.rxReadyRejectedLeaseMismatch))

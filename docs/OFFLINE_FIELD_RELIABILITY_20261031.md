@@ -164,3 +164,20 @@ iOSに、SDK参加者IDが一致した通知だけを期待端末ごとに一時
 保留の再評価は元の4秒期限、現在のlease、SDK参加者と端末IDの一致をすべて再確認する。既存の短い待ち時間指定も延長しない。キャンセル・次の準備処理では旧通知を復活させない。メタデータの矛盾が判明した通知は破棄し、新たな通知が必要になる。
 
 6件の自動テストを追加し、メタデータが未到着の間は解除しないこと、到着後の解除、別参加者・別端末・別lease・SDK参加者不明・期限切れ・キャンセル・世代交代・重複を検証した。iOS Simulator全272件とparityが成功。SDK delegateの宣言・メタデータ通知経路は使用中のローカルSDKソースと照合したが、実サーバーとの通知順序やフィールドでの遅延短縮は未確認。未配信・main未マージであり、3108には含まれない。
+
+## Android準備通知の偽の成功記録と再試行（Issue #46追加対策）
+
+Androidの`publishReceiverReady`はLiveKit `publishData()`が返す`Result<Unit>`を検査せず、`Result.failure`でもSUCCESSとしていた。例外のcatchだけでは返却された失敗を検出できない。これはコード上で確認した欠陥で、保存ログのどの待機に寄与したかは未確定。
+
+SDKのResultを検査し、失敗は150ms間隔で最大10回、全体4秒以内で再試行する。成功後は繰り返さない。切断・受信END・次の受信開始でJobをキャンセルし、Room・セッション・端末・チャンネル・lease・受信状態・処理世代が現在のものと一致する場合だけ送る。古い処理からの成功や失敗は新しい処理の診断へ反映しない。SDK／親Taskのキャンセルは失敗の再試行に変換しない。
+
+再試行の8テストで返却失敗・例外・成功・回数制限・全体時間制限・世代交代・キャンセルを検証。セッション不一致の内訳と診断JSONの2テストも追加し、Android183件、Lint、assembleDebug、parityが成功した。最初の試験はコルーチンの例外スタック復元により参照同一性のassertが失敗したため、必要な保証である例外の型・内容を検証するようテストを修正し、全件を再実行した。iOSはこの変更で未編集で、直前の272件成功が該当する。未配信・実機未検証・main未マージ。
+
+SO-52Cのwired0記録はセッション不一致9件・受理0、wired18は不一致7件・受理0だった。メタデータ欠落の件数は両方0。既存ログでは以下を分離できないため、`rxReadySessionMismatchReasons`へ4種類の件数だけを追加した（生の識別子は追加しない）。
+
+- SDK参加者IDがない
+- 準備通知が指す送信者セッションが違う
+- 準備通知の受信者セッションとSDK参加者が違う
+- 端末IDを使わない旧方式で期待セッションに含まれない
+
+使用中Android SDK 2.28.0のバイトコードと[公式SDKソース](https://raw.githubusercontent.com/livekit/client-sdk-android/main/livekit-android-sdk/src/main/java/io/livekit/android/room/Room.kt)ではUserPacketのSIDから参加者を検索する。一方、使用中Swift SDKはidentityを使う。ただし[公式LiveKitサーバーの実装](https://raw.githubusercontent.com/livekit/livekit/master/pkg/rtc/participant.go)は通常のUserPacketへ両方を付与しており、この差だけで相互運用の欠陥とは断定しない（2026-10-31参照、運用中サーバーとの同一性は未確認）。SDK参加者不明を本文の自己申告IDだけで承認する回避策は採用しない。

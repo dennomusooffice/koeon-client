@@ -57,6 +57,13 @@ enum class RxReadyAcceptance {
     REJECTED_MALFORMED,
 }
 
+enum class RxReadySessionMismatch {
+    SDK_PARTICIPANT_MISSING,
+    SPEAKER_SESSION_MISMATCH,
+    RECEIVER_SESSION_MISMATCH,
+    UNEXPECTED_LEGACY_SESSION,
+}
+
 enum class RxReadyReconcileSource {
     PARTICIPANT_CONNECTED,
     PARTICIPANT_METADATA_CHANGED,
@@ -67,6 +74,7 @@ data class RxReadyAuditSnapshot(
     val receivedEvents: Int = 0,
     val rejectedEvents: Int = 0,
     val rejectedSessionMismatch: Int = 0,
+    val sessionMismatchReasons: Map<String, Int> = emptyMap(),
     val rejectedDeviceMismatch: Int = 0,
     val rejectedParticipantMetadataMissing: Int = 0,
     val rejectedLeaseMismatch: Int = 0,
@@ -140,9 +148,9 @@ class RxReadyBarrier(
         }
         if (event.channelId != channelId) return@synchronized reject(RxReadyAcceptance.REJECTED_CHANNEL_MISMATCH)
         if (event.leaseId != leaseId) return@synchronized reject(RxReadyAcceptance.REJECTED_LEASE_MISMATCH)
-        if (participantIdentity.isNullOrBlank() || event.speakerSessionId != speakerSessionId ||
-            event.receiverSessionId != participantIdentity
-        ) return@synchronized reject(RxReadyAcceptance.REJECTED_SESSION_MISMATCH)
+        if (participantIdentity.isNullOrBlank()) return@synchronized rejectSession(RxReadySessionMismatch.SDK_PARTICIPANT_MISSING)
+        if (event.speakerSessionId != speakerSessionId) return@synchronized rejectSession(RxReadySessionMismatch.SPEAKER_SESSION_MISMATCH)
+        if (event.receiverSessionId != participantIdentity) return@synchronized rejectSession(RxReadySessionMismatch.RECEIVER_SESSION_MISMATCH)
 
         val readyIdentity = if (expectedDevices.isNotEmpty()) {
             val eventDevice = event.receiverDeviceId
@@ -165,7 +173,7 @@ class RxReadyBarrier(
             }
             eventDevice
         } else {
-            if (participantIdentity !in expected) return@synchronized reject(RxReadyAcceptance.REJECTED_SESSION_MISMATCH)
+            if (participantIdentity !in expected) return@synchronized rejectSession(RxReadySessionMismatch.UNEXPECTED_LEGACY_SESSION)
             participantIdentity
         }
         acceptIdentity(readyIdentity, eventAt)
@@ -230,6 +238,12 @@ class RxReadyBarrier(
         audit = audit.copy(firstAcceptedAtMs = audit.firstAcceptedAtMs ?: now)
         signal.trySend(Unit)
         return RxReadyAcceptance.ACCEPTED
+    }
+
+    private fun rejectSession(reason: RxReadySessionMismatch): RxReadyAcceptance {
+        val counts = audit.sessionMismatchReasons
+        audit = audit.copy(sessionMismatchReasons = counts + (reason.name to ((counts[reason.name] ?: 0) + 1)))
+        return reject(RxReadyAcceptance.REJECTED_SESSION_MISMATCH)
     }
 
     private fun reject(reason: RxReadyAcceptance): RxReadyAcceptance {
