@@ -290,7 +290,8 @@ actor PTTController {
         }
     }
 
-    /// Called only after Apple's didActivate; no custom cue or readiness wait remains.
+    /// Called only after Apple's didActivate. Cue and receiver readiness share
+    /// one preparation task so a short release can preserve confirmed PCM.
     func activatePrearmedTransmission() async {
         guard isPressed,
               snapshot.state == .requestingFloor,
@@ -304,44 +305,9 @@ actor PTTController {
                     throw BufferedAudioError.captureNotConfirmed
                 }
                 guard operation == generation, isPressed else { return }
-                snapshot.cueStartAt = clock.now
-                do {
-                    try await cuePlayer.playStart()
-                    guard operation == generation, isPressed else { return }
-                    snapshot.startCueResult = .success
-                } catch {
-                    guard operation == generation, isPressed else { return }
-                    snapshot.startCueResult = .failure(Self.safeMessage(error))
-                }
-                snapshot.cueEndAt = clock.now
-                let expected = response.rxReadyExpectedSessionIds ?? []
-                let expectedDevices = response.rxReadyExpectedDeviceIds ?? []
-                snapshot.wakeRecipientCount = response.wakeRecipientCount ?? expectedDevices.count
-                snapshot.coldWakeBarrierRequired = snapshot.wakeRecipientCount > 0
-                snapshot.rxReadyExpectedCount = Set(expectedDevices.isEmpty ? expected : expectedDevices).count
-                snapshot.rxReadyWaitStartedAt = clock.now
-                snapshot.readyBarrierStartedAt = clock.now
-                await control.prepareRxReady(
-                    leaseId: leaseId,
-                    expectedSessionIds: expected,
-                    expectedDeviceIds: expectedDevices
-                )
-                guard isPressed, operation == generation else { throw BufferedAudioError.generationMismatch }
-                let timing = try await control.publishBufferedStart(
-                    leaseId: leaseId,
-                    generationId: bufferedGenerationId
-                )
-                guard operation == generation, isPressed else { return }
-                snapshot.controlStartSentAt = clock.now
-                snapshot.controlStartResult = "Published"
-                snapshot.controlPublishFastStartedAt = timing.fastStartedAt
-                snapshot.controlPublishFastCompletedAt = timing.fastCompletedAt
-                snapshot.controlPublishFastMilliseconds = timing.fastMilliseconds
-                snapshot.controlPublishReliableStartedAt = timing.reliableStartedAt
-                snapshot.controlPublishReliableCompletedAt = timing.reliableCompletedAt
-                snapshot.controlPublishReliableMilliseconds = timing.reliableMilliseconds
-                let readiness = Task { [control] in
-                    await control.awaitRxReady(leaseId: leaseId, maximumWaitMilliseconds: nil)
+                let readiness = Task {
+                    await prepareBufferedReadiness(response: response, leaseId: leaseId,
+                        bufferedGenerationId: bufferedGenerationId, operation: operation)
                 }
                 bufferedReadyTask = readiness
                 bufferedReadyOperation = operation
@@ -386,6 +352,63 @@ actor PTTController {
         } catch {
             guard operation == generation else { return }
             await stopForSafety(reason: "TX activation failed: \(Self.safeMessage(error))")
+        }
+    }
+
+    private func canContinueBufferedPreparation(operation: Int, leaseId: String) -> Bool {
+        generation == operation && ownedLeaseId == leaseId && terminalTask == nil &&
+            (isPressed || frozenReleaseOperation == operation) && !Task.isCancelled
+    }
+
+    private func prepareBufferedReadiness(
+        response: FloorResponse, leaseId: String, bufferedGenerationId: String, operation: Int
+    ) async -> PttRxReadyWaitResult {
+        let cancelled = PttRxReadyWaitResult(expectedCount: 0, receivedCount: 0, lateCount: 0,
+            waitMilliseconds: 0, timedOut: false, firstReadyAt: nil, allReadyAt: nil, cancelled: true)
+        guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
+        do {
+            snapshot.cueStartAt = clock.now
+            do {
+                try await cuePlayer.playStart()
+                guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
+                snapshot.startCueResult = .success
+            } catch {
+                guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
+                snapshot.startCueResult = .failure(Self.safeMessage(error))
+            }
+            snapshot.cueEndAt = clock.now
+            let expected = response.rxReadyExpectedSessionIds ?? []
+            let expectedDevices = response.rxReadyExpectedDeviceIds ?? []
+            snapshot.wakeRecipientCount = response.wakeRecipientCount ?? expectedDevices.count
+            snapshot.coldWakeBarrierRequired = snapshot.wakeRecipientCount > 0
+            snapshot.rxReadyExpectedCount = Set(expectedDevices.isEmpty ? expected : expectedDevices).count
+            snapshot.rxReadyWaitStartedAt = clock.now
+            snapshot.readyBarrierStartedAt = clock.now
+            await control.prepareRxReady(
+                leaseId: leaseId,
+                expectedSessionIds: expected,
+                expectedDeviceIds: expectedDevices
+            )
+            guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
+            let timing = try await control.publishBufferedStart(
+                leaseId: leaseId,
+                generationId: bufferedGenerationId
+            )
+            guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
+            snapshot.controlStartSentAt = clock.now
+            snapshot.controlStartResult = "Published"
+            snapshot.controlPublishFastStartedAt = timing.fastStartedAt
+            snapshot.controlPublishFastCompletedAt = timing.fastCompletedAt
+            snapshot.controlPublishFastMilliseconds = timing.fastMilliseconds
+            snapshot.controlPublishReliableStartedAt = timing.reliableStartedAt
+            snapshot.controlPublishReliableCompletedAt = timing.reliableCompletedAt
+            snapshot.controlPublishReliableMilliseconds = timing.reliableMilliseconds
+            return await control.awaitRxReady(leaseId: leaseId, maximumWaitMilliseconds: nil)
+        } catch {
+            if generation == operation {
+                await stopForSafety(reason: "TX activation failed: \(Self.safeMessage(error))")
+            }
+            return cancelled
         }
     }
 

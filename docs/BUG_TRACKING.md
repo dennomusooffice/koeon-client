@@ -26,7 +26,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#34](https://github.com/dennomusooffice/koeon-client/issues/34) | 受信・復帰後のPTT送信準備が戻らない | 3102で修正・改善確認、PR未マージ |
 | [#35](https://github.com/dennomusooffice/koeon-client/issues/35) | 復帰時の発話発見・バッファ再生終端 | 修正・限定条件で改善確認、反復検証が残る |
 | [#36](https://github.com/dennomusooffice/koeon-client/issues/36) | ロック中のOS強制終了 | 3104で再現、3106の単回試験では再発なし、原因確定は残る |
-| [#37](https://github.com/dennomusooffice/koeon-client/issues/37) | 準備待ち中に短い発話が失われる | Android500ms・iOS1/1.5秒のPCM輸送を実機確認、iOS500msは0。旧録音確認の競合を追加修正・275テスト成功、iOS3110内部配信・停止診断と1.5秒輸送確認、1秒以下は未解決 |
+| [#37](https://github.com/dennomusooffice/koeon-client/issues/37) | 準備待ち中に短い発話が失われる | Android500ms・iOS1/1.5秒のPCM輸送を実機確認、iOS500msは0。旧録音確認の競合を追加修正・275テスト成功、iOS3110内部配信・停止診断と1.5秒輸送確認、1秒以下は未解決。追加で開始音中UPの破棄を両OSで再現・修正しiOS298件／Android192件成功、未配信 |
 | [#38](https://github.com/dennomusooffice/koeon-client/issues/38) | Bluetoothイヤフォンで送信不能 | 3107へ修正配信、Bluetooth送信と再接続後の送信を実機確認 |
 | [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | 初回engine.start対策後の3111でも無音。通知登録喪失を#49で修正し、3112で7分33秒ロック後の聴取と再接続後の双方向を限定条件で確認。再接続後184/184・136/136、利用者が両方向の音量・明瞭さ良好・欠けなしを確認。長時間反復・電池単独は未検証、診断保持の不足は#50 |
 | [#40](https://github.com/dennomusooffice/koeon-client/issues/40) | SO-52Cの送信音声が非常に小さい | SO-52C内蔵+18dB・有線+24dB、A303OP1.0.13内蔵+6dBで聴取改善確認、PR未マージ |

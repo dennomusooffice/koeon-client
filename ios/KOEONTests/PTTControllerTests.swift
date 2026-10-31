@@ -550,6 +550,85 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertLessThan(snapshot.txFinalMarkerAcceptedSequence!, snapshot.txFloorReleaseRequestedSequence!)
     }
 
+    func testReleaseDuringStartCuePreservesCapturedSpeechButSafetyStillDiscards() async throws {
+        for safetyStop in [false, true] {
+            let events = EventLog()
+            let buffered = BufferedAudioMock(events: events)
+            let control = BlockingReadyControl(events: events)
+            let cue = SuspendedStartCue()
+            let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+                microphone: MicrophoneMock(events: events), cuePlayer: cue, control: control,
+                bufferedAudio: buffered, clock: ControlledClock(), onUpdate: { _ in })
+            let prepared = await controller.preArmForAppleActivation()
+            XCTAssertTrue(prepared)
+            await controller.appleAudioSessionDidActivate()
+            let activation = Task { await controller.activatePrearmedTransmission() }
+            for _ in 0..<100 where !cue.waiting { try await Task.sleep(for: .milliseconds(1)) }
+            XCTAssertTrue(cue.waiting)
+            let release = Task { await controller.pttUp(playEndCue: false) }
+            for _ in 0..<100 where !buffered.frozen { try await Task.sleep(for: .milliseconds(1)) }
+            XCTAssertTrue(buffered.frozen, "Confirmed audio must freeze even while the start cue is pending")
+            if safetyStop { await controller.stopForSafety(reason: "test safety stop during cue") }
+            cue.resume()
+            if !safetyStop {
+                for _ in 0..<100 where !control.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+                XCTAssertTrue(control.isWaiting)
+                control.ack()
+            }
+            await activation.value
+            await release.value
+            let values = await events.values()
+            XCTAssertEqual(values.contains("buffer:authorize"), !safetyStop)
+            XCTAssertFalse(values.contains("buffer:hangover"))
+            let clean = await controller.cleanupIsConfirmed()
+            XCTAssertTrue(clean)
+        }
+    }
+
+    func testReleaseDuringCueSendsRealFrozenPcmAndExcludesPostReleaseSamples() async throws {
+        let events = EventLog()
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let api = Batv1APIStub()
+        let transmitter = BufferedAudioTransmitter(api: api, capture: capture,
+            channelId: "channel", sessionId: "session", deviceId: "device", recordingAuthority: authority)
+        let control = BlockingReadyControl(events: events)
+        let cue = SuspendedStartCue()
+        let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+            microphone: MicrophoneMock(events: events), cuePlayer: cue, control: control,
+            bufferedAudio: transmitter, clock: ControlledClock(), onUpdate: { _ in })
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        await controller.appleAudioSessionDidActivate()
+        capture.append(samples: [Int16](repeating: 1, count: 960), sampleRate: 48_000, channels: 1)
+        let activation = Task { await controller.activatePrearmedTransmission() }
+        for _ in 0..<100 where !cue.waiting { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(cue.waiting)
+        capture.append(samples: [Int16](repeating: 7, count: 1060), sampleRate: 48_000, channels: 1)
+        let release = Task { await controller.pttUp(playEndCue: false) }
+        for _ in 0..<100 where authority.isRecording { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertFalse(authority.isRecording)
+        XCTAssertTrue(api.publishedRequests.isEmpty)
+        capture.append(samples: [Int16](repeating: 9, count: 960), sampleRate: 48_000, channels: 1)
+        cue.resume()
+        for _ in 0..<100 where !control.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(control.isWaiting)
+        control.ack()
+        await activation.value
+        await release.value
+        let chunks = api.publishedRequests.flatMap(\.chunks)
+        XCTAssertEqual(chunks.map(\.sequence), [0, 1])
+        let samples = try chunks.flatMap { chunk in
+            try Batv1Pcm16LEConverter.floatSamples(from: XCTUnwrap(Data(base64Encoded: chunk.payloadBase64)))
+        }
+        XCTAssertEqual(samples.count, 1920)
+        XCTAssertTrue(samples.prefix(1060).allSatisfy { abs($0 - Float(7) / 32768) < 0.000001 })
+        XCTAssertTrue(samples.dropFirst(1060).allSatisfy { $0 == 0 })
+        XCTAssertEqual(api.publishedRequests.last?.finalSequence, 1)
+        let clean = await controller.cleanupIsConfirmed()
+        XCTAssertTrue(clean)
+    }
+
     func testShortBufferedReleaseKeepsReadyWaitAndSendsOnlyFrozenAudio() async throws {
         let events = EventLog()
         let buffered = BufferedAudioMock(events: events)
@@ -3113,4 +3192,13 @@ private final class BluetoothFrameCollector: @unchecked Sendable {
     private var storage: [Data] = []
     func append(_ data: Data) { lock.lock(); storage.append(data); lock.unlock() }
     var frames: [Data] { lock.lock(); defer { lock.unlock() }; return storage }
+}
+
+@MainActor
+private final class SuspendedStartCue: PttCuePlaying {
+    private var continuation: CheckedContinuation<Void, Never>?
+    var waiting: Bool { continuation != nil }
+    func playStart() async throws { await withCheckedContinuation { continuation = $0 } }
+    func playEnd() async throws {}
+    func resume() { continuation?.resume(); continuation = nil }
 }

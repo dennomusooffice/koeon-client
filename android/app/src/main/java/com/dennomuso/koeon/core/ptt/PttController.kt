@@ -383,7 +383,9 @@ class PttController(
         val bufferedGenerationId = activeBufferedGenerationId
         val frozen = snapshot.state == PttState.REQUESTING_FLOOR && bufferedGenerationId != null &&
             bufferedAudio?.freezePendingCapture(bufferedGenerationId) == true
-        val retainUntilReady = frozen && snapshot.leaseId != null && !safetyAbortRequested
+        // A captured utterance may finish during the cue, before acquire returns.
+        // Keep it frozen; pressDown still requires a valid grant before authorization.
+        val retainUntilReady = frozen && !safetyAbortRequested
         if (retainUntilReady) releasedBufferedGenerationId = bufferedGenerationId
         held = false
         if (!retainUntilReady) control.cancelRxReady()

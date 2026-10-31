@@ -60,6 +60,57 @@ class PttControllerTest {
     }
 
     @Test
+    fun `buffered UP during cue retains audio until floor grant but busy discards`() = runTest {
+        for (busy in listOf(false, true)) {
+            val events = mutableListOf<String>()
+            val harness = Harness(testScheduler, externalEvents = events,
+                bufferedGateway = BufferedGateway(events), cueDelayMs = 300,
+                acquire = if (busy) FloorResponse("busy", FloorOwner("other", "Other"))
+                    else FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1"))
+            val down = launch { harness.controller.pressDown(true) }
+            runCurrent()
+            assertTrue(events.contains("start-cue"))
+            assertFalse(events.contains("acquire"))
+            val up = launch { harness.controller.pressUp() }
+            runCurrent()
+            assertTrue(events.contains("capture-frozen"))
+            assertFalse(events.contains("authorized"))
+            advanceTimeBy(1_000); runCurrent()
+            down.join(); up.join()
+            assertEquals(!busy, events.contains("authorized"))
+            if (!busy) {
+                assertTrue(events.indexOf("acquire") < events.indexOf("authorized"))
+                assertTrue(events.indexOf("final-marker") < events.indexOf("release"))
+            }
+            assertFalse(events.contains("hangover-begin"))
+        }
+    }
+
+    @Test
+    fun `cue phase frozen speech is discarded on safety missing lease or acquisition failure`() = runTest {
+        for (failure in listOf("safety", "missing-lease", "acquire-failed")) {
+            val events = mutableListOf<String>()
+            val harness = Harness(testScheduler, externalEvents = events,
+                bufferedGateway = BufferedGateway(events), cueDelayMs = 300,
+                acquireFailure = failure == "acquire-failed",
+                acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"),
+                    if (failure == "missing-lease") null else "lease-1"))
+            val down = launch { harness.controller.pressDown(true) }
+            runCurrent()
+            val up = launch { harness.controller.pressUp() }
+            runCurrent()
+            val safety = if (failure == "safety") launch { harness.controller.stopForSafety("disconnected") } else null
+            runCurrent()
+            advanceTimeBy(1_000); runCurrent()
+            down.join(); up.join(); safety?.join()
+            assertTrue(events.contains("capture-frozen"))
+            assertTrue(events.contains("abort"))
+            assertFalse(events.contains("authorized"))
+            assertFalse(events.contains("final-marker"))
+        }
+    }
+
+    @Test
     fun `buffered UP during READY wait freezes capture and delivers after ACK`() = runTest {
         val events = mutableListOf<String>()
         val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
@@ -447,6 +498,7 @@ class PttControllerTest {
         ),
         private val failRenewAt: Int? = null,
         cueFailure: Boolean = false,
+        cueDelayMs: Long = 0,
         private val microphoneOffSucceeds: Boolean = true,
         private val acquireFailure: Boolean = false,
         externalEvents: MutableList<String>? = null,
@@ -521,6 +573,7 @@ class PttControllerTest {
         private val cue = object : PttCuePlayer {
             override suspend fun playStart(): Result<Unit> {
                 events += "start-cue"
+                if (cueDelayMs > 0) delay(cueDelayMs)
                 return if (cueFailure) Result.failure(IllegalStateException("cue unavailable")) else Result.success(Unit)
             }
 
