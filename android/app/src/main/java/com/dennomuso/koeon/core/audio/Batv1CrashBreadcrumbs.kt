@@ -25,15 +25,28 @@ data class Batv1CrashBreadcrumb(
 
 internal class Batv1BreadcrumbRing(private val capacity: Int = BATV1_BREADCRUMB_MAX_EVENTS) {
     private val events = ArrayDeque<Batv1CrashBreadcrumb>()
+    // Full generation IDs are retained only in this bounded in-memory window.
+    private val recordedPolls = LinkedHashSet<Pair<String, String>>()
 
-    fun append(event: Batv1CrashBreadcrumb) {
+    fun append(event: Batv1CrashBreadcrumb, generationId: String? = null): Boolean {
+        if (event.role == "RX" && event.resultClass == "OK" && generationId != null &&
+            event.stage in setOf("RX_SUBSCRIBE_BEGIN", "RX_SUBSCRIBE_END")) {
+            val key = generationId to event.stage
+            if (key in recordedPolls) return false
+            if (recordedPolls.size >= BATV1_BREADCRUMB_MAX_EVENTS) {
+                recordedPolls.remove(recordedPolls.first())
+            }
+            recordedPolls.add(key)
+        }
         while (events.size >= capacity) events.removeFirst()
         events.addLast(event)
+        return true
     }
 
     fun replace(values: List<Batv1CrashBreadcrumb>) {
         events.clear()
-        values.takeLast(capacity).forEach(::append)
+        recordedPolls.clear()
+        values.takeLast(capacity).forEach { append(it) }
     }
 
     fun snapshot(): List<Batv1CrashBreadcrumb> = events.toList()
@@ -41,8 +54,8 @@ internal class Batv1BreadcrumbRing(private val capacity: Int = BATV1_BREADCRUMB_
 
 /**
  * Process-global, bounded, non-audio breadcrumb store. Values are deliberately
- * restricted to lifecycle classifications; PCM, credentials and full IDs are
- * never accepted by this API.
+ * restricted to lifecycle classifications. PCM and credentials are never stored;
+ * full generation IDs are used only for bounded in-memory coalescing.
  */
 object Batv1CrashBreadcrumbs {
     private const val preferencesName = "koeon_batv1_crash_breadcrumbs"
@@ -83,7 +96,7 @@ object Batv1CrashBreadcrumbs {
     ) {
         synchronized(lock) {
             if (!initialized) return
-            ring.append(
+            if (!ring.append(
                 Batv1CrashBreadcrumb(
                     timestampEpochMs = System.currentTimeMillis(),
                     platform = "android",
@@ -94,7 +107,8 @@ object Batv1CrashBreadcrumbs {
                     threadClass = threadClass.take(32),
                     resultClass = resultClass.take(64),
                 ),
-            )
+                generationId = generationId,
+            )) return
             preferences?.edit()
                 ?.putString(eventsKey, encode(ring.snapshot()))
                 ?.putBoolean(cleanExitKey, false)

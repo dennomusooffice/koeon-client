@@ -2351,6 +2351,24 @@ final class BufferedAudioTimelineTests: XCTestCase {
 }
 
 final class Batv1BreadcrumbLifecycleTests: XCTestCase {
+    func testPollingWindowIsBoundedAndRestartsAfterReload() {
+        let defaults = isolatedDefaults()
+        let store = Batv1CrashBreadcrumbStore(defaults: defaults)
+        store.startRun(build: "test")
+        for index in 0..<100 {
+            store.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: "g\(index)")
+        }
+        XCTAssertEqual(store.snapshot().count, 64)
+        for _ in 0..<2 { store.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: "g0") }
+        XCTAssertEqual(store.snapshot().filter { $0.generationToken == "g0" }.count, 1)
+        let restored = Batv1CrashBreadcrumbStore(defaults: defaults)
+        restored.startRun(build: "next")
+        restored.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: "g0")
+        XCTAssertEqual(restored.snapshot().last?.stage, "RX_SUBSCRIBE_BEGIN")
+        XCTAssertEqual(restored.snapshot().last?.build, "next")
+        XCTAssertEqual(restored.snapshot().count, 64)
+    }
+
     func testPollingDoesNotEvictBackgroundAndFailureEvidenceAcrossReload() {
         let defaults = isolatedDefaults()
         let store = Batv1CrashBreadcrumbStore(defaults: defaults)
