@@ -490,6 +490,7 @@ final class IntercomSessionController: ObservableObject {
     private var haptics: PttHapticFeedbackController?
     private var ptt: PTTController?
     private var bufferedTransmitter: BufferedAudioTransmitter?
+    private var lastBufferedRxSnapshot: BufferedAudioRxSnapshot?
     private var bufferedReceiver: BufferedAudioReceiver?
     private var rx: RxAudioController?
     private var remoteReceive: RemoteReceiveActivationCoordinator?
@@ -2520,6 +2521,10 @@ final class IntercomSessionController: ObservableObject {
             onFailure: { [weak self] code in
                 guard let self, self.runtimeLiveness.generation == runtime else { return }
                 self.lastError = "Buffered RX failed safely: \(code)"
+            },
+            onTerminalSnapshot: { [weak self] snapshot in
+                guard let self, self.runtimeLiveness.generation == runtime else { return }
+                self.lastBufferedRxSnapshot = snapshot
             })
         if audio.pushToTalkAudioSessionActive { bufferedReceiver?.audioSessionDidActivate() }
     }
@@ -2875,7 +2880,31 @@ final class IntercomSessionController: ObservableObject {
                 "pttEligible": event.pttEligible,
             ]
         }
+        let lastBufferedReceive: Any = lastBufferedRxSnapshot.map { snapshot in
+            let rx = snapshot.receive
+            let output = snapshot.playback
+            return [
+                "capturedAt": timestamp(snapshot.capturedAt),
+                "build": "\(version) (\(build))",
+                "outcome": rx.timelineLost ? "failed" : "completed",
+                "terminalReason": optional(rx.terminalReason),
+                "playbackCursor": rx.playbackCursor,
+                "latestSequence": rx.latestSequence,
+                "finalSequence": number(rx.finalSequence),
+                "missingSequenceCount": rx.missingSequenceCount,
+                "duplicateSequenceCount": rx.duplicateSequenceCount,
+                "playerDrainCompletedAt": timestamp(rx.playerDrainCompletedAt),
+                "endCueAt": timestamp(rx.endCueAt),
+                "lastEnqueueOutput": outputObservation(output.lastEnqueueOutput),
+                "lastCompletionOutput": outputObservation(output.lastCompletionOutput),
+                "engineStartFailures": output.engineStartFailures,
+                "lastErrorCode": optional(output.lastErrorCode),
+                "inputRmsDbfs": output.inputRmsDbfs.map { $0 as Any } ?? NSNull(),
+                "inputPeakDbfs": output.inputPeakDbfs.map { $0 as Any } ?? NSNull(),
+            ] as [String: Any]
+        } ?? NSNull()
         let payload: [String: Any] = [
+            "lastBufferedReceive": lastBufferedReceive,
             "currentTxAttempt": attempt(txAttempts.current),
             "lastCompletedTxAttempt": attempt(txAttempts.lastCompleted),
             "currentRxGeneration": attempt(rxAttempts.current),

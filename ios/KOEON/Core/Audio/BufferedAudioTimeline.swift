@@ -220,6 +220,24 @@ struct Batv1PlaybackDiagnostics: Equatable, Sendable {
     var inputPeakDbfs: Double?
 }
 
+/// A value copy of a terminal receive, independent of the replaceable runtime.
+/// Identifiers are deliberately removed; audio and authentication data are never retained.
+struct BufferedAudioRxSnapshot: Equatable, Sendable {
+    let capturedAt: Date
+    let receive: BufferedAudioRxDiagnostics
+    let playback: Batv1PlaybackDiagnostics
+
+    init(receive: BufferedAudioRxDiagnostics, playback: Batv1PlaybackDiagnostics) {
+        capturedAt = Date()
+        var receive = receive
+        receive.generationId = nil
+        self.receive = receive
+        var playback = playback
+        playback.generationToken = nil
+        self.playback = playback
+    }
+}
+
 /// Realtime capture only copies post-processed PCM into bounded RAM.
 /// It never performs network I/O and never writes audio to disk.
 final class Batv1CaptureBuffer: @unchecked Sendable {
@@ -1228,6 +1246,7 @@ final class BufferedAudioReceiver {
     private let onPcm: (Date) -> Void
     private let onTimelineDrained: @MainActor () async -> Void
     private let onFailure: (String) -> Void
+    private let onTerminalSnapshot: (BufferedAudioRxSnapshot) -> Void
     private let player: any IOSBatv1PcmPlaying
     private let monotonicNow: () -> TimeInterval
     private var task: Task<Void, Never>?
@@ -1252,6 +1271,7 @@ final class BufferedAudioReceiver {
         onPcm: @escaping (Date) -> Void = { _ in },
         onTimelineDrained: @escaping @MainActor () async -> Void = {},
         onFailure: @escaping (String) -> Void = { _ in },
+        onTerminalSnapshot: @escaping (BufferedAudioRxSnapshot) -> Void = { _ in },
         player: (any IOSBatv1PcmPlaying)? = nil,
         monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
@@ -1261,6 +1281,7 @@ final class BufferedAudioReceiver {
         self.onPcm = onPcm
         self.onTimelineDrained = onTimelineDrained
         self.onFailure = onFailure
+        self.onTerminalSnapshot = onTerminalSnapshot
         self.player = player ?? IOSBatv1PcmPlayer()
         self.monotonicNow = monotonicNow
     }
@@ -1298,6 +1319,7 @@ final class BufferedAudioReceiver {
             diagnostics.timelineLost = true
             diagnostics.terminalReason = player.playbackDiagnostics.lastErrorCode ?? "receive_failed"
             Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_RESUME_FAILED", resultClass: String(describing: type(of: error)))
+            recordTerminalSnapshot()
             onFailure("BATV1_RX_RESUME_FAILED")
         }
     }
@@ -1458,6 +1480,8 @@ final class BufferedAudioReceiver {
                     diagnostics.playbackRate = 1
                     diagnostics.playerDrainCompletedAt = Date()
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_DRAIN_END", generationId: generationId)
+                    diagnostics.terminalReason = "final_sequence"
+                    recordTerminalSnapshot()
                     onActivity(senderSessionId, false)
                     await onTimelineDrained()
                     terminalDrainPublished = true
@@ -1481,6 +1505,7 @@ final class BufferedAudioReceiver {
                     diagnostics.playerDrainCompletedAt = Date()
                     diagnostics.missingFinalFallbackCompletedAt = Date()
                     diagnostics.terminalReason = "missing_final_floor_terminal_stable"
+                    recordTerminalSnapshot()
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_MISSING_FINAL_DRAIN_END", generationId: generationId)
                     onActivity(senderSessionId, false)
                     await onTimelineDrained()
@@ -1508,6 +1533,7 @@ final class BufferedAudioReceiver {
             }
             diagnostics.terminalReason = player.playbackDiagnostics.lastErrorCode ?? "receive_failed"
             Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_FAILED", generationId: generationId, resultClass: String(describing: type(of: error)))
+            recordTerminalSnapshot()
             onFailure("BATV1_RX_\(String(describing: type(of: error)).uppercased())")
         }
         Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_STOP_BEGIN", generationId: generationId)
@@ -1521,8 +1547,14 @@ final class BufferedAudioReceiver {
             guard self.generationToken == generationToken else { return }
             diagnostics.endCueAt = diagnostics.endCueAt ?? Date()
         }
+        recordTerminalSnapshot()
         diagnostics.generationId = nil
         activeSenderSessionId = nil
+    }
+
+    private func recordTerminalSnapshot() {
+        guard diagnostics.generationId != nil, diagnostics.terminalReason != nil else { return }
+        onTerminalSnapshot(BufferedAudioRxSnapshot(receive: diagnostics, playback: playbackDiagnostics))
     }
 
     private func missingFinalFallbackEligible(

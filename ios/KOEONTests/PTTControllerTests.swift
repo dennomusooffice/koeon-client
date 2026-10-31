@@ -2038,6 +2038,45 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalReceiveSnapshotSurvivesReplacementAndShutdownWithoutIdentifiers() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0, bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())])
+        }
+        var retained: BufferedAudioRxSnapshot?
+        let player = Batv1PcmPlayerMock()
+        player.playbackDiagnostics.inputRmsDbfs = -24
+        player.playbackDiagnostics.inputPeakDbfs = -12
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "private-session",
+            onTerminalSnapshot: { retained = $0 }, player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "private-generation", senderSessionId: "private-sender")
+        await receiver.awaitCurrentGenerationTermination()
+        let completed = retained
+        XCTAssertEqual(completed?.receive.terminalReason, "final_sequence")
+        XCTAssertEqual(completed?.receive.playbackCursor, 1)
+        XCTAssertNotNil(completed?.receive.playerDrainCompletedAt)
+        XCTAssertNotNil(completed?.receive.endCueAt)
+        XCTAssertEqual(completed?.playback.inputRmsDbfs, -24)
+        XCTAssertEqual(completed?.playback.inputPeakDbfs, -12)
+        XCTAssertNil(completed?.receive.generationId)
+        XCTAssertNil(completed?.playback.generationToken)
+
+        // A pending replacement cancelled before starting must not overwrite terminal evidence.
+        receiver.start(generationId: "cancelled-replacement", senderSessionId: "next-sender")
+        await receiver.shutdownAndAwait()
+        XCTAssertEqual(retained, completed)
+        let replacement = BufferedAudioReceiver(api: api, sessionId: "next-runtime",
+            onTerminalSnapshot: { retained = $0 }, player: Batv1PcmPlayerMock())
+        await replacement.shutdownAndAwait()
+        XCTAssertEqual(retained, completed)
+    }
+
+    @MainActor
     func testReceiverDrainsFinalSequenceWhenControlEndArrivesFirst() async {
         let api = Batv1APIStub()
         api.subscribeHandler = { request in
@@ -2082,18 +2121,25 @@ final class BufferedAudioTimelineTests: XCTestCase {
         let player = Batv1PcmPlayerMock()
         player.drainError = BufferedAudioError.playbackEngineUnavailable
         var failureReported = false
+        var retained: BufferedAudioRxSnapshot?
         let receiver = BufferedAudioReceiver(
-            api: api, sessionId: "session-a", onFailure: { _ in failureReported = true }, player: player
+            api: api, sessionId: "session-a", onFailure: { _ in failureReported = true },
+            onTerminalSnapshot: { retained = $0 }, player: player
         )
         receiver.audioSessionDidActivate()
         receiver.start(generationId: "failed-engine", senderSessionId: "speaker")
         await receiver.awaitCurrentGenerationTermination()
+        XCTAssertEqual(retained?.receive.terminalReason, "receive_failed")
+        XCTAssertTrue(retained?.receive.timelineLost == true)
+        XCTAssertNil(retained?.receive.playerDrainCompletedAt)
+        XCTAssertNil(retained?.receive.generationId)
         XCTAssertTrue(failureReported)
         XCTAssertTrue(receiver.diagnostics.timelineLost)
         XCTAssertNil(receiver.diagnostics.playerDrainCompletedAt)
         XCTAssertEqual(receiver.diagnostics.terminalReason, "receive_failed")
         XCTAssertEqual(player.endCount, 1)
     }
+
 
     @MainActor
     func testReceiverWaitsForQueuedPlaybackBeforeFetchingMoreFrames() async throws {
@@ -2656,6 +2702,7 @@ private final class RecordingAuthorityMock: Batv1LocalRecordingAuthority {
 
 @MainActor
 private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
+    var playbackDiagnostics = Batv1PlaybackDiagnostics()
     var drainError: Error?
     var holdFrames = false
     private(set) var pendingFrames = 0
@@ -2666,7 +2713,7 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
     private(set) var shutdownCount = 0
     private var activeToken: Int?
 
-    func beginGeneration(token: Int) throws { activeToken = token; beginCount += 1 }
+    func beginGeneration(token: Int) throws { activeToken = token; playbackDiagnostics.generationToken = token; beginCount += 1 }
     func setRate(_ rate: Float) {}
     func enqueue(_ data: Data, generationToken: Int) throws {
         guard activeToken == generationToken else { throw BufferedAudioError.generationMismatch }
