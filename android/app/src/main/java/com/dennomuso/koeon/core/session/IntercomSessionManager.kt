@@ -146,6 +146,7 @@ data class SessionDiagnostics(
     val rxReadyReceivedEvents: Int = 0,
     val rxReadyRejectedCount: Int = 0,
     val rxReadyRejectedSessionMismatch: Int = 0,
+    val rxReadySessionMismatchReasons: Map<String, Int> = emptyMap(),
     val rxReadyRejectedDeviceMismatch: Int = 0,
     val rxReadyRejectedParticipantMetadataMissing: Int = 0,
     val rxReadyRejectedLeaseMismatch: Int = 0,
@@ -186,8 +187,10 @@ data class SessionDiagnostics(
     val effectiveAudioBitrateKbps: Int? = null,
     val liveKitDeployment: String = "UNKNOWN",
     val liveKitEndpointHost: String? = null,
+    val liveKitServerVersion: String? = null,
     val bufferedAudioTx: BufferedAudioTxDiagnostics = BufferedAudioTxDiagnostics(),
     val bufferedAudioRx: BufferedAudioRxDiagnostics = BufferedAudioRxDiagnostics(),
+    val lastBufferedReceive: com.dennomuso.koeon.core.audio.BufferedAudioRxSnapshot? = null,
     val controlSenderIdentityResolution: String = "REJECTED",
 )
 
@@ -266,9 +269,9 @@ class IntercomSessionManager(
             it.name == devicePreferences.getString("input_gain_mode", null)
         } ?: productionAudioCaptureProfile.koeonGainMode,
     )
-    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer(gainProcessor::processPcm16)
+    private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer(inputGain = gainProcessor)
     private var batv1Transmitter: com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter? = null
-    private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
+    @Volatile private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
     private val room = LiveKitRoomController(appContext, scope, gainProcessor, batv1Capture) { event ->
         when (event) {
             is AudioFocusEvent.Lost -> handleAudioInterruption(event.reason)
@@ -373,6 +376,7 @@ class IntercomSessionManager(
                             rxReadyReceivedEvents = liveKit.rxReadyReceivedEvents,
                             rxReadyRejectedCount = liveKit.rxReadyRejectedCount,
                             rxReadyRejectedSessionMismatch = liveKit.rxReadyRejectedSessionMismatch,
+                            rxReadySessionMismatchReasons = liveKit.rxReadySessionMismatchReasons,
                             rxReadyRejectedDeviceMismatch = liveKit.rxReadyRejectedDeviceMismatch,
                             rxReadyRejectedParticipantMetadataMissing = liveKit.rxReadyRejectedParticipantMetadataMissing,
                             rxReadyRejectedLeaseMismatch = liveKit.rxReadyRejectedLeaseMismatch,
@@ -387,6 +391,7 @@ class IntercomSessionManager(
                             reconnectRecoveryMs = recoveryMs ?: it.diagnostics.reconnectRecoveryMs,
                             liveKitDeployment = liveKit.deployment,
                             liveKitEndpointHost = liveKit.endpointHost,
+                            liveKitServerVersion = liveKit.serverVersion,
                             effectiveAudioBitrateKbps = liveKit.effectiveAudioBitrateKbps,
                             bufferedAudioTx = batv1Transmitter?.diagnostics() ?: it.diagnostics.bufferedAudioTx,
                             bufferedAudioRx = batv1Receiver?.diagnostics() ?: it.diagnostics.bufferedAudioRx,
@@ -548,6 +553,7 @@ class IntercomSessionManager(
                         enrollmentRequired = true,
                         operationalState = OperationalState.UNENROLLED,
                         diagnostics = SessionDiagnostics(
+                            lastBufferedReceive = _state.value.diagnostics.lastBufferedReceive,
                             headsetPttEnabled = headsetPttEnabled,
                             headsetPttMode = headsetPttMode,
                             hardwareVolumePttMode = hardwareVolumePttMode,
@@ -865,6 +871,7 @@ class IntercomSessionManager(
                 enrollmentRequired = false,
                 operationalState = if (powerOff) OperationalState.ENROLLED_POWERED_OFF else OperationalState.SWITCHING_CHANNEL,
                 diagnostics = SessionDiagnostics(
+                    lastBufferedReceive = _state.value.diagnostics.lastBufferedReceive,
                     headsetPttEnabled = headsetPttEnabled,
                     headsetPttMode = headsetPttMode,
                     hardwareVolumePttMode = hardwareVolumePttMode,
@@ -1035,16 +1042,25 @@ class IntercomSessionManager(
         }
         val deviceId = join.deviceId
         batv1Receiver?.shutdown()
-        batv1Receiver = com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver(
+        lateinit var installedReceiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver
+        installedReceiver = com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver(
             scope = scope,
             api = api,
             sessionId = join.sessionId,
             onActivity = { active -> room.handleBufferedAudioActivity(active) },
             onTimelineDrained = { room.completeBufferedAudioTimelineDrain() },
+            onTerminalSnapshot = { snapshot ->
+                _state.update { current ->
+                    if (batv1Receiver === installedReceiver) {
+                        current.copy(diagnostics = current.diagnostics.copy(lastBufferedReceive = snapshot))
+                    } else current
+                }
+            },
             onFailure = { code ->
                 scope.launch { _state.update { it.copy(error = "Buffered RX failed safely: $code") } }
             },
         )
+        batv1Receiver = installedReceiver
         room.onBufferedAudioStart = { generationId -> batv1Receiver?.start(generationId) }
         room.onBufferedAudioEnd = { batv1Receiver?.noteControlEnd() }
         room.onBufferedAudioEndCue = { batv1Receiver?.noteEndCue() }
@@ -1073,11 +1089,15 @@ class IntercomSessionManager(
             bufferedAudio = batv1Transmitter,
             clock = SystemPttClock(),
             onSnapshot = { ptt ->
+                // BATv1 owns gain measurement at the capture boundaries. The
+                // legacy RTP fallback still follows its microphone/PTT lifecycle.
                 val txLifecycle = setOf(PttState.TRANSMITTING, PttState.RELEASING)
-                if (ptt.state in txLifecycle && previousPttState !in txLifecycle) {
-                    gainProcessor.beginTransmission()
-                } else if (ptt.state !in txLifecycle && previousPttState in txLifecycle) {
-                    gainProcessor.endTransmission()
+                if (batv1Transmitter == null) {
+                    if (ptt.state in txLifecycle && previousPttState !in txLifecycle) {
+                        gainProcessor.beginTransmission()
+                    } else if (ptt.state !in txLifecycle && previousPttState in txLifecycle) {
+                        gainProcessor.endTransmission()
+                    }
                 }
                 previousPttState = ptt.state
                 refreshInputGainDiagnostics()

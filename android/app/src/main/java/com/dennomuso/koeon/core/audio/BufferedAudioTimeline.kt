@@ -35,6 +35,8 @@ const val BATV1_SAMPLE_RATE = 48_000
 const val BATV1_CHANNELS = 1
 const val BATV1_FRAME_DURATION_MS = 20
 const val BATV1_BYTES_PER_FRAME = 1_920
+// Server publish schema permits 32 frames. Take only what is already queued: no fill delay.
+const val BATV1_MAX_PUBLISH_FRAMES = 32
 const val BATV1_MAX_FRAMES = 300
 const val BATV1_MAX_PLAYBACK_RATE = 1.50f
 
@@ -99,15 +101,32 @@ data class BufferedAudioRxDiagnostics(
     val finalFrameWrittenAtEpochMs: Long? = null,
     val playerDrainCompletedAtEpochMs: Long? = null,
     val endCueAtEpochMs: Long? = null,
+    val terminalReason: String? = null,
 )
 
+/** One terminal value copy; no receive identifier, audio or credentials. */
+data class BufferedAudioRxSnapshot private constructor(
+    val capturedAtEpochMs: Long,
+    val receive: BufferedAudioRxDiagnostics,
+) {
+    companion object {
+        fun capture(receive: BufferedAudioRxDiagnostics) = BufferedAudioRxSnapshot(
+            System.currentTimeMillis(), receive.copy(generationId = null),
+        )
+    }
+}
+
 /** Realtime callback only copies bytes into a bounded RAM ring; it never performs network I/O. */
-class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = null) {
+class Batv1CaptureBuffer(
+    private val processPcm16: ((ByteBuffer) -> Unit)? = null,
+    private val inputGain: InputGainProcessor? = null,
+) {
     private val frames = ArrayDeque<ByteArray>()
     private var partial = ByteArray(0)
     private var armedGeneration: String? = null
     private var firstFrameSignal = Channel<Unit>(Channel.CONFLATED)
     private var inputProcessingActive = false
+    private var frozen = false
     private var dropped = 0
     private var armedAtEpochMs: Long? = null
     private var firstPcmAtEpochMs: Long? = null
@@ -116,6 +135,8 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
 
     @Synchronized
     fun arm(generationId: String = UUID.randomUUID().toString()): String {
+        if (armedGeneration != null) inputGain?.endTransmission(learn = false)
+        inputGain?.beginTransmission()
         frames.clear()
         partial = ByteArray(0)
         dropped = 0
@@ -124,12 +145,14 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
         lastErrorCode = null
         armedGeneration = generationId
         inputProcessingActive = true
+        frozen = false
         firstFrameSignal = Channel(Channel.CONFLATED)
         return generationId
     }
 
     @Synchronized
-    fun discard() {
+    fun discard(learnFromCapture: Boolean = false) {
+        if (armedGeneration != null) inputGain?.endTransmission(learn = learnFromCapture)
         armedGeneration = null
         inputProcessingActive = false
         frames.clear()
@@ -140,6 +163,7 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
     /** Defines canonical seq0 after the audible start cue. */
     @Synchronized
     fun markCueBoundary() {
+        inputGain?.markCaptureBoundary()
         frames.clear()
         partial = ByteArray(0)
         dropped = 0
@@ -181,8 +205,11 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
 
     @Synchronized
     private fun appendBytes(bytes: ByteArray, applyInputGain: Boolean = false) {
-        if (armedGeneration == null) return
-        if (applyInputGain && inputProcessingActive) processPcm16?.invoke(ByteBuffer.wrap(bytes))
+        if (armedGeneration == null || frozen) return
+        if (applyInputGain && inputProcessingActive) {
+            if (inputGain != null) inputGain.processPcm16(ByteBuffer.wrap(bytes))
+            else processPcm16?.invoke(ByteBuffer.wrap(bytes))
+        }
         if (bytes.isNotEmpty() && firstPcmAtEpochMs == null) firstPcmAtEpochMs = System.currentTimeMillis()
         var joined = partial + bytes
         while (joined.size >= BATV1_BYTES_PER_FRAME) {
@@ -204,11 +231,37 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
 
     @Synchronized fun snapshotFrames(): List<ByteArray> = frames.map(ByteArray::copyOf)
     @Synchronized
-    fun startForwarding(consumer: (ByteArray) -> Unit): List<ByteArray> {
-        onCanonicalFrame = consumer
-        return frames.map(ByteArray::copyOf)
+    fun freeze(generationId: String): Boolean {
+        if (armedGeneration != generationId) return false
+        if (frozen) return true
+        // Keep the last <20ms of speech. Pad only the canonical tail, without
+        // accepting any microphone samples after this boundary.
+        if (partial.isNotEmpty()) {
+            if (frames.size == BATV1_MAX_FRAMES) { frames.removeFirst(); dropped += 1 }
+            frames.addLast(partial.copyOf(BATV1_BYTES_PER_FRAME))
+            partial = ByteArray(0)
+            firstFrameSignal.trySend(Unit)
+        }
+        frozen = true
+        inputGain?.pauseCaptureMeasurements()
+        inputProcessingActive = false
+        onCanonicalFrame = null
+        return true
     }
-    @Synchronized fun stopForwarding() { onCanonicalFrame = null; inputProcessingActive = false }
+
+    /** Seed and enable live forwarding under one lock so live PCM cannot overtake pre-roll. */
+    @Synchronized
+    fun startForwarding(consumer: (ByteArray) -> Unit): Int {
+        val count = frames.size
+        frames.forEach { consumer(it.copyOf()) }
+        onCanonicalFrame = if (frozen) null else consumer
+        return count
+    }
+    @Synchronized fun stopForwarding() {
+        onCanonicalFrame = null
+        inputProcessingActive = false
+        inputGain?.pauseCaptureMeasurements()
+    }
     @Synchronized fun frameCount(): Int = frames.size
     @Synchronized fun droppedFrames(): Int = dropped
     @Synchronized fun armedAtEpochMs(): Long? = armedAtEpochMs
@@ -220,6 +273,8 @@ interface BufferedAudioTxGateway {
     suspend fun armAndConfirmCapture(generationId: String): Boolean
     fun markCueBoundary(generationId: String): Boolean
     suspend fun authorize(leaseId: String, generationId: String): Boolean
+    /** Stop accepting microphone samples, retaining only this generation's recorded PCM. */
+    fun freezePendingCapture(generationId: String): Boolean = false
     fun beginReleaseHangover(generationId: String, atEpochMs: Long = System.currentTimeMillis()): Boolean = true
     fun completeReleaseHangover(generationId: String, atEpochMs: Long = System.currentTimeMillis()): Boolean = true
     suspend fun finish(generationId: String): Boolean
@@ -303,26 +358,25 @@ class HttpBufferedAudioTransmitter(
         diagnostics = diagnostics.copy(captureState = "ACTIVE")
         Batv1CrashBreadcrumbs.record("TX", "TX_AUTHORIZED", generationId)
         synchronized(pending) { pending.clear() }
-        val initial = capture.startForwarding { frame ->
+        val initialCount = capture.startForwarding { frame ->
             synchronized(pending) { pending.addLast(frame) }
             if (releaseHangoverActive) {
                 diagnostics = diagnostics.copy(framesAcceptedAfterPttUp = diagnostics.framesAcceptedAfterPttUp + 1)
             }
             signal.trySend(Unit)
         }
-        synchronized(pending) { pending.addAll(initial) }
         sendJob = scope.launch {
             try {
                 while (isActive) {
                     val batch = synchronized(pending) {
-                        buildList { repeat(minOf(10, pending.size)) { add(pending.removeFirst()) } }
+                        buildList { repeat(minOf(BATV1_MAX_PUBLISH_FRAMES, pending.size)) { add(pending.removeFirst()) } }
                     }
                     if (batch.isEmpty()) {
                         if (!authorized) break
                         withTimeoutOrNull(250) { signal.receive() }
                         continue
                     }
-                    publishBatch(leaseId, generationId, batch, initial.size)
+                    publishBatch(leaseId, generationId, batch, initialCount)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -335,6 +389,18 @@ class HttpBufferedAudioTransmitter(
             }
         }
         signal.trySend(Unit)
+        return true
+    }
+
+    override fun freezePendingCapture(generationId: String): Boolean {
+        if (this.generationId != generationId || authorized || !capture.freeze(generationId)) return false
+        val now = System.currentTimeMillis()
+        diagnostics = diagnostics.copy(
+            captureState = "FROZEN_WAITING_READY",
+            pttUpAtEpochMs = now,
+            captureForwardingStoppedAtEpochMs = now,
+            pendingFramesAtPttUp = capture.frameCount(),
+        )
         return true
     }
 
@@ -367,7 +433,9 @@ class HttpBufferedAudioTransmitter(
         diagnostics = diagnostics.copy(captureState = "FINISHING")
         Batv1CrashBreadcrumbs.record("TX", "TX_FINISH_BEGIN", generationId)
         capture.stopForwarding()
-        diagnostics = diagnostics.copy(captureForwardingStoppedAtEpochMs = System.currentTimeMillis())
+        diagnostics = diagnostics.copy(
+            captureForwardingStoppedAtEpochMs = diagnostics.captureForwardingStoppedAtEpochMs ?: System.currentTimeMillis(),
+        )
         releaseHangoverActive = false
         authorized = false
         signal.trySend(Unit)
@@ -379,7 +447,7 @@ class HttpBufferedAudioTransmitter(
         return try {
             while (true) {
                 val batch = synchronized(pending) {
-                    buildList { repeat(minOf(10, pending.size)) { add(pending.removeFirst()) } }
+                    buildList { repeat(minOf(BATV1_MAX_PUBLISH_FRAMES, pending.size)) { add(pending.removeFirst()) } }
                 }
                 if (batch.isEmpty()) break
                 publishBatch(requireNotNull(leaseId), generationId, batch, diagnostics.preRollBufferedFrames)
@@ -401,7 +469,7 @@ class HttpBufferedAudioTransmitter(
                 )
                 Batv1CrashBreadcrumbs.record("TX", "TX_FINAL_MARKER_END", generationId)
             }
-            boundedCleanup(generationId, "STOPPED")
+            boundedCleanup(generationId, "STOPPED", learnFromCapture = finalSequence >= 0)
             true
         } catch (cancelled: CancellationException) {
             diagnostics = diagnostics.copy(finalMarkerResult = "CANCELLED")
@@ -468,9 +536,9 @@ class HttpBufferedAudioTransmitter(
         finalSequence = finalSequence,
     )
 
-    private fun boundedCleanup(generationId: String?, state: String) {
+    private fun boundedCleanup(generationId: String?, state: String, learnFromCapture: Boolean = false) {
         capture.stopForwarding()
-        capture.discard()
+        capture.discard(learnFromCapture)
         sendJob = null
         authorized = false
         releaseHangoverActive = false
@@ -575,6 +643,7 @@ class HttpBufferedAudioReceiver(
     private val onActivity: (Boolean) -> Unit = {},
     private val onTimelineDrained: suspend () -> Unit = {},
     private val onFailure: (String) -> Unit = {},
+    private val onTerminalSnapshot: (BufferedAudioRxSnapshot) -> Unit = {},
 ) {
     private var job: Job? = null
     @Volatile private var generationToken = 0L
@@ -645,11 +714,14 @@ class HttpBufferedAudioReceiver(
                             backlogMs = 0,
                             playbackRate = 1f,
                             playerDrainCompletedAtEpochMs = System.currentTimeMillis(),
+                            terminalReason = "final_sequence",
                         )
                         Batv1CrashBreadcrumbs.record("RX", "RX_DRAIN_END", generationId, "AUDIO_SERIAL_WORKER")
+                        if (token == generationToken) onTerminalSnapshot(BufferedAudioRxSnapshot.capture(diagnostics))
                         onActivity(false)
                         onTimelineDrained()
                         diagnostics = diagnostics.copy(endCueAtEpochMs = System.currentTimeMillis())
+                        if (token == generationToken) onTerminalSnapshot(BufferedAudioRxSnapshot.capture(diagnostics))
                         timelineDrainCompleted = true
                         break
                     }
@@ -658,7 +730,8 @@ class HttpBufferedAudioReceiver(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                diagnostics = diagnostics.copy(timelineLost = true)
+                diagnostics = diagnostics.copy(timelineLost = true, terminalReason = "receive_failed")
+                if (token == generationToken) onTerminalSnapshot(BufferedAudioRxSnapshot.capture(diagnostics))
                 Batv1CrashBreadcrumbs.record("RX", "RX_FAILED", generationId, "AUDIO_SERIAL_WORKER", error.javaClass.simpleName)
                 onFailure("BATV1_RX_${error.javaClass.simpleName.uppercase()}")
             } finally {

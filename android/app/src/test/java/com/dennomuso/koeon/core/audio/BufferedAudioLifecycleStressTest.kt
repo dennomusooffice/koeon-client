@@ -14,6 +14,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -22,6 +23,106 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 class BufferedAudioLifecycleStressTest {
+    @Test fun `terminal evidence survives receiver disposal and separates failure from drain`() = runBlocking {
+        for (failDrain in listOf(false, true)) {
+            val retained = java.util.concurrent.atomic.AtomicReference<BufferedAudioRxSnapshot>()
+            fun receiver() = HttpBufferedAudioReceiver(this, Batv1StressApi(), "private-session",
+                playerFactory = { object : Batv1PcmPlayer {
+                    override fun start() = Unit
+                    override fun setRate(rate: Float) = Unit
+                    override fun write(bytes: ByteArray) = Unit
+                    override suspend fun drain() { if (failDrain) error("simulated drain failure") }
+                    override fun stop() = Unit
+                } }, onTerminalSnapshot = { retained.set(it) })
+            val active = receiver()
+            try {
+                active.start("private-generation")
+                withTimeout(2_000) {
+                    while (retained.get()?.let { it.receive.timelineLost || it.receive.endCueAtEpochMs != null } != true) delay(1)
+                }
+            } finally { active.shutdownAndAwait() }
+            val snapshot = retained.get()
+            assertEquals(null, snapshot.receive.generationId)
+            assertEquals(1, snapshot.receive.playbackCursor)
+            assertEquals(failDrain, snapshot.receive.timelineLost)
+            assertEquals(if (failDrain) "receive_failed" else "final_sequence", snapshot.receive.terminalReason)
+            assertEquals(!failDrain, snapshot.receive.playerDrainCompletedAtEpochMs != null)
+            receiver().shutdownAndAwait()
+            assertEquals(snapshot, retained.get())
+        }
+    }
+
+    @Test fun `slow HTTP catches up four second pre-roll and preserves live audio and final marker`() = runTest {
+        for (requestMs in listOf(150L, 250L, 500L)) {
+            val api = Batv1StressApi(publishDelayMs = requestMs)
+            val capture = Batv1CaptureBuffer()
+            val transmitter = HttpBufferedAudioTransmitter(this, api, capture, "channel", "session", "device")
+            fun append(index: Int) = capture.appendPostProcessedPcm(
+                ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { index.toByte() }))
+            launch { delay(1); append(0) }
+            assertTrue(transmitter.armAndConfirmCapture("slow"))
+            assertTrue(transmitter.markCueBoundary("slow"))
+            repeat(200) { append(it) }
+            assertTrue(transmitter.authorize("lease", "slow"))
+            // Keep recording at 50 frames/sec while actual sender HTTP calls suspend.
+            repeat(50) { delay(20); append(200 + it) }
+            assertTrue(withTimeout(6_000) { transmitter.finish("slow") })
+            val frames = api.published.flatMap { it.chunks }
+            assertEquals((0 until 250).toList(), frames.map { it.sequence })
+            frames.forEachIndexed { index, frame ->
+                assertTrue(java.util.Base64.getDecoder().decode(frame.payloadBase64).all { it == index.toByte() })
+            }
+            assertTrue(api.published.all { it.chunks.size <= 32 })
+            assertEquals(249, api.published.last().finalSequence)
+            assertEquals(1, api.published.count { it.finalSequence != null })
+        }
+    }
+
+    @Test fun `only acknowledged final marker commits capture gain learning`() = runBlocking {
+        for (rejectFinal in listOf(false, true)) {
+            val api = Batv1StressApi(publishFailure = { rejectFinal && it.finalSequence != null })
+            val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
+            val capture = Batv1CaptureBuffer(inputGain = gain)
+            val transmitter = HttpBufferedAudioTransmitter(this, api, capture, "channel", "session", "device")
+            launch { delay(1); capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME))) }
+            assertTrue(transmitter.armAndConfirmCapture("gain"))
+            assertTrue(transmitter.markCueBoundary("gain"))
+            val pcm = ByteBuffer.allocate(9_600 * 2).order(java.nio.ByteOrder.nativeOrder())
+            repeat(9_600) { pcm.putShort(2_000.toShort()) }
+            pcm.rewind()
+            capture.appendLiveKitPcm(pcm, 16, 48_000, 1, 9_600)
+            assertTrue(transmitter.freezePendingCapture("gain"))
+            assertEquals(0f, gain.snapshot().autoTrimDb, 0f)
+            assertTrue(transmitter.authorize("lease", "gain"))
+            assertEquals(!rejectFinal, transmitter.finish("gain"))
+            assertEquals(if (rejectFinal) 0f else 1f, gain.snapshot().autoTrimDb, 0f)
+            assertEquals(9_600L, gain.snapshot().meterSampleCount)
+        }
+    }
+
+    @Test fun `frozen pre-roll is published only after authorization and excludes post-UP samples`() = runBlocking {
+        val api = Batv1StressApi()
+        val capture = Batv1CaptureBuffer()
+        val transmitter = HttpBufferedAudioTransmitter(this, api, capture, "channel", "session", "device")
+        launch { delay(1); capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME))) }
+        assertTrue(transmitter.armAndConfirmCapture("short"))
+        assertTrue(transmitter.markCueBoundary("short"))
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME + 200) { 7 }))
+        assertTrue(transmitter.freezePendingCapture("short"))
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { 9 }))
+        assertTrue(api.published.isEmpty())
+        assertTrue(transmitter.authorize("lease", "short"))
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { 11 }))
+        assertTrue(transmitter.finish("short"))
+        val frames = api.published.flatMap { it.chunks }
+        assertEquals(listOf(0, 1), frames.map { it.sequence })
+        val tail = java.util.Base64.getDecoder().decode(frames.last().payloadBase64)
+        assertTrue(tail.take(200).all { it == 7.toByte() })
+        assertTrue(tail.drop(200).all { it == 0.toByte() })
+        assertEquals(1, api.published.last().finalSequence)
+        assertEquals(0, transmitter.diagnostics().framesAcceptedAfterPttUp)
+    }
+
     @Test fun `tail hangover includes delayed frames and final marker is last`() = runBlocking {
         val api = Batv1StressApi()
         val capture = Batv1CaptureBuffer()
@@ -235,10 +336,12 @@ private suspend fun HttpBufferedAudioReceiver.stopAndAwaitAfterNaturalCompletion
 private class Batv1StressApi(
     private val publishFailure: (Batv1PublishRequest) -> Boolean = { false },
     private val failureFactory: ((Batv1PublishRequest) -> Throwable)? = null,
+    private val publishDelayMs: Long = 0,
 ) : KoeonApi {
     val published = java.util.Collections.synchronizedList(mutableListOf<Batv1PublishRequest>())
     override suspend fun publishBufferedAudio(request: Batv1PublishRequest): Batv1PublishResponse {
         published += request
+        delay(publishDelayMs)
         failureFactory?.invoke(request)?.let { throw it }
         if (publishFailure(request)) error("expected stress failure")
         return Batv1PublishResponse("accepted", request.chunks.size, request.chunks.lastOrNull()?.sequence ?: request.finalSequence ?: -1)

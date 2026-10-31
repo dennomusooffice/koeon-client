@@ -478,7 +478,7 @@ final class IntercomSessionController: ObservableObject {
     let network: ConnectionMonitor
     let pushToTalk: ApplePushToTalkController
     let inputGain = InputGainProcessor()
-    private let bufferedCapture = Batv1CaptureBuffer()
+    private lazy var bufferedCapture = Batv1CaptureBuffer(inputGain: inputGain)
 
     private let api: any KOEONAPIClientProtocol
     private let credentialStore: any DeviceCredentialStoring
@@ -490,6 +490,7 @@ final class IntercomSessionController: ObservableObject {
     private var haptics: PttHapticFeedbackController?
     private var ptt: PTTController?
     private var bufferedTransmitter: BufferedAudioTransmitter?
+    private var lastBufferedRxSnapshot: BufferedAudioRxSnapshot?
     private var bufferedReceiver: BufferedAudioReceiver?
     private var rx: RxAudioController?
     private var remoteReceive: RemoteReceiveActivationCoordinator?
@@ -1250,7 +1251,8 @@ final class IntercomSessionController: ObservableObject {
         bufferedResolveTask = nil
         incomingWakeRecoveryTask?.cancel()
         incomingWakeRecoveryTask = nil
-        let session = joinedSession
+        let leavingSessionId = joinedSession?.sessionId ?? pendingJoinResponse?.sessionId
+            ?? pushToTalk.listeningSessionId
         await ptt?.stopForSafety(reason: "Channel left.")
         guard await ptt?.cleanupIsConfirmed() != false else {
             recoveryIntent.powerOn()
@@ -1283,13 +1285,13 @@ final class IntercomSessionController: ObservableObject {
         resetRxConsistency()
         rx?.reset()
         rx = nil
-        if let session { try? await api.unregisterPttToken(sessionId: session.sessionId) }
+        if let leavingSessionId { try? await api.unregisterPttToken(sessionId: leavingSessionId) }
         await pushToTalk.leave()
         await room.disconnect()
         await audio.endPushToTalkManagedSession()
         await audio.endIntercom()
         do {
-            if let session { try await api.leave(sessionId: session.sessionId) }
+            if let leavingSessionId { try await api.leave(sessionId: leavingSessionId) }
         } catch {
             lastError = "Backend leave failed: \(safeMessage(error))"
         }
@@ -1868,8 +1870,11 @@ final class IntercomSessionController: ObservableObject {
     }
 
     /** Cold PushToTalk restoration consumes the fresh Resume response directly. */
-    private func establishResumedRuntime(_ response: JoinResponse) async -> Bool {
+    func establishResumedRuntime(_ response: JoinResponse) async -> Bool {
         pendingJoinResponse = response
+        // The backend already bound the listening registration in Resume.
+        // Persist that ownership even if the following network connect fails.
+        pushToTalk.retainListeningSessionId(response.sessionId)
         runtimeLiveness.beginRuntime()
         let runtimeGeneration = runtimeLiveness.generation
         installBufferedReceiver(for: response)
@@ -2010,7 +2015,14 @@ final class IntercomSessionController: ObservableObject {
             }
             return true
         } catch {
-            await discardResumedSession(response)
+            // A transient runtime failure is not POWER OFF. Unregister/leave
+            // would delete the durable push destination and prevent the next
+            // incoming push from retrying this background receiver. Explicit
+            // leave owns that cleanup, including a cancelled restore attempt.
+            Batv1CrashBreadcrumbStore.shared.record(
+                role: "APP", stage: "RUNTIME_CONNECT_FAILED", generationId: String(runtimeGeneration),
+                resultClass: Task.isCancelled ? "CANCELLED" : "LISTENING_RETAINED"
+            )
             pendingJoinResponse = nil
             joinedSession = nil
             await bufferedReceiver?.shutdownAndAwait()
@@ -2122,8 +2134,6 @@ final class IntercomSessionController: ObservableObject {
         let previous = pttSnapshot.state
         pttSnapshot = snapshot
         if snapshot.floorReleaseCompletedAt != nil { lastReleaseSnapshot = snapshot }
-        if snapshot.state == .transmitting, previous != .transmitting { inputGain.beginTransmission() }
-        if snapshot.state != .transmitting, previous == .transmitting { inputGain.endTransmission() }
         if snapshot.state == .busy, previous != .busy { playStatusCue(.busy) }
         if snapshot.state == .error, previous != .error { playStatusCue(.error) }
         if snapshot.state == .transmitting { activationWatchdogTask?.cancel() }
@@ -2511,6 +2521,10 @@ final class IntercomSessionController: ObservableObject {
             onFailure: { [weak self] code in
                 guard let self, self.runtimeLiveness.generation == runtime else { return }
                 self.lastError = "Buffered RX failed safely: \(code)"
+            },
+            onTerminalSnapshot: { [weak self] snapshot in
+                guard let self, self.runtimeLiveness.generation == runtime else { return }
+                self.lastBufferedRxSnapshot = snapshot
             })
         if audio.pushToTalkAudioSessionActive { bufferedReceiver?.audioSessionDidActivate() }
     }
@@ -2822,6 +2836,7 @@ final class IntercomSessionController: ObservableObject {
         let liveKitIngress = room.ingressDiagnosticSnapshot()
         let bufferedTx = bufferedTransmitter?.diagnostics ?? BufferedAudioTxDiagnostics()
         let bufferedRx = bufferedReceiver?.diagnostics ?? BufferedAudioRxDiagnostics()
+        let playback = bufferedReceiver?.playbackDiagnostics ?? Batv1PlaybackDiagnostics()
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unavailable"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unavailable"
         func number(_ value: Int?) -> Any { value.map { $0 as Any } ?? NSNull() }
@@ -2830,6 +2845,14 @@ final class IntercomSessionController: ObservableObject {
         func optional(_ value: Bool?) -> Any { value.map { $0 as Any } ?? NSNull() }
         func timestamp(_ value: Date?) -> Any {
             optional(value.map { ISO8601DateFormatter().string(from: $0) })
+        }
+        func outputObservation(_ value: Batv1PlaybackOutputObservation?) -> Any {
+            guard let value else { return NSNull() }
+            return [
+                "sampledAt": timestamp(value.sampledAt), "outputPortTypes": value.outputPortTypes,
+                "outputVolume": value.outputVolume, "sampleRate": value.sampleRate,
+                "engineRunning": value.engineRunning, "playerPlaying": value.playerPlaying,
+            ] as [String: Any]
         }
         func duration(_ start: Date?, _ end: Date?) -> Any {
             guard let start, let end else { return NSNull() }
@@ -2857,7 +2880,11 @@ final class IntercomSessionController: ObservableObject {
                 "pttEligible": event.pttEligible,
             ]
         }
+        let lastBufferedReceive: Any = lastBufferedRxSnapshot.map {
+            $0.fieldDiagnostic(build: "\(version) (\(build))")
+        } ?? NSNull()
         let payload: [String: Any] = [
+            "lastBufferedReceive": lastBufferedReceive,
             "currentTxAttempt": attempt(txAttempts.current),
             "lastCompletedTxAttempt": attempt(txAttempts.lastCompleted),
             "currentRxGeneration": attempt(rxAttempts.current),
@@ -3129,6 +3156,7 @@ final class IntercomSessionController: ObservableObject {
             "liveKit": [
                 "deployment": room.deployment,
                 "endpointHost": optional(room.endpointHost),
+                "serverVersion": optional(room.serverVersion),
                 "connectionState": room.connectionState.rawValue,
             ],
             "audio": [
@@ -3213,8 +3241,22 @@ final class IntercomSessionController: ObservableObject {
                 "rxTerminalReason": optional(bufferedRx.terminalReason),
                 "controlSenderIdentityResolution": room.controlSenderIdentityResolution.rawValue,
             ],
+            "rxPlayback": [
+                "lastEnqueueOutput": outputObservation(playback.lastEnqueueOutput),
+                "lastCompletionOutput": outputObservation(playback.lastCompletionOutput),
+                "configurationChanges": playback.configurationChanges,
+                "recoveries": playback.recoveries,
+                "ignoredCompletions": playback.ignoredCompletions,
+                "engineStartFailures": playback.engineStartFailures,
+                "lastEngineStartErrorDomain": optional(playback.lastEngineStartErrorDomain),
+                "lastEngineStartErrorCode": number(playback.lastEngineStartErrorCode),
+                "lastErrorCode": optional(playback.lastErrorCode),
+                "inputRmsDbfs": playback.inputRmsDbfs.map { $0 as Any } ?? NSNull(),
+                "inputPeakDbfs": playback.inputPeakDbfs.map { $0 as Any } ?? NSNull(),
+            ],
             "crashBreadcrumbs": [
                 "previousRunTermination": Batv1CrashBreadcrumbStore.shared.previousRunTermination,
+                "previousRunLastLifecycleState": Batv1CrashBreadcrumbStore.shared.previousRunLastLifecycleState,
                 "events": Batv1CrashBreadcrumbStore.shared.snapshot().map { event in
                     [
                         "timestamp": ISO8601DateFormatter().string(from: event.timestamp),

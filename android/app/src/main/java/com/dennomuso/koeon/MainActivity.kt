@@ -523,7 +523,7 @@ private fun HeadsetPttSettings(state: IntercomUiState, manager: IntercomSessionM
 @Composable
 private fun AudioBitrateSettings(state: IntercomUiState, manager: IntercomSessionManager) {
     val diagnostics = state.diagnostics
-    Text("音声品質", fontWeight = FontWeight.Bold)
+    Text("音声品質（従来方式）", fontWeight = FontWeight.Bold)
     AudioBitratePreset.entries.forEach { preset ->
         val label = when (preset) {
             AudioBitratePreset.LOW -> "低帯域 12 kbps"
@@ -539,11 +539,12 @@ private fun AudioBitrateSettings(state: IntercomUiState, manager: IntercomSessio
         }
     }
     Text(
-        if (state.joined) {
-            "選択値は次のPOWER ONまたはChannel再接続から適用されます"
-        } else {
-            "次のPOWER ONから送信音声へ適用されます"
-        },
+        "この設定は従来の送信方式にのみ適用されます。現在の標準送信では、音質・通信量は変わりません。",
+        color = Color(0xFF82909A),
+        fontSize = 10.sp,
+    )
+    Text(
+        "選択値は保存され、従来方式の次回接続時に適用されます。",
         color = Color(0xFF82909A),
         fontSize = 10.sp,
     )

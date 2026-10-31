@@ -30,6 +30,8 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     private let defaults: UserDefaults
     private var value = InputGainSnapshot()
     private var transmitting = false
+    private var measurementsPaused = false
+    private var learningAllowed = true
     private var fixedGainDb: Float = 0
     private var sumSquares: Double = 0
     private var sampleCount = 0
@@ -60,16 +62,33 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
             value.route = route
             value.manualGainDb = defaults.float(forKey: key("manual", route))
             value.autoTrimDb = defaults.float(forKey: key("auto", route))
+            calibrationUntil = nil
+            calibrationRms = []
+            value.calibrationState = "IDLE"
+            value.recommendationDb = nil
+            if transmitting {
+                fixedGainDb = effectiveGain()
+                learningAllowed = false
+            }
             resetMeasurements()
         }
     }
-    func setMode(_ mode: InputGainMode) { lock.withLock { value.mode = mode } }
-    func setManualGainDb(_ gain: Float) { lock.withLock { value.manualGainDb = clamp(gain); defaults.set(value.manualGainDb, forKey: key("manual", value.route)) } }
-    func beginTransmission() { lock.withLock { transmitting = true; fixedGainDb = effectiveGain(); resetMeasurements() } }
-    func endTransmission() {
+    func setMode(_ mode: InputGainMode) {
         lock.withLock {
+            if transmitting, value.mode != mode { learningAllowed = false }
+            value.mode = mode
+        }
+    }
+    func setManualGainDb(_ gain: Float) { lock.withLock { value.manualGainDb = clamp(gain); defaults.set(value.manualGainDb, forKey: key("manual", value.route)) } }
+    func beginTransmission() { lock.withLock { transmitting = true; measurementsPaused = false; learningAllowed = true; fixedGainDb = effectiveGain(); resetMeasurements() } }
+    func markCaptureBoundary() { lock.withLock { resetMeasurements() } }
+    func pauseCaptureMeasurements() { lock.withLock { measurementsPaused = true } }
+    func endTransmission(learn: Bool = true) {
+        lock.withLock {
+            guard transmitting else { return }
             transmitting = false
-            if value.mode == .auto, sampleCount >= 4_800, value.limiterHits < sampleCount / 20, let rms = rmsDbfs() {
+            measurementsPaused = true
+            if learn, learningAllowed, value.mode == .auto, sampleCount >= 4_800, value.limiterHits < sampleCount / 20, let rms = rmsDbfs() {
                 value.autoTrimDb = Self.nextAutoTrim(current: value.autoTrimDb, speechRmsDbfs: rms)
                 defaults.set(value.autoTrimDb, forKey: key("auto", value.route))
             }
@@ -80,6 +99,13 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     func snapshot() -> InputGainSnapshot { lock.withLock { var copy = value; copy.effectiveGainDb = transmitting ? fixedGainDb : effectiveGain(); copy.rmsDbfs = rmsDbfs(); copy.peakDbfs = sampleCount > 0 ? dbfs(peak) : nil; return copy } }
 
     func audioProcessingProcess(audioBuffer: LKAudioBuffer) {
+        processFloatS16(channels: audioBuffer.channels, frames: audioBuffer.frames) {
+            audioBuffer.rawBuffer(forChannel: $0)
+        }
+    }
+
+    func processFloatS16(channels: Int, frames: Int, channelSamples: (Int) -> UnsafeMutablePointer<Float>) {
+        guard channels > 0, frames > 0 else { return }
         let output: (samples: [Int16], sampleRate: Int, consumer: (@Sendable ([Int16], Int, Int) -> Void)?) = lock.withLock {
             let gainDb = transmitting ? fixedGainDb : effectiveGain()
             let multiplier = powf(10, gainDb / 20)
@@ -87,16 +113,16 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
             var frameSquares: Double = 0
             var frameSamples = 0
             var mono = [Int16]()
-            mono.reserveCapacity(audioBuffer.frames)
-            for channel in 0..<audioBuffer.channels {
-                let samples = audioBuffer.rawBuffer(forChannel: channel)
-                for frame in 0..<audioBuffer.frames {
+            mono.reserveCapacity(frames)
+            for channel in 0..<channels {
+                let samples = channelSamples(channel)
+                for frame in 0..<frames {
                     let normalized = samples[frame] / 32_768
                     frameSquares += Double(normalized * normalized)
-                    peak = max(peak, abs(normalized))
+                    if !measurementsPaused { peak = max(peak, abs(normalized)) }
                     if processingEnabled {
                         let processed = Self.softLimitSample(normalized * multiplier)
-                        if processed.limited { value.limiterHits += 1 }
+                        if !measurementsPaused && processed.limited { value.limiterHits += 1 }
                         samples[frame] = processed.sample * 32_767
                     }
                     if channel == 0 {
@@ -106,8 +132,10 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
                 }
             }
             guard frameSamples > 0 else { return ([], sampleRate, postProcessedPcmConsumer) }
-            sumSquares += frameSquares
-            sampleCount += frameSamples
+            if !measurementsPaused {
+                sumSquares += frameSquares
+                sampleCount += frameSamples
+            }
             if let deadline = calibrationUntil {
                 calibrationRms.append(dbfs(sqrtf(Float(frameSquares / Double(frameSamples)))))
                 if Date() >= deadline { finishCalibration() }
@@ -118,7 +146,14 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     }
 
     static func recommendedGain(speechRmsDbfs: Float) -> Float { min(12, max(-6, -18 - speechRmsDbfs)) }
-    static func nextAutoTrim(current: Float, speechRmsDbfs: Float) -> Float { min(12, max(-6, current + min(1, max(-1, -18 - speechRmsDbfs)))) }
+    static func nextAutoTrim(current: Float, speechRmsDbfs: Float) -> Float {
+        let boundedCurrent = current.isFinite ? min(12, max(-6, current)) : 0
+        // RMS is measured before our gain. Converge on the required total
+        // gain, and never use silence/non-finite measurements to train AUTO.
+        guard speechRmsDbfs.isFinite, speechRmsDbfs > -60 else { return boundedCurrent }
+        let targetGain = recommendedGain(speechRmsDbfs: speechRmsDbfs)
+        return boundedCurrent + min(1, max(-1, targetGain - boundedCurrent))
+    }
     static func processSample(_ sample: Float, gainDb: Float) -> (sample: Float, limited: Bool) {
         let amplified = sample * powf(10, min(12, max(-6, gainDb)) / 20)
         return softLimitSample(amplified)

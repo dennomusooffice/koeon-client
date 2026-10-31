@@ -9,6 +9,115 @@ import org.junit.Test
 
 class InputGainProcessorTest {
     @Test
+    fun `route changes cancel calibration and use the new microphone gain`() {
+        val gain = InputGainProcessor(MemoryProfiles(), initialMode = InputGainMode.MANUAL)
+        gain.setRoute("Wired")
+        gain.setManualGainDb(24f)
+        gain.setRoute("Built-in")
+        gain.setManualGainDb(18f)
+        gain.beginTransmission()
+        gain.startCalibration()
+        gain.setRoute("Wired")
+        assertEquals(24f, gain.snapshot().effectiveGainDb, 0f)
+        assertEquals("IDLE", gain.snapshot().calibrationState)
+        assertEquals(null, gain.snapshot().recommendedGainDb)
+    }
+
+    @Test
+    fun `route change cannot train another microphones AUTO profile`() {
+        val gain = InputGainProcessor(MemoryProfiles(), initialMode = InputGainMode.AUTO)
+        gain.setRoute("Built-in")
+        gain.beginTransmission()
+        gain.processPcm16(samples(*IntArray(9_600) { 2_000 }))
+        gain.setRoute("Wired")
+        gain.processPcm16(samples(*IntArray(9_600) { 2_000 }))
+        gain.endTransmission()
+        assertEquals(0f, gain.snapshot().autoTrimDb, 0f)
+        gain.setRoute("Built-in")
+        assertEquals(0f, gain.snapshot().autoTrimDb, 0f)
+    }
+
+    @Test
+    fun `capture owns pre roll meters and trains only after successful completion`() {
+        val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
+        val capture = Batv1CaptureBuffer(inputGain = gain)
+        capture.arm("short")
+        capture.appendLiveKitPcm(samples(*IntArray(960) { 32_000 }), 16, 48_000, 1, 960)
+        capture.markCueBoundary()
+        capture.appendLiveKitPcm(samples(*IntArray(9_600) { 2_000 }), 16, 48_000, 1, 9_600)
+        assertTrue(capture.freeze("short"))
+        capture.startForwarding { }
+        val before = gain.snapshot()
+        assertEquals(9_600L, before.meterSampleCount)
+        assertEquals(0f, before.autoTrimDb, 0f)
+        capture.appendLiveKitPcm(samples(*IntArray(960) { 32_000 }), 16, 48_000, 1, 960)
+        assertEquals(before, gain.snapshot())
+        capture.discard(learnFromCapture = true)
+        assertEquals(1f, gain.snapshot().autoTrimDb, 0f)
+        assertEquals(9_600L, gain.snapshot().meterSampleCount)
+        capture.discard(learnFromCapture = true)
+        assertEquals(1f, gain.snapshot().autoTrimDb, 0f)
+    }
+
+    @Test
+    fun `cancelled capture never trains AUTO`() {
+        val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
+        val capture = Batv1CaptureBuffer(inputGain = gain)
+        capture.arm("cancelled")
+        capture.appendLiveKitPcm(samples(*IntArray(9_600) { 2_000 }), 16, 48_000, 1, 9_600)
+        capture.discard()
+        assertEquals(0f, gain.snapshot().autoTrimDb, 0f)
+    }
+
+    @Test
+    fun `capture gain stays fixed from pre roll through release tail`() {
+        val gain = InputGainProcessor(initialMode = InputGainMode.MANUAL)
+        gain.setManualGainDb(6f)
+        val capture = Batv1CaptureBuffer(inputGain = gain)
+        capture.arm("normal")
+        capture.markCueBoundary()
+        capture.appendLiveKitPcm(samples(*IntArray(960) { 2_000 }), 16, 48_000, 1, 960)
+        gain.setManualGainDb(12f)
+        val outputs = mutableListOf<ByteArray>()
+        capture.startForwarding { outputs.add(it) }
+        capture.appendLiveKitPcm(samples(*IntArray(960) { 2_000 }), 16, 48_000, 1, 960)
+        capture.stopForwarding()
+        capture.appendLiveKitPcm(samples(*IntArray(960) { 32_000 }), 16, 48_000, 1, 960)
+        assertEquals(2, outputs.size)
+        assertTrue(outputs.all { ByteBuffer.wrap(it).order(ByteOrder.nativeOrder()).short.toInt() == 3_990 })
+        assertEquals(1_920L, gain.snapshot().meterSampleCount)
+        capture.discard(learnFromCapture = true)
+        capture.arm("next")
+        assertEquals(12f, gain.snapshot().effectiveGainDb, 0f)
+    }
+
+    @Test
+    fun `auto converges to the output target instead of accumulating input error`() {
+        var trim = 0f
+        repeat(30) { trim = InputGainProcessor.nextAutoTrim(trim, -24f) }
+        assertEquals(6f, trim, 0.001f)
+        assertEquals(5f, InputGainProcessor.nextAutoTrim(6f, -18f), 0.001f)
+    }
+
+    @Test
+    fun `silent transmissions do not train auto gain upwards`() {
+        val processor = InputGainProcessor(initialMode = InputGainMode.AUTO)
+        repeat(8) {
+            processor.beginTransmission()
+            processor.processPcm16(samples(*IntArray(5_000)))
+            processor.endTransmission()
+        }
+        assertEquals(0f, processor.snapshot().autoTrimDb, 0f)
+    }
+
+    @Test
+    fun `auto ignores negligible signal and invalid measurements`() {
+        for (level in listOf(-120f, -90f, -60f, Float.NaN, Float.NEGATIVE_INFINITY)) {
+            assertEquals(4f, InputGainProcessor.nextAutoTrim(4f, level), 0f)
+        }
+    }
+
+    @Test
     fun `default mode is transparent with zero effective gain`() {
         val processor = InputGainProcessor()
 

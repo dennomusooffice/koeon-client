@@ -26,11 +26,7 @@ struct KOEONApp: App {
                     case .background: "background"
                     @unknown default: "unknown"
                     }
-                    if phase == .background {
-                        Batv1CrashBreadcrumbStore.shared.markCleanExit()
-                    } else if phase == .active {
-                        Batv1CrashBreadcrumbStore.shared.record(role: "APP", stage: "APP_RESUME")
-                    }
+                    Batv1CrashBreadcrumbStore.shared.recordAppLifecycle(lifecycleState)
                     intercomSession.appLifecycleDidChange(lifecycleState)
                 }
         }

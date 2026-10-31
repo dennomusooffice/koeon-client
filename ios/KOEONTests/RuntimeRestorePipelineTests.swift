@@ -3,6 +3,86 @@ import XCTest
 
 @MainActor
 final class RuntimeRestorePipelineTests: XCTestCase {
+    func testFailedResumePreservesPushUntilExplicitPowerOff() async {
+        let api = ResumeCleanupAPIStub()
+        let controller = isolatedResumeController(api: api)
+        let result = await controller.establishResumedRuntime(invalidResumeResponse("fresh"))
+        XCTAssertFalse(result)
+        XCTAssertTrue(api.listening, "A connection failure must not revoke the next incoming push")
+        XCTAssertEqual(api.cleanupCalls, [])
+        await controller.leave()
+        XCTAssertFalse(api.listening)
+        XCTAssertEqual(api.cleanupCalls, ["unregister:fresh", "leave:fresh"])
+        await controller.leave()
+        XCTAssertEqual(api.cleanupCalls.count, 2, "A stopped failed runtime has no remaining backend ownership")
+    }
+
+    func testRepeatedResumeFailuresOnlyLeaveLatestSessionOnPowerOff() async {
+        let api = ResumeCleanupAPIStub()
+        let controller = isolatedResumeController(api: api)
+        for id in ["first", "second"] {
+            let result = await controller.establishResumedRuntime(invalidResumeResponse(id))
+            XCTAssertFalse(result)
+            XCTAssertTrue(api.listening)
+        }
+        XCTAssertEqual(api.cleanupCalls, [])
+        await controller.leave()
+        XCTAssertEqual(api.cleanupCalls, ["unregister:second", "leave:second"])
+    }
+
+    func testCancelledResumeStillLeavesItsBackendSessionAtExplicitStop() async {
+        let api = ResumeCleanupAPIStub()
+        let controller = isolatedResumeController(api: api)
+        let response = invalidResumeResponse("cancelled")
+        let task = Task { @MainActor in
+            while !Task.isCancelled { await Task.yield() }
+            return await controller.establishResumedRuntime(response)
+        }
+        task.cancel()
+        let result = await task.value
+        XCTAssertFalse(result)
+        XCTAssertEqual(api.cleanupCalls, [])
+        await controller.leave()
+        XCTAssertEqual(api.cleanupCalls, ["unregister:cancelled", "leave:cancelled"])
+    }
+
+    func testFailedResumePersistsLatestSessionForPowerOffAfterColdLaunch() async {
+        let suite = "ResumeListening-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        PttRestoreDescriptor(channelId: "stage", channelName: "Stage",
+            channelUUID: PushToTalkChannelUUID.make(channelId: "stage"),
+            canPublish: true, lastBackendSessionId: "previous").persist(to: defaults)
+        XCTAssertEqual(PttRestoreDescriptor.load(from: defaults)?.lastBackendSessionId, "previous")
+        let api = ResumeCleanupAPIStub()
+        let controller = IntercomSessionController(api: api,
+            pushToTalk: ApplePushToTalkController(defaults: defaults))
+        let result = await controller.establishResumedRuntime(invalidResumeResponse("fresh"))
+        XCTAssertFalse(result)
+        XCTAssertEqual(PttRestoreDescriptor.load(from: defaults)?.lastBackendSessionId, "fresh")
+        XCTAssertEqual(api.cleanupCalls, [])
+        // A new app instance has no joined/pending runtime, only the descriptor.
+        let relaunched = IntercomSessionController(api: api,
+            pushToTalk: ApplePushToTalkController(defaults: defaults))
+        await relaunched.leave()
+        XCTAssertEqual(api.cleanupCalls, ["unregister:fresh", "leave:fresh"])
+        XCTAssertNil(PttRestoreDescriptor.load(from: defaults))
+    }
+
+    private func isolatedResumeController(api: ResumeCleanupAPIStub) -> IntercomSessionController {
+        IntercomSessionController(api: api,
+            pushToTalk: ApplePushToTalkController(defaults: UserDefaults(suiteName: UUID().uuidString)!))
+    }
+
+    private func invalidResumeResponse(_ id: String) -> JoinResponse {
+        // The real SDK rejects this scheme before opening any network connection.
+        JoinResponse(sessionId: id, livekitUrl: "not-a-livekit-url", token: "fixture",
+            roomName: "stage", user: User(id: "user", workspaceId: "workspace", name: "User",
+                role: .staff, channelIds: ["stage"]),
+            channel: Channel(id: "stage", workspaceId: "workspace", name: "Stage"),
+            canPublish: true, tokenExpiresInSeconds: 300, deviceId: "device")
+    }
+
     func testPowerIntentSurvivesFailedRuntimeReplacementAndAllowsRetry() async throws {
         var intent = RuntimeRecoveryIntent()
         intent.powerOn()
@@ -380,6 +460,101 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         XCTAssertFalse(result.timedOut)
     }
 
+    func testReadyIsDeferredUntilMatchingSDKDeviceMetadataArrives() async {
+        for metadataArrives in [false, true] {
+            let barrier = PttRxReadyBarrier()
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: ["old"], expectedDeviceIds: ["device"])
+            await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: nil)
+            if metadataArrives {
+                await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            }
+            let result = await barrier.wait(leaseId: "lease", maximumWaitMilliseconds: 0)
+            XCTAssertEqual(result.receivedCount, metadataArrives ? 1 : 0)
+            XCTAssertEqual(result.timedOut, !metadataArrives)
+        }
+    }
+
+    func testReadyMetadataNeverAuthenticatesMissingOrMismatchedSessionClaims() async {
+        for identity: String? in [nil, "", "other-session"] {
+            let barrier = PttRxReadyBarrier()
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            await barrier.accept(metadataReady(), participantIdentity: identity, participantDeviceId: nil)
+            await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            let result = await barrier.wait(leaseId: "lease", maximumWaitMilliseconds: 0)
+            XCTAssertEqual(result.receivedCount, 0)
+            XCTAssertTrue(result.timedOut)
+        }
+    }
+
+    func testReadyMetadataRejectsWrongLeaseDeviceAndContradictoryMetadata() async {
+        for condition in ["wrong-lease", "unknown-device", "wrong-metadata"] {
+            let barrier = PttRxReadyBarrier()
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            let event = metadataReady(lease: condition == "wrong-lease" ? "other-lease" : "lease",
+                                      device: condition == "unknown-device" ? "other-device" : "device")
+            await barrier.accept(event, participantIdentity: "session", participantDeviceId: nil)
+            if condition == "wrong-metadata" {
+                await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "wrong-device")
+            }
+            await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            let result = await barrier.wait(leaseId: "lease", maximumWaitMilliseconds: 0)
+            XCTAssertEqual(result.receivedCount, 0, condition)
+        }
+    }
+
+    func testUnrelatedMetadataCannotConsumeAnotherReceiversPendingReady() async {
+        let barrier = PttRxReadyBarrier()
+        await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+        await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: nil)
+        await barrier.reconcileParticipant(participantIdentity: "other-session", participantDeviceId: "device")
+        await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+        await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+        let result = await barrier.wait(leaseId: "lease", maximumWaitMilliseconds: 0)
+        XCTAssertEqual(result.receivedCount, 1)
+        XCTAssertFalse(result.timedOut)
+    }
+
+    func testReadyMetadataCannotReviveCancelledOrReplacedBarrier() async {
+        for replacement in [false, true] {
+            let barrier = PttRxReadyBarrier()
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: nil)
+            if replacement {
+                await barrier.prepare(leaseId: "new", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            } else {
+                await barrier.cancel(leaseId: "lease")
+            }
+            await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            let result = await barrier.wait(leaseId: replacement ? "new" : "lease", maximumWaitMilliseconds: 0)
+            XCTAssertEqual(result.receivedCount, 0)
+            XCTAssertEqual(result.cancelled, !replacement)
+        }
+    }
+
+    func testReadyAndDelayedMetadataCannotPassOriginalDeadline() async {
+        for deferred in [false, true] {
+            let clock = ReadyMetadataTestClock()
+            let barrier = PttRxReadyBarrier(clock: clock)
+            await barrier.prepare(leaseId: "lease", expectedSessionIds: [], expectedDeviceIds: ["device"])
+            if deferred { await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: nil) }
+            clock.advance(milliseconds: 4_000)
+            if deferred {
+                await barrier.reconcileParticipant(participantIdentity: "session", participantDeviceId: "device")
+            } else {
+                await barrier.accept(metadataReady(), participantIdentity: "session", participantDeviceId: "device")
+            }
+            let result = await barrier.wait(leaseId: "lease")
+            XCTAssertEqual(result.receivedCount, 0)
+            XCTAssertEqual(result.waitMilliseconds, 4_000)
+            XCTAssertTrue(result.timedOut)
+        }
+    }
+
+    private func metadataReady(lease: String = "lease", device: String = "device") -> PttRxReadyEvent {
+        PttRxReadyEvent(version: 1, type: "rx_ready", channelId: "stage", speakerSessionId: "speaker",
+                       receiverSessionId: "session", receiverDeviceId: device, leaseId: lease, readyAt: 1)
+    }
+
     func testM1MultiRecipientWaitsForFinalAck() async {
         let barrier = PttRxReadyBarrier()
         await barrier.prepare(
@@ -464,4 +639,39 @@ final class RuntimeRestorePipelineTests: XCTestCase {
             deviceId: "device-stable"
         )
     }
+}
+
+private final class ReadyMetadataTestClock: PTTClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Date(timeIntervalSince1970: 1_000)
+    var now: Date { lock.withLock { value } }
+    func advance(milliseconds: Int) { lock.withLock { value += Double(milliseconds) / 1_000 } }
+    func sleep(milliseconds: Int) async throws { try await Task.sleep(for: .milliseconds(milliseconds)) }
+}
+
+private final class ResumeCleanupAPIStub: KOEONAPIClientProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [String] = []
+    private var registered = true
+    var cleanupCalls: [String] { lock.withLock { calls } }
+    var listening: Bool { lock.withLock { registered } }
+    func unregisterPttToken(sessionId: String) async throws {
+        lock.withLock { registered = false; calls.append("unregister:\(sessionId)") }
+    }
+    func leave(sessionId: String) async throws {
+        lock.withLock { registered = false; calls.append("leave:\(sessionId)") }
+    }
+    func fixture() async throws -> FixtureResponse { throw APIClientError.invalidResponse }
+    func enroll(_ request: EnrollmentRequest) async throws -> EnrollmentResponse { throw APIClientError.invalidResponse }
+    func me() async throws -> MeResponse { throw APIClientError.invalidResponse }
+    func join(_ request: JoinRequest) async throws -> JoinResponse { throw APIClientError.invalidResponse }
+    func resume(_ request: ResumeRequest) async throws -> JoinResponse { throw APIClientError.invalidResponse }
+    func acquireFloor(sessionId: String) async throws -> FloorResponse { throw APIClientError.invalidResponse }
+    func renewFloor(sessionId: String, leaseId: String) async throws -> FloorResponse { throw APIClientError.invalidResponse }
+    func releaseFloor(sessionId: String, leaseId: String) async throws -> FloorReleaseResponse { throw APIClientError.invalidResponse }
+    func floorStatus(sessionId: String) async throws -> FloorResponse { throw APIClientError.invalidResponse }
+    func registerPttToken(sessionId: String, channelId: String, token: String) async throws { throw APIClientError.invalidResponse }
+    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse { throw APIClientError.invalidResponse }
+    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse { throw APIClientError.invalidResponse }
+    func logout() async throws { throw APIClientError.invalidResponse }
 }

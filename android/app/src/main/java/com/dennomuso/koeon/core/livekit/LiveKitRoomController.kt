@@ -20,6 +20,8 @@ import com.dennomuso.koeon.core.ptt.RxReadyBarrier
 import com.dennomuso.koeon.core.ptt.RxReadyAcceptance
 import com.dennomuso.koeon.core.ptt.RxReadyReason
 import com.dennomuso.koeon.core.ptt.RxReadyReconcileSource
+import com.dennomuso.koeon.core.ptt.publishRxReadyWithRetry
+import com.dennomuso.koeon.core.ptt.RxState
 import com.dennomuso.koeon.core.ptt.RxReadyResult
 import com.dennomuso.koeon.core.ptt.RxAudioController
 import com.dennomuso.koeon.core.ptt.RxSnapshot
@@ -36,6 +38,7 @@ import io.livekit.android.room.track.RemoteAudioTrack
 import io.livekit.android.room.track.LocalAudioTrackOptions
 import io.livekit.android.room.track.DataPublishReliability
 import io.livekit.android.room.participant.AudioTrackPublishDefaults
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -101,6 +104,7 @@ data class LiveKitSnapshot(
     val rxReadyReceivedEvents: Int = 0,
     val rxReadyRejectedCount: Int = 0,
     val rxReadyRejectedSessionMismatch: Int = 0,
+    val rxReadySessionMismatchReasons: Map<String, Int> = emptyMap(),
     val rxReadyRejectedDeviceMismatch: Int = 0,
     val rxReadyRejectedParticipantMetadataMissing: Int = 0,
     val rxReadyRejectedLeaseMismatch: Int = 0,
@@ -123,6 +127,7 @@ data class LiveKitSnapshot(
     val lastError: String? = null,
     val deployment: String = "UNKNOWN",
     val endpointHost: String? = null,
+    val serverVersion: String? = null,
     val effectiveAudioBitrateKbps: Int? = null,
 )
 
@@ -286,6 +291,8 @@ class LiveKitRoomController(
     private var rxReadyBarrier: RxReadyBarrier? = null
     private var rxReadyReconcileJob: Job? = null
     private var rxReadyLeaseId: String? = null
+    private var rxReadyPublishJob: Job? = null
+    private var rxReadyPublishGeneration = 0L
     private var rxReadyPublishLeaseId: String? = null
     private var rxReadyStartLeaseId: String? = null
     var onBufferedAudioStart: (String) -> Unit = {}
@@ -328,7 +335,7 @@ class LiveKitRoomController(
             scope = scope,
             channelId = channelId,
             cuePlayer = TonePttCuePlayer(appContext, CueRole.RX),
-            onValidatedEnd = { onBufferedAudioEnd() },
+            onValidatedEnd = { cancelReceiverReadyPublication(); onBufferedAudioEnd() },
             onEndCueCompleted = { onBufferedAudioEndCue() },
             onSnapshot = { rx -> _snapshot.value = _snapshot.value.copy(rx = rx) },
         )
@@ -369,10 +376,14 @@ class LiveKitRoomController(
                 _snapshot.value = _snapshot.value.copy(microphoneTrackState = "prepared_muted")
             }
             refreshParticipants(nextRoom)
-            _snapshot.value = _snapshot.value.copy(connectionState = IntercomConnectionState.CONNECTED)
+            _snapshot.value = _snapshot.value.copy(
+                connectionState = IntercomConnectionState.CONNECTED,
+                serverVersion = nextRoom.serverInfo?.version?.toString(),
+            )
         } catch (error: Throwable) {
             _snapshot.value = _snapshot.value.copy(
                 connectionState = IntercomConnectionState.DISCONNECTED,
+                serverVersion = null,
                 lastError = error.message ?: "LiveKit connection failed",
             )
             disconnect()
@@ -538,6 +549,7 @@ class LiveKitRoomController(
     }
 
     fun disconnect() {
+        cancelReceiverReadyPublication()
         runCatching { prewarmedTrack?.removeSink(batv1TrackSink) }
         runCatching { prewarmedTrack?.stopPrewarm() }
         prewarmedTrack = null
@@ -563,22 +575,27 @@ class LiveKitRoomController(
         when (event) {
             is RoomEvent.Connected -> {
                 refreshParticipants(event.room)
-                _snapshot.value = _snapshot.value.copy(connectionState = IntercomConnectionState.CONNECTED)
+                _snapshot.value = _snapshot.value.copy(
+                    connectionState = IntercomConnectionState.CONNECTED,
+                    serverVersion = event.room.serverInfo?.version?.toString(),
+                )
             }
             is RoomEvent.Reconnecting -> {
-                _snapshot.value = _snapshot.value.copy(connectionState = IntercomConnectionState.RECONNECTING)
+                _snapshot.value = _snapshot.value.copy(connectionState = IntercomConnectionState.RECONNECTING, serverVersion = null)
             }
             is RoomEvent.Reconnected -> {
                 refreshParticipants(event.room)
                 _snapshot.value = _snapshot.value.copy(
                     connectionState = IntercomConnectionState.CONNECTED,
                     reconnectCount = _snapshot.value.reconnectCount + 1,
+                    serverVersion = event.room.serverInfo?.version?.toString(),
                 )
             }
             is RoomEvent.Disconnected -> {
                 cancelRxReady()
                 _snapshot.value = _snapshot.value.copy(
                     connectionState = IntercomConnectionState.DISCONNECTED,
+                    serverVersion = null,
                     participantNames = emptyList(),
                     activeSpeaker = null,
                     lastError = event.error?.message,
@@ -750,6 +767,7 @@ class LiveKitRoomController(
             rxReadyReceivedEvents = audit.receivedEvents,
             rxReadyRejectedCount = audit.rejectedEvents,
             rxReadyRejectedSessionMismatch = audit.rejectedSessionMismatch,
+            rxReadySessionMismatchReasons = audit.sessionMismatchReasons,
             rxReadyRejectedDeviceMismatch = audit.rejectedDeviceMismatch,
             rxReadyRejectedParticipantMetadataMissing = audit.rejectedParticipantMetadataMissing,
             rxReadyRejectedLeaseMismatch = audit.rejectedLeaseMismatch,
@@ -787,6 +805,15 @@ class LiveKitRoomController(
         pttRxReadyJson.parseToJsonElement(metadata).jsonObject["deviceId"]?.jsonPrimitive?.contentOrNull
     }.getOrNull()?.takeIf(String::isNotBlank)
 
+    private fun cancelReceiverReadyPublication() {
+        rxReadyPublishGeneration += 1
+        rxReadyPublishJob?.cancel()
+        rxReadyPublishJob = null
+        if (_snapshot.value.rxReadyPublishResult == "PENDING") {
+            _snapshot.value = _snapshot.value.copy(rxReadyPublishResult = "CANCELLED")
+        }
+    }
+
     private fun publishReceiverReady(control: PttControlEvent, participantIdentity: String) {
         val currentRoom = room ?: return
         val currentChannel = channelId ?: return
@@ -806,7 +833,18 @@ class LiveKitRoomController(
             leaseId = control.leaseId,
             readyAt = System.currentTimeMillis(),
         )
+        cancelReceiverReadyPublication()
+        val publicationGeneration = rxReadyPublishGeneration
         rxReadyPublishLeaseId = control.leaseId
+        fun isCurrent(): Boolean =
+            publicationGeneration == rxReadyPublishGeneration && room === currentRoom &&
+                currentRoom.state == Room.State.CONNECTED && sessionId == currentSession &&
+                channelId == currentChannel && deviceId == currentDevice &&
+                rxReadyPublishLeaseId == control.leaseId &&
+                rxAudio?.current()?.let {
+                    it.leaseId == control.leaseId && it.sessionId == participantIdentity &&
+                        it.state in setOf(RxState.RX_STARTING, RxState.RX_ACTIVE)
+                } == true
         _snapshot.value = _snapshot.value.copy(
             rxReadyProtocolVersion = PTT_RX_READY_VERSION,
             rxReadyPublishAttemptedAt = Instant.now(),
@@ -814,28 +852,37 @@ class LiveKitRoomController(
             rxReadyPublishResult = "PENDING",
             rxReadyPublishFailureClass = null,
         )
-        scope.launch {
+        rxReadyPublishJob = scope.launch {
             try {
-                currentRoom.localParticipant.publishData(
-                    pttRxReadyJson.encodeToString(ready).encodeToByteArray(),
-                    reliability = DataPublishReliability.RELIABLE,
-                    topic = PTT_RX_READY_TOPIC,
-                )
-                if (rxReadyPublishLeaseId == control.leaseId) {
+                publishRxReadyWithRetry(isCurrent = ::isCurrent) {
+                    currentRoom.localParticipant.publishData(
+                        pttRxReadyJson.encodeToString(ready).encodeToByteArray(),
+                        reliability = DataPublishReliability.RELIABLE,
+                        topic = PTT_RX_READY_TOPIC,
+                    )
+                }
+                if (isCurrent()) {
                     _snapshot.value = _snapshot.value.copy(
                         rxReadyPublishedAt = Instant.now(),
                         rxReadyPublishResult = "SUCCESS",
                         rxReadyPublishFailureClass = null,
                     )
                 }
-            } catch (error: Throwable) {
-                if (rxReadyPublishLeaseId == control.leaseId) {
+            } catch (cancelled: CancellationException) {
+                if (publicationGeneration == rxReadyPublishGeneration) {
+                    _snapshot.value = _snapshot.value.copy(rxReadyPublishResult = "CANCELLED")
+                }
+                throw cancelled
+            } catch (error: Exception) {
+                if (isCurrent()) {
                     _snapshot.value = _snapshot.value.copy(
                         rxReadyPublishedAt = null,
                         rxReadyPublishResult = "FAILURE",
                         rxReadyPublishFailureClass = rxReadyPublishFailureClass(error),
                     )
                 }
+            } finally {
+                if (publicationGeneration == rxReadyPublishGeneration) rxReadyPublishJob = null
             }
         }
     }
