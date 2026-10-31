@@ -32,6 +32,9 @@ actor PTTController {
     private var preparedResponse: FloorResponse?
     private var preparedOperation: Int?
     private var activeBufferedGenerationId: String?
+    private var bufferedReadyTask: Task<PttRxReadyWaitResult, Never>?
+    private var bufferedReadyOperation: Int?
+    private var frozenReleaseOperation: Int?
     private var acquisitionInFlight = false
     private var terminalTask: Task<Void, Never>?
     private var ownedLeaseId: String?
@@ -213,6 +216,10 @@ actor PTTController {
                 await abortBeforeTransmission(reason: "PTT attempt cancelled")
                 return false
             }
+            guard !ready.cancelled else {
+                await abortBeforeTransmission(reason: "RX_READY cancelled")
+                return false
+            }
             snapshot.rxReadyExpectedCount = ready.expectedCount
             snapshot.rxReadyReceivedCount = ready.receivedCount
             snapshot.rxReadyLateCount = ready.lateCount
@@ -333,8 +340,21 @@ actor PTTController {
                 snapshot.controlPublishReliableStartedAt = timing.reliableStartedAt
                 snapshot.controlPublishReliableCompletedAt = timing.reliableCompletedAt
                 snapshot.controlPublishReliableMilliseconds = timing.reliableMilliseconds
-                let ready = await control.awaitRxReady(leaseId: leaseId, maximumWaitMilliseconds: nil)
+                let readiness = Task { [control] in
+                    await control.awaitRxReady(leaseId: leaseId, maximumWaitMilliseconds: nil)
+                }
+                bufferedReadyTask = readiness
+                bufferedReadyOperation = operation
+                let ready = await readiness.value
+                if bufferedReadyOperation == operation {
+                    bufferedReadyTask = nil
+                    bufferedReadyOperation = nil
+                }
                 guard operation == generation, isPressed else { return }
+                guard !ready.cancelled else {
+                    await stopForSafety(reason: "RX_READY cancelled")
+                    return
+                }
                 snapshot.rxReadyExpectedCount = ready.expectedCount
                 snapshot.rxReadyReceivedCount = ready.receivedCount
                 snapshot.rxReadyLateCount = ready.lateCount
@@ -386,8 +406,27 @@ actor PTTController {
         guard isPressed else { return }
         snapshot.pttUpAt = clock.now
         isPressed = false
+        let operation = generation
+        if snapshot.state == .requestingFloor, let leaseId = ownedLeaseId,
+           let bufferedGenerationId = activeBufferedGenerationId,
+           let readiness = bufferedReadyTask, bufferedReadyOperation == operation {
+            frozenReleaseOperation = operation
+            let frozen = (try? await bufferedAudio?.freezePendingCapture(generationId: bufferedGenerationId)) == true
+            guard operation == generation, ownedLeaseId == leaseId else { return }
+            if frozen, frozenReleaseOperation == operation, terminalTask == nil {
+                snapshot.lastStopReason = "user_release_waiting_ready"
+                enterReleasing()
+                await finishFrozenRelease(
+                    readiness: readiness, operation: operation,
+                    leaseId: leaseId, bufferedGenerationId: bufferedGenerationId
+                )
+                return
+            }
+            if frozenReleaseOperation == operation { frozenReleaseOperation = nil }
+        }
 
         if let leaseId = snapshot.leaseId { await control.cancelRxReady(leaseId: leaseId) }
+        guard operation == generation else { return }
         if snapshot.state == .transmitting, let leaseId = snapshot.leaseId {
             snapshot.lastStopReason = "user_release"
             enterReleasing()
@@ -413,7 +452,46 @@ actor PTTController {
         }
     }
 
+    private func finishFrozenRelease(
+        readiness: Task<PttRxReadyWaitResult, Never>, operation: Int,
+        leaseId: String, bufferedGenerationId: String
+    ) async {
+        defer { if frozenReleaseOperation == operation { frozenReleaseOperation = nil } }
+        let ready = await readiness.value
+        guard !ready.cancelled, generation == operation, frozenReleaseOperation == operation,
+              ownedLeaseId == leaseId, terminalTask == nil else {
+            // Safety cleanup can cancel readiness before creating its terminal
+            // task. Join (or start) the common cleanup, never authorize here.
+            if ownedLeaseId == leaseId {
+                await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .idle, error: snapshot.lastError)
+            }
+            return
+        }
+        snapshot.rxReadyExpectedCount = ready.expectedCount
+        snapshot.rxReadyReceivedCount = ready.receivedCount
+        snapshot.rxReadyLateCount = ready.lateCount
+        snapshot.rxReadyWaitMilliseconds = ready.waitMilliseconds
+        snapshot.rxReadyTimedOut = ready.timedOut
+        snapshot.readyBarrierResult = ready.timedOut ? "READY_TIMEOUT" :
+            ready.expectedCount == 0 ? "NO_EXPECTATIONS" : "READY_ACKNOWLEDGED"
+        snapshot.rxReadyFirstAt = ready.firstReadyAt
+        snapshot.rxReadyAllAt = ready.allReadyAt
+        snapshot.readyBarrierCompletedAt = clock.now
+        do {
+            try await bufferedAudio?.authorize(leaseId: leaseId, generationId: bufferedGenerationId)
+            guard generation == operation, frozenReleaseOperation == operation,
+                  ownedLeaseId == leaseId, terminalTask == nil else { return }
+            snapshot.trackEnabledAt = clock.now
+            snapshot.talkingAt = snapshot.trackEnabledAt
+            await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .idle, error: nil)
+        } catch {
+            guard ownedLeaseId == leaseId else { return }
+            await stopForSafety(reason: "Buffered release failed: \(Self.safeMessage(error))")
+        }
+    }
+
     func stopForSafety(reason: String) async {
+        frozenReleaseOperation = nil
         if let terminalTask { await terminalTask.value; return }
         snapshot.lastStopReason = reason
         isPressed = false
@@ -557,7 +635,15 @@ actor PTTController {
             snapshot.floorLastRenewResult = "failed"
             snapshot.floorLastRenewError = Self.safeMessage(error)
             snapshot.lastStopReason = "floor_renew_failed"
-            if snapshot.state == .releasing {
+            if frozenReleaseOperation == operation {
+                frozenReleaseOperation = nil
+                generation += 1
+                await control.cancelRxReady(leaseId: leaseId)
+                await finishTransmission(
+                    leaseId: leaseId, playEndCue: false, nextState: .error,
+                    error: "Floor renew failed before buffered publication: \(Self.safeMessage(error))"
+                )
+            } else if snapshot.state == .releasing {
                 snapshot.lastError = "Floor renew failed during release: \(Self.safeMessage(error))"
                 snapshot.txErrorRecoverable = true
                 publish()

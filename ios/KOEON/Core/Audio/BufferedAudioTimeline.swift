@@ -183,6 +183,7 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     private var callbackFrameCount: Int?
     private var unsupportedFormatFrames = 0
     private var normalizedFrames = 0
+    private var frozen = false
     private var captureConverter: AVAudioConverter?
     private var converterSourceRate: Int?
 
@@ -200,6 +201,7 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
             callbackFrameCount = nil
             unsupportedFormatFrames = 0
             normalizedFrames = 0
+            frozen = false
             captureConverter = nil
             converterSourceRate = nil
         }
@@ -218,7 +220,7 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     func append(samples: [Int16], sampleRate: Int, channels: Int) {
         guard !samples.isEmpty else { return }
         lock.withLock {
-            guard generationId != nil else { return }
+            guard generationId != nil, !frozen else { return }
             callbackCount += 1
             callbackSampleRate = sampleRate
             callbackChannels = channels
@@ -305,12 +307,28 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
         lock.withLock {
             let count = frames.count
             frames.forEach(consumer)
-            forward = consumer
+            forward = frozen ? nil : consumer
             return count
         }
     }
 
     func stopForwarding() { lock.withLock { forward = nil } }
+
+    func freeze(generationId: String) -> Bool {
+        lock.withLock {
+            guard self.generationId == generationId else { return false }
+            guard !frozen else { return true }
+            if !partial.isEmpty {
+                partial.append(Data(count: batv1BytesPerFrame - partial.count))
+                if frames.count == batv1MaximumFrames { frames.removeFirst(); dropped += 1 }
+                frames.append(partial)
+                partial = Data()
+            }
+            frozen = true
+            forward = nil
+            return true
+        }
+    }
 
     func discard() {
         lock.withLock {
@@ -390,10 +408,15 @@ protocol BufferedAudioTransmitting: AnyObject {
     func audioSessionDidActivate() async throws
     func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool
     func authorize(leaseId: String, generationId: String) async throws
+    func freezePendingCapture(generationId: String) throws -> Bool
     func performReleaseHangover(generationId: String) async -> Bool
     func finish(generationId: String) async throws
     func discard(generationId: String) async
     var diagnostics: BufferedAudioTxDiagnostics { get }
+}
+
+extension BufferedAudioTransmitting {
+    func freezePendingCapture(generationId: String) throws -> Bool { false }
 }
 
 @MainActor
@@ -505,6 +528,24 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
         diagnostics.preRollBufferedFrames = seeded
         Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_AUTHORIZED", generationId: generationId)
         sendTask = Task { @MainActor [weak self] in await self?.sendLoop(token: token, generationId: generationId) }
+    }
+
+    func freezePendingCapture(generationId: String) throws -> Bool {
+        guard self.generationId == generationId, !authorized, diagnostics.captureConfirmed,
+              lifecycleState == .active, capture.freeze(generationId: generationId) else { return false }
+        do {
+            // Stop local recording while preserving captured PCM. Publication
+            // of these bytes does not require Apple's audio session to stay on.
+            try recordingAuthority.stop()
+        } catch {
+            lifecycleState = .failed
+            diagnostics.lastErrorCode = "BATV1_LOCAL_RECORDING_STOP_FAILED"
+            throw error
+        }
+        diagnostics.captureState = "FROZEN_WAITING_READY"
+        diagnostics.pttUpAt = Date()
+        Batv1CrashBreadcrumbStore.shared.record(role: "TX", stage: "TX_CAPTURE_FROZEN", generationId: generationId)
+        return true
     }
 
     func performReleaseHangover(generationId: String) async -> Bool {

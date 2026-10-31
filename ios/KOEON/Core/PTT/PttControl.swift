@@ -39,6 +39,7 @@ struct PttRxReadyWaitResult: Equatable, Sendable {
     let timedOut: Bool
     let firstReadyAt: Date?
     let allReadyAt: Date?
+    var cancelled: Bool = false
 }
 
 struct PttStartPublishDiagnostics: Equatable, Sendable {
@@ -160,26 +161,31 @@ actor PttRxReadyBarrier {
     }
 
     func wait(leaseId: String, maximumWaitMilliseconds: Int? = nil) async -> PttRxReadyWaitResult {
-        guard let initial = arm, initial.leaseId == leaseId else { return Self.empty }
+        guard let initial = arm, initial.leaseId == leaseId else { return Self.cancelledResult }
         let initialExpected = initial.expectedDevices.isEmpty ? initial.expected : initial.expectedDevices
-        if initialExpected.isEmpty { arm = nil; return Self.empty }
+        if initialExpected.isEmpty {
+            arm = nil
+            return initial.cancelled || Task.isCancelled ? Self.cancelledResult : Self.empty
+        }
         let policyMaximum = initialExpected.count == 1 ? rxReadySingleMaxWaitMilliseconds : rxReadyMultiAbsoluteMaxMilliseconds
         let maximum = maximumWaitMilliseconds.map { min(max(0, $0), policyMaximum) } ?? policyMaximum
         while true {
-            guard let current = arm, current.leaseId == leaseId else { return Self.empty }
+            guard let current = arm, current.leaseId == leaseId else { return Self.cancelledResult }
             let elapsed = max(0, Int(Date().timeIntervalSince(current.startedAt) * 1_000))
             let expected = current.expectedDevices.isEmpty ? current.expected : current.expectedDevices
             let all = current.received == expected
             let timedOut = elapsed >= maximum
-            if current.cancelled || all || timedOut {
+            let cancelled = current.cancelled || Task.isCancelled
+            if cancelled || all || timedOut {
                 let result = PttRxReadyWaitResult(
                     expectedCount: expected.count,
                     receivedCount: current.received.count,
                     lateCount: lateCount,
                     waitMilliseconds: min(elapsed, maximum),
-                    timedOut: timedOut && !all,
+                    timedOut: timedOut && !all && !cancelled,
                     firstReadyAt: current.firstAt,
-                    allReadyAt: current.allAt
+                    allReadyAt: current.allAt,
+                    cancelled: cancelled
                 )
                 arm = nil
                 return result
@@ -195,4 +201,5 @@ actor PttRxReadyBarrier {
     }
 
     private static let empty = PttRxReadyWaitResult(expectedCount: 0, receivedCount: 0, lateCount: 0, waitMilliseconds: 0, timedOut: false, firstReadyAt: nil, allReadyAt: nil)
+    private static let cancelledResult = PttRxReadyWaitResult(expectedCount: 0, receivedCount: 0, lateCount: 0, waitMilliseconds: 0, timedOut: false, firstReadyAt: nil, allReadyAt: nil, cancelled: true)
 }
