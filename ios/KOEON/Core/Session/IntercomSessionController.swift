@@ -1250,7 +1250,8 @@ final class IntercomSessionController: ObservableObject {
         bufferedResolveTask = nil
         incomingWakeRecoveryTask?.cancel()
         incomingWakeRecoveryTask = nil
-        let session = joinedSession
+        let leavingSessionId = joinedSession?.sessionId ?? pendingJoinResponse?.sessionId
+            ?? pushToTalk.listeningSessionId
         await ptt?.stopForSafety(reason: "Channel left.")
         guard await ptt?.cleanupIsConfirmed() != false else {
             recoveryIntent.powerOn()
@@ -1283,13 +1284,13 @@ final class IntercomSessionController: ObservableObject {
         resetRxConsistency()
         rx?.reset()
         rx = nil
-        if let session { try? await api.unregisterPttToken(sessionId: session.sessionId) }
+        if let leavingSessionId { try? await api.unregisterPttToken(sessionId: leavingSessionId) }
         await pushToTalk.leave()
         await room.disconnect()
         await audio.endPushToTalkManagedSession()
         await audio.endIntercom()
         do {
-            if let session { try await api.leave(sessionId: session.sessionId) }
+            if let leavingSessionId { try await api.leave(sessionId: leavingSessionId) }
         } catch {
             lastError = "Backend leave failed: \(safeMessage(error))"
         }
@@ -1868,8 +1869,11 @@ final class IntercomSessionController: ObservableObject {
     }
 
     /** Cold PushToTalk restoration consumes the fresh Resume response directly. */
-    private func establishResumedRuntime(_ response: JoinResponse) async -> Bool {
+    func establishResumedRuntime(_ response: JoinResponse) async -> Bool {
         pendingJoinResponse = response
+        // The backend already bound the listening registration in Resume.
+        // Persist that ownership even if the following network connect fails.
+        pushToTalk.retainListeningSessionId(response.sessionId)
         runtimeLiveness.beginRuntime()
         let runtimeGeneration = runtimeLiveness.generation
         installBufferedReceiver(for: response)
@@ -2010,7 +2014,14 @@ final class IntercomSessionController: ObservableObject {
             }
             return true
         } catch {
-            await discardResumedSession(response)
+            // A transient runtime failure is not POWER OFF. Unregister/leave
+            // would delete the durable push destination and prevent the next
+            // incoming push from retrying this background receiver. Explicit
+            // leave owns that cleanup, including a cancelled restore attempt.
+            Batv1CrashBreadcrumbStore.shared.record(
+                role: "APP", stage: "RUNTIME_CONNECT_FAILED", generationId: String(runtimeGeneration),
+                resultClass: Task.isCancelled ? "CANCELLED" : "LISTENING_RETAINED"
+            )
             pendingJoinResponse = nil
             joinedSession = nil
             await bufferedReceiver?.shutdownAndAwait()

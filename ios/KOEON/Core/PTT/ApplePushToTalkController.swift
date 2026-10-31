@@ -747,12 +747,22 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     }
 
     func updateBackendSessionId(_ sessionId: String) {
+        retainListeningSessionId(sessionId)
+        Task { await submitTokenIfPossible() }
+    }
+
+    func retainListeningSessionId(_ sessionId: String) {
         backendSessionId = sessionId
         if var descriptor = PttRestoreDescriptor.load(from: defaults) {
             descriptor.lastBackendSessionId = sessionId
             descriptor.persist(to: defaults)
         }
-        Task { await submitTokenIfPossible() }
+    }
+
+    // Resume binds the durable push registration before LiveKit connects.
+    // Explicit leave must still revoke it after a failed connect or cold launch.
+    var listeningSessionId: String? {
+        backendSessionId ?? PttRestoreDescriptor.load(from: defaults)?.lastBackendSessionId
     }
 
     func requestRuntimeRestoreIfNeeded() {
