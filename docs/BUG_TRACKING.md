@@ -28,7 +28,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#36](https://github.com/dennomusooffice/koeon-client/issues/36) | ロック中のOS強制終了 | 3104で再現、3106の単回試験では再発なし、原因確定は残る |
 | [#37](https://github.com/dennomusooffice/koeon-client/issues/37) | 準備待ち中に短い発話が失われる | 両OSで短発話保持を修正・自動テスト済み、未配信・実機未検証 |
 | [#38](https://github.com/dennomusooffice/koeon-client/issues/38) | Bluetoothイヤフォンで送信不能 | 3107へ修正配信、Bluetooth送信と再接続後の送信を実機確認 |
-| [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | 3107で利用者が受信音声を聞けず、原因未確定 |
+| [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | 構成変更からの再生復旧・診断を修正し自動テスト済み、3107での因果関係・実機聴取は未確認 |
 | [#40](https://github.com/dennomusooffice/koeon-client/issues/40) | SO-52Cの送信音声が非常に小さい | 1.0.12へ修正導入、内蔵+18dB・有線+24dBの聴取改善確認、PR未マージ |
 | [#42](https://github.com/dennomusooffice/koeon-client/issues/42) | 別利用者のiPhoneで11:00頃クラッシュ | 実ビルド・新しいクラッシュ記録は未取得、初期化競合を修正・自動テスト済み、因果関係未確定 |
 | [#43](https://github.com/dennomusooffice/koeon-client/issues/43) | AUTOが目標到達後・無音でも増加 | iOS/Androidの計算を修正・自動テスト済み、未配信・実機未検証 |
