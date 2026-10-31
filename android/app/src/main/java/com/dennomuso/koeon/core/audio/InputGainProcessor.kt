@@ -11,6 +11,8 @@ import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.sqrt
 
+const val MAX_MANUAL_INPUT_GAIN_DB = 18f
+
 enum class InputGainMode { OFF, AUTO, MANUAL }
 
 data class AudioDeviceProfile(
@@ -129,7 +131,7 @@ class InputGainProcessor(
     }
 
     @Synchronized fun setMode(value: InputGainMode) { mode = value; publish() }
-    @Synchronized fun setManualGainDb(value: Float) { profile = profile.copy(manualGainDb = value.coerceIn(-6f, 12f)); profileStore?.save(profile); publish() }
+    @Synchronized fun setManualGainDb(value: Float) { profile = profile.copy(manualGainDb = value.coerceIn(-6f, MAX_MANUAL_INPUT_GAIN_DB)); profileStore?.save(profile); publish() }
 
     @Synchronized
     fun beginTransmission() {
@@ -262,9 +264,9 @@ class InputGainProcessor(
 
     private fun effectiveGainDb() = when (mode) {
         InputGainMode.OFF -> 0f
-        InputGainMode.MANUAL -> profile.manualGainDb
-        InputGainMode.AUTO -> profile.autoTrimDb
-    }.coerceIn(-6f, 12f)
+        InputGainMode.MANUAL -> profile.manualGainDb.coerceIn(-6f, MAX_MANUAL_INPUT_GAIN_DB)
+        InputGainMode.AUTO -> profile.autoTrimDb.coerceIn(-6f, 12f)
+    }
 
     private fun rmsDbfs(): Float? = if (sampleCount == 0L) null else dbfs(sqrt(sumSquares / sampleCount).toFloat())
     private fun dbfs(value: Float) = if (value <= 0f) -120f else (20f * log10(value)).coerceAtLeast(-120f)
