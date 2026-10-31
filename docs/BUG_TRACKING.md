@@ -30,7 +30,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#38](https://github.com/dennomusooffice/koeon-client/issues/38) | Bluetoothイヤフォンで送信不能 | 3107へ修正配信、Bluetooth送信と再接続後の送信を実機確認 |
 | [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | iOS3109の前面人声は聴取成功。3110の再接続・ロック後は無音を利用者が報告、Android245送信・最終244受理。診断で初回engine.startのNSErrorを特定。限定再試行・安全な診断を修正、282テスト成功、3111内部配信済み・実機未検証 |
 | [#40](https://github.com/dennomusooffice/koeon-client/issues/40) | SO-52Cの送信音声が非常に小さい | SO-52C内蔵+18dB・有線+24dB、A303OP1.0.13内蔵+6dBで聴取改善確認、PR未マージ |
-| [#42](https://github.com/dennomusooffice/koeon-client/issues/42) | 別利用者のiPhoneで11:00頃クラッシュ | 実ビルド・新しいクラッシュ記録は未取得、初期化競合対策をiOS3109内部配信、因果関係未確定 |
+| [#42](https://github.com/dennomusooffice/koeon-client/issues/42) | 別利用者のiPhoneで11:00頃クラッシュ | 実ビルド・新しい.ips未取得。内部配信した対策との因果関係は未確定。終了原因の診断誤分類も修正、287テスト成功・追加分未配信 |
 | [#43](https://github.com/dennomusooffice/koeon-client/issues/43) | AUTOが目標到達後・無音でも増加 | 両OSを修正。A303OP1.0.13内蔵AUTOの段階更新・聴取を確認、収束・他ルートは未検証、Android公開保留 |
 | [#45](https://github.com/dennomusooffice/koeon-client/issues/45) | 再生待ちのキャンセル無視で停止・次の受信が戻らない | 再生待ち修正は3109内部配信。停止完了が次世代を消す競合も修正、278テスト成功、後続修正込み282件。3111内部配信済み・実機未検証 |
 | [#46](https://github.com/dennomusooffice/koeon-client/issues/46) | 前面でも双方向の音声到達が遅い | iOS3109・A303OP1.0.13の前面ACK約394/397ms、フレーム一致。iOS押下→TALKING1552ms等は残り、全面改善とは扱わない |

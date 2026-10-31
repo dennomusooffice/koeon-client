@@ -9,9 +9,9 @@
 | 項目 | 現在確認できている結果 |
 | --- | --- |
 | Android単体テスト / Lint / assembleDebug | 184件成功、Lint・ビルド成功（#48の追加修正を含む） |
-| iOS Simulator | 282件成功。受信停止／廃棄競合3件と初回エンジン起動4件を追加。追加修正をiOS3111内部配信済み、実機未検証 |
+| iOS Simulator | 最新287件成功。3111のソースは282件で検証済み。終了原因の診断誤分類5件を追加し、その修正は未配信 |
 | feature-parity-contract / diff whitespace | 成功 |
-| iOS1.0（2026103111） | Apple VALID / IN_BETA_TESTING、20:24 JSTに同じ2内部グループ・日本語説明を再取得確認。実機更新・改善確認は未完了 |
+| iOS1.0（2026103111） | Apple VALID / IN_BETA_TESTING、20:24 JSTに同じ2内部グループ・日本語説明を再取得確認。実機のbundleVersion3111・READY/Bluetoothを確認。20:31ロック後の聴取試験中 |
 | 旧iOS1.0（2026103110） | Apple VALID / IN_BETA_TESTING、同じ2内部グループ・テスト説明を再取得確認。実機に更新し、停止診断と1.5秒PCM輸送を確認。1秒以下の短押下は未解決 |
 | Android1.0.13（14） | 2cfff78の署名済み候補完成。APK SHA-256 `083c57348f01aaa444be99649e93dd52dc02234f3ec47dc623294d320bc2510e`。A303OPへローカル導入しAPKハッシュ一致確認、GitHub Release未公開 |
 | GitHub Public CI / Android公開 | 5ジョブともrunner未割当・実行step 0。アカウント側の請求問題で開始できない。所有者は現時点では対応不可。[Issue #47](https://github.com/dennomusooffice/koeon-client/issues/47)で復旧待ち。コードのテスト失敗とは区別し、公開ゲートは迂回しない |
@@ -292,3 +292,13 @@ iPhoneは利用者の解除後に診断を取得しようとしたが、30秒自
 ソース`34a13c165fdfe95958f9fa2f141557c96dd459fb`から1.0（2026103111）をローカルarchive・署名・exportし、候補の署名、Provisioning、entitlements、runtime frameworks、バージョン等の検証とAppleアップロードが成功。IPA SHA-256は`0ec65818dc47d85a569ba46b8b147b57356f1fb20db9dd105b2f8559cd886142`。Apple側は最初NOT_INDEXED、その後VALID/READY_FOR_BETA_TESTINGを経て、20:24 JSTの再取得でVALID/IN_BETA_TESTING・前版と同じ2内部グループ割当・日本語説明の一致を確認した。
 
 初回起動対策34a13c1と受信停止競合2362ac0を含む。配信確認時点の実機は3110のままで、ロック解除後の更新を準備中。282件の自動テストや配信成功を、Bluetooth・画面ロック中の聴取改善の証明とはしない。
+
+### 診断の終了原因誤分類（#42、未配信）
+
+修正`e4eddf734f560f6d974c556ced3a5fafbcaf46d7`。旧`markCleanExit`はSwiftUIのbackground移行で呼ばれ、次回起動をCLEANとした。その後に背景の音声イベントを記録すると同じフラグがfalseとなり、次回をUNEXPECTED_TERMINATION_OR_KILLとした。いずれも実際のプロセス終了理由を観測したものではない。隔離UserDefaultsの2テストで修正前の誤分類を再現した（3 assertions失敗）。
+
+背景移行をAPP_BACKGROUND、非活動化をAPP_INACTIVEとし、最後に観測したライフサイクルを別のキーで保持する。次回のpreviousRunLastLifecycleStateはSTARTING/ACTIVE/INACTIVE/BACKGROUND/UNKNOWNの分類のみ。音声イベントや64件のbreadcrumb上限で背景状態を失わない。既存のpreviousRunTerminationは互換フィールドとしてUNKNOWNを返し、旧cleanExitフラグから原因を推定しない。旧版のAPP_CLEAN_EXITもクラッシュ／正常終了の証明には使わない。
+
+旧フラグ、背景移行、背景の音声イベントとリング上限、前面復帰、起動途中・未知状態の5件を追加し、iOS全287件・parity成功。クラッシュそのものの解消ではなく、別利用者の11:00の.ipsと実ビルドは未取得。この追加修正は3111に含まれず、未配信・実機未検証。
+
+現在の実機3111は34a13c1のビルドで、20:31:28にロックを確認し、20:39以降の人声試験と解除を待っている。自動ロックは20:30に元の30秒へ復元済み。ソース34a13c1のPublic client checks run #132も5ジョブfailure・steps/logsなしで、Android公開ゲートを維持している。
