@@ -43,6 +43,10 @@ KOEON rights holderが権利を管理するsource codeには、[Mozilla Public L
 - `scripts/` — publication / public CIのsafety assertion
 - `sbom/` — SPDXと正確なdependency evidence
 
+## 不具合・修正の記録
+
+[追跡ルールとIssue一覧](docs/BUG_TRACKING.md)から、再現条件、修正PR、配信ビルド、検証結果と残件を確認できます。開発者・AIエージェントは調査や修正の都度、関連IssueとPRを更新してください。
+
 ## BuildとTest
 
 Macでの環境構築・ローカルビルドは[Macローカルビルド手順](docs/MACOS_LOCAL_BUILD.md)を参照してください。
