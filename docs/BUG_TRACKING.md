@@ -29,7 +29,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#37](https://github.com/dennomusooffice/koeon-client/issues/37) | 準備待ち中に短い発話が失われる | 約3秒で改善確認、さらに短い発話が残る |
 | [#38](https://github.com/dennomusooffice/koeon-client/issues/38) | Bluetoothイヤフォンで送信不能 | 3107へ修正配信、Bluetooth送信と再接続後の送信を実機確認 |
 | [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | 3107で利用者が受信音声を聞けず、原因未確定 |
-| [#40](https://github.com/dennomusooffice/koeon-client/issues/40) | SO-52Cの送信音声が非常に小さい | BATv1がゲイン・メーターを迂回、修正を実機検証中 |
+| [#40](https://github.com/dennomusooffice/koeon-client/issues/40) | SO-52Cの送信音声が非常に小さい | 1.0.12へ修正導入、内蔵+18dB・有線+24dBの聴取改善確認、PR未マージ |
 
 関連変更は[PR #33](https://github.com/dennomusooffice/koeon-client/pull/33)、詳しい時系列・ビルドと実測値は[IOS_RECOVERY_20261031.md](IOS_RECOVERY_20261031.md)。サーバー変更はクライアント変更と混同せず、同記録の別リポジトリPRへ辿る。
 
