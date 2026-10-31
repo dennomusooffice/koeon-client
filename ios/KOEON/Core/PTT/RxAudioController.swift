@@ -701,7 +701,7 @@ final class RxAudioController {
     private let onValidatedStart: @MainActor (PttControlEvent, Int) -> Void
     private let onAudioActivity: @MainActor (String?, Bool) -> Void
     private let onDrainCompleted: @MainActor (Int, String, String, String) -> Bool
-    private let onReceiverReady: @MainActor (String, String) async -> Void
+    private let onReceiverReady: @MainActor (String, String) async throws -> Void
     private var startCueEnabled: Bool
 
     private var snapshot = RxSnapshot()
@@ -710,6 +710,7 @@ final class RxAudioController {
     private var audioActive = false
     private var appleAudioActive = false
     private var firstPcmObserved = false
+    private var bufferedTimelineActive = false
     private var pendingEndReason: String?
     private var pendingActiveSessionId: String?
     private var silenceStartedAt: Date?
@@ -718,6 +719,7 @@ final class RxAudioController {
     private var capTask: Task<Void, Never>?
     private var startupTimeoutTask: Task<Void, Never>?
     private var readySentLeaseId: String?
+    private var readyPublicationGeneration: Int?
     private var pendingPushTiming: (incoming: Date, acquired: Date)?
 
     init(
@@ -727,7 +729,7 @@ final class RxAudioController {
         onValidatedStart: @escaping @MainActor (PttControlEvent, Int) -> Void = { _, _ in },
         onAudioActivity: @escaping @MainActor (String?, Bool) -> Void = { _, _ in },
         onDrainCompleted: @escaping @MainActor (Int, String, String, String) -> Bool = { _, _, _, _ in true },
-        onReceiverReady: @escaping @MainActor (String, String) async -> Void = { _, _ in },
+        onReceiverReady: @escaping @MainActor (String, String) async throws -> Void = { _, _ in },
         startCueEnabled: Bool = true,
         onUpdate: @escaping @Sendable (RxSnapshot) -> Void
     ) {
@@ -764,7 +766,7 @@ final class RxAudioController {
         else { markEnded(event: event, source: "control_end") }
     }
 
-    func handleTrustedIncomingStart(_ incoming: PttIncomingEvent) {
+    func handleTrustedIncomingStart(_ incoming: PttIncomingEvent, bufferedGenerationId: String? = nil, awaitingBufferedTimeline: Bool = false) {
         pendingPushTiming = (clock.now, incoming.acquiredAt)
         start(PttControlEvent(
             version: pttControlVersion,
@@ -774,8 +776,9 @@ final class RxAudioController {
             sessionId: incoming.speakerSessionId,
             leaseId: incoming.leaseId,
             sequence: 0,
-            sentAt: Int64(incoming.acquiredAt.timeIntervalSince1970 * 1_000)
-        ))
+            sentAt: Int64(incoming.acquiredAt.timeIntervalSince1970 * 1_000),
+            bufferedGenerationId: bufferedGenerationId
+        ), awaitingBufferedTimeline: awaitingBufferedTimeline)
     }
 
     func handleRemoteAudioActivity(senderSessionId: String?, active: Bool) {
@@ -809,6 +812,7 @@ final class RxAudioController {
         guard snapshot.state != .idle,
               snapshot.sessionId != nil,
               snapshot.leaseId != nil else { return }
+        bufferedTimelineActive = false
         if snapshot.state != .draining { beginDrain(reason: "batv1_final_sequence") }
         await completeDrain(reason: "batv1_final_sequence")
     }
@@ -902,9 +906,11 @@ final class RxAudioController {
         audioActive = false
         appleAudioActive = false
         firstPcmObserved = false
+        bufferedTimelineActive = false
         pendingEndReason = nil
         pendingActiveSessionId = nil
         readySentLeaseId = nil
+        readyPublicationGeneration = nil
         pendingPushTiming = nil
         silenceStartedAt = nil
         lastSequenceBySession.removeAll()
@@ -918,10 +924,27 @@ final class RxAudioController {
         for task in pending { await task?.value }
     }
 
-    private func start(_ event: PttControlEvent) {
+    func finishBufferedDiscoveryWithoutTimeline() {
+        guard bufferedTimelineActive else { return }
+        bufferedTimelineActive = false
+        cancelTimers()
+        if let session = snapshot.sessionId, let lease = snapshot.leaseId, snapshot.rxEndSignalAt != nil {
+            markEnded(sessionId: session, leaseId: lease,
+                      source: snapshot.rxControlEndReceivedAt != nil ? "control_end" : "floor_end")
+        }
+    }
+
+    private func start(_ event: PttControlEvent, awaitingBufferedTimeline: Bool = false) {
+        let needsBufferedDrain = event.bufferedGenerationId != nil || awaitingBufferedTimeline
         if snapshot.sessionId == event.sessionId,
            snapshot.leaseId == event.leaseId,
            snapshot.state != .idle {
+            if needsBufferedDrain, !bufferedTimelineActive {
+                bufferedTimelineActive = true
+                cancelTimers()
+                snapshot.state = firstPcmObserved ? .active : (appleAudioActive ? .waitingFirstAudio : .arming)
+                if snapshot.rxEndSignalAt != nil { scheduleBufferedTerminalTimeout() }
+            }
             onValidatedStart(event, snapshot.generation)
             snapshot.duplicateIgnored += 1
             publish()
@@ -933,6 +956,7 @@ final class RxAudioController {
             (audioActive && pendingActiveSessionId == nil)
         generation += 1
         let rxGeneration = generation
+        bufferedTimelineActive = needsBufferedDrain
         onValidatedStart(event, rxGeneration)
         cancelTimers()
         audioActive = voiceAlreadyActive
@@ -992,6 +1016,7 @@ final class RxAudioController {
         snapshot.endCueResult = .notPlayed
         publish()
         readySentLeaseId = nil
+        readyPublicationGeneration = nil
         if appleAudioActive {
             if voiceAlreadyActive {
                 snapshot.startCueResult = .notPlayed
@@ -1034,6 +1059,13 @@ final class RxAudioController {
         snapshot.rxEndSignalAt = now
         if source == "control_end" { snapshot.rxControlEndReceivedAt = now }
         else { snapshot.rxFloorEndObservedAt = now }
+        if bufferedTimelineActive {
+            // Floor/control END closes publication, not buffered playout. The
+            // player reports finalSequence/drain completion separately.
+            scheduleBufferedTerminalTimeout()
+            publish()
+            return
+        }
         if !firstPcmObserved {
             pendingEndReason = source
             snapshot.state = .endPending
@@ -1045,6 +1077,20 @@ final class RxAudioController {
             return
         }
         beginDrain(reason: source)
+    }
+
+    private func scheduleBufferedTerminalTimeout() {
+        guard capTask == nil else { return }
+        let operation = generation
+        capTask = Task { [weak self] in
+            guard let self else { return }
+            do { try await clock.sleep(milliseconds: 8_000) } catch { return }
+            guard !Task.isCancelled, operation == generation, bufferedTimelineActive,
+                  snapshot.state != .idle else { return }
+            bufferedTimelineActive = false
+            beginDrain(reason: "buffered_terminal_timeout")
+            await completeDrain(reason: "buffered_terminal_timeout")
+        }
     }
 
     private func beginDrain(reason: String) {
@@ -1120,12 +1166,45 @@ final class RxAudioController {
               appleAudioActive,
               let speakerSessionId = snapshot.sessionId,
               let leaseId = snapshot.leaseId,
-              readySentLeaseId != leaseId else { return }
-        readySentLeaseId = leaseId
-        await onReceiverReady(speakerSessionId, leaseId)
-        guard operation == generation else { return }
-        snapshot.rxReadySentAt = clock.now
-        publish()
+              readySentLeaseId != leaseId,
+              readyPublicationGeneration != operation else { return }
+        readyPublicationGeneration = operation
+        defer {
+            if readyPublicationGeneration == operation { readyPublicationGeneration = nil }
+        }
+        // A connected room may still be reopening its reliable data channel.
+        // Failed publication is not an acknowledgement and must remain retryable.
+        for attempt in 0..<10 {
+            guard operation == generation, appleAudioActive, snapshot.state != .idle,
+                  !Task.isCancelled else { return }
+            do {
+                try await onReceiverReady(speakerSessionId, leaseId)
+                guard operation == generation else { return }
+                readySentLeaseId = leaseId
+                snapshot.rxReadySentAt = clock.now
+                publish()
+                if bufferedTimelineActive {
+                    // Reliable transport delivery can precede the sender SDK's
+                    // participant registration after a cold reconnect. Repeat
+                    // the same idempotent readiness while awaiting actual media;
+                    // never weaken the sender's identity checks.
+                    Task { [weak self] in
+                        for _ in 0..<8 {
+                            guard let self else { return }
+                            do { try await self.clock.sleep(milliseconds: 150) } catch { return }
+                            guard operation == self.generation, self.appleAudioActive,
+                                  self.snapshot.state != .idle, !self.firstPcmObserved,
+                                  !Task.isCancelled else { return }
+                            try? await self.onReceiverReady(speakerSessionId, leaseId)
+                        }
+                    }
+                }
+                return
+            } catch {
+                guard attempt < 9 else { return }
+                do { try await clock.sleep(milliseconds: 150) } catch { return }
+            }
+        }
     }
 
     private func scheduleDrainCheck() {

@@ -4,6 +4,209 @@ import PushToTalk
 
 @MainActor
 final class RxAudioControllerTests: XCTestCase {
+    func testBufferedSpeechKeepsAppleParticipantUntilActualPlayoutDrains() async throws {
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(), onUpdate: { _ in })
+        var start = event(type: "start", sequence: 1)
+        start.bufferedGenerationId = "10000000-0000-4000-8000-000000000001"
+        controller.handleControl(start, senderSessionId: "session-a")
+        controller.audioSessionDidActivate()
+        controller.handleRemoteAudioActivity(senderSessionId: "session-a", active: true)
+        controller.handleRemotePcm(at: Date())
+        controller.handleControl(event(type: "end", sequence: 2), senderSessionId: "session-a")
+        controller.reconcileFloor(FloorResponse(outcome: .available, owner: nil, leaseId: nil,
+            acquiredAt: nil, leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false))
+        // A background receiver can have >350ms buffered even after Floor release.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertNotEqual(controller.currentSnapshot().state, .idle)
+        XCTAssertNotNil(controller.currentSnapshot().sessionId)
+        await controller.completeBufferedTimelineDrain()
+        XCTAssertEqual(controller.currentSnapshot().state, .idle)
+        XCTAssertEqual(controller.currentSnapshot().rxEndReason, "batv1_final_sequence")
+    }
+
+    func testResolvedBufferedStartRebuildsMissedControlAfterRuntimeReplacement() async throws {
+        let incoming = PttIncomingEvent(channelId: "stage", speakerUserId: "staff-a", speakerSessionId: "session-a",
+            speakerDisplayName: "Staff A", leaseId: "lease-a", acquiredAt: Date())
+        let json = #"{"generation":{"protocolVersion":1,"generationId":"10000000-0000-4000-8000-000000000001","channelId":"stage","speakerSessionId":"session-a","speakerDeviceId":"device-a","leaseId":"lease-a","codec":"pcm16le","sampleRate":48000,"channels":1,"frameDurationMs":20}}"#
+        let resolved = try XCTUnwrap(JSONDecoder().decode(Batv1ResolveResponse.self, from: Data(json.utf8)).generation)
+        XCTAssertTrue(resolved.matches(incoming))
+        var bound: PttControlEvent?
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(), clock: SuspendingClock(),
+            onValidatedStart: { event, _ in bound = event }, onUpdate: { _ in })
+        controller.handleTrustedIncomingStart(incoming)
+        XCTAssertNil(bound?.bufferedGenerationId)
+        await controller.resetAndAwait()
+        controller.handleTrustedIncomingStart(incoming, bufferedGenerationId: resolved.generationId)
+        XCTAssertEqual(bound?.bufferedGenerationId, resolved.generationId)
+        XCTAssertTrue(incomingMatchesBufferedStart(incoming, bound))
+        controller.handleRemotePcm(at: Date())
+        XCTAssertEqual(controller.currentSnapshot().state, .active)
+        await controller.completeBufferedTimelineDrain()
+        XCTAssertEqual(controller.currentSnapshot().state, .idle)
+    }
+
+    func testBufferedResolutionRejectsOtherTransmissionAndWrongWireFormat() throws {
+        let incoming = PttIncomingEvent(channelId: "stage", speakerUserId: "staff-a", speakerSessionId: "session-a",
+            speakerDisplayName: "Staff A", leaseId: "lease-a", acquiredAt: Date())
+        let valid: [String: Any] = ["protocolVersion": 1, "generationId": "10000000-0000-4000-8000-000000000001",
+            "channelId": "stage", "speakerSessionId": "session-a", "speakerDeviceId": "device-a", "leaseId": "lease-a",
+            "codec": "pcm16le", "sampleRate": 48000, "channels": 1, "frameDurationMs": 20]
+        for (key, value) in ["channelId": "other", "speakerSessionId": "other", "leaseId": "other",
+                              "generationId": "invalid", "speakerDeviceId": "", "codec": "opus"] {
+            var bad = valid; bad[key] = value
+            let result = try JSONDecoder().decode(Batv1ResolvedGeneration.self, from: JSONSerialization.data(withJSONObject: bad))
+            XCTAssertFalse(result.matches(incoming))
+        }
+        XCTAssertFalse(incomingMatchesBufferedStart(incoming, event(type: "start", sequence: 1)))
+        var wrongLease = event(type: "start", lease: "other", sequence: 1)
+        wrongLease.bufferedGenerationId = "generation"
+        XCTAssertFalse(incomingMatchesBufferedStart(incoming, wrongLease))
+        XCTAssertNil(try JSONDecoder().decode(Batv1ResolveResponse.self, from: Data(#"{"generation":null}"#.utf8)).generation)
+    }
+
+    func testDiscoveryWaitProtectsShortBurstBeforeDescriptorArrives() async throws {
+        let incoming = PttIncomingEvent(channelId: "stage", speakerUserId: "staff-a", speakerSessionId: "session-a",
+            speakerDisplayName: "Staff A", leaseId: "lease-a", acquiredAt: Date())
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(), onUpdate: { _ in })
+        controller.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
+        controller.audioSessionDidActivate()
+        controller.handleControl(event(type: "end", sequence: 2), senderSessionId: "session-a")
+        try await Task.sleep(for: .milliseconds(550))
+        XCTAssertNotEqual(controller.currentSnapshot().state, .idle)
+        controller.handleTrustedIncomingStart(incoming, bufferedGenerationId: "10000000-0000-4000-8000-000000000001")
+        controller.handleRemotePcm(at: Date())
+        XCTAssertEqual(controller.currentSnapshot().state, .active)
+        await controller.completeBufferedTimelineDrain()
+        XCTAssertEqual(controller.currentSnapshot().state, .idle)
+    }
+
+    func testDiscoveryWithoutTimelineReturnsToLegacyEndCleanup() async throws {
+        let incoming = PttIncomingEvent(channelId: "stage", speakerUserId: "staff-a", speakerSessionId: "session-a",
+            speakerDisplayName: "Staff A", leaseId: "lease-a", acquiredAt: Date())
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(), onUpdate: { _ in })
+        controller.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
+        controller.audioSessionDidActivate()
+        controller.handleControl(event(type: "end", sequence: 2), senderSessionId: "session-a")
+        controller.finishBufferedDiscoveryWithoutTimeline()
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(controller.currentSnapshot().state, .idle)
+    }
+
+    func testLateDescriptorCancelsLegacyShortBurstExpiry() async throws {
+        let incoming = PttIncomingEvent(channelId: "stage", speakerUserId: "staff-a", speakerSessionId: "session-a",
+            speakerDisplayName: "Staff A", leaseId: "lease-a", acquiredAt: Date())
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(), onUpdate: { _ in })
+        controller.handleTrustedIncomingStart(incoming)
+        controller.audioSessionDidActivate()
+        controller.handleControl(event(type: "end", sequence: 2), senderSessionId: "session-a")
+        XCTAssertEqual(controller.currentSnapshot().state, .endPending)
+        controller.handleTrustedIncomingStart(incoming, bufferedGenerationId: "10000000-0000-4000-8000-000000000001")
+        controller.handleRemotePcm(at: Date())
+        try await Task.sleep(for: .milliseconds(550))
+        XCTAssertEqual(controller.currentSnapshot().state, .active)
+        await controller.completeBufferedTimelineDrain()
+        XCTAssertEqual(controller.currentSnapshot().state, .idle)
+    }
+
+    func testBufferedTerminalWaitStillHasFiniteFailureCleanup() async {
+        let clock = AdvancingClock()
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(), clock: clock, onUpdate: { _ in })
+        var start = event(type: "start", sequence: 1)
+        start.bufferedGenerationId = "10000000-0000-4000-8000-000000000001"
+        controller.handleControl(start, senderSessionId: "session-a")
+        controller.handleControl(event(type: "end", sequence: 2), senderSessionId: "session-a")
+        for _ in 0..<100 {
+            if controller.currentSnapshot().state == .idle { break }
+            await Task.yield()
+        }
+        XCTAssertEqual(controller.currentSnapshot().state, .idle)
+        XCTAssertEqual(controller.currentSnapshot().rxEndReason, "buffered_terminal_timeout")
+        XCTAssertGreaterThanOrEqual(clock.now.timeIntervalSince1970, 1_008)
+    }
+
+    func testMissingAppleTransmissionCompletesReleaseAndAllowsNextPress() {
+        let failure = ApplePttErrorClassifier.classify(
+            NSError(domain: PTChannelError.errorDomain,
+                    code: PTChannelError.Code.transmissionNotFound.rawValue), operation: .stop)
+        for queuedPress in [false, true] {
+            var gate = PttRequestGate()
+            _ = gate.pressDown()
+            _ = gate.didBegin()
+            _ = gate.pressUp()
+            _ = gate.didFail(recoverable: failure.recoverable)
+            if queuedPress { _ = gate.pressDown() }
+            // Floor cleanup is confirmed; this Apple callback is the only
+            // remaining release fence (there will be no didEnd callback).
+            let actions = failure.completesAppleRelease ? gate.finishRearming() : []
+            XCTAssertEqual(gate.state, queuedPress ? .beginRequested : .idle)
+            XCTAssertEqual(actions, queuedPress ? [.requestBegin] : [])
+            if !queuedPress { XCTAssertEqual(gate.pressDown(), [.requestBegin]) }
+        }
+    }
+
+    func testStopFailureWithoutProofOfEndedTransmissionDoesNotCompleteRelease() {
+        for error in [
+            NSError(domain: "UnrelatedDomain", code: PTChannelError.Code.transmissionNotFound.rawValue),
+            NSError(domain: PTChannelError.errorDomain, code: PTChannelError.Code.transmissionInProgress.rawValue),
+            NSError(domain: PTChannelError.errorDomain, code: 999)
+        ] {
+            XCTAssertFalse(ApplePttErrorClassifier.classify(error, operation: .stop).completesAppleRelease)
+        }
+        XCTAssertTrue(ApplePttErrorClassifier.classify(
+            NSError(domain: PTChannelError.errorDomain, code: PTChannelError.Code.callActive.rawValue),
+            operation: .begin).completesAppleRelease)
+    }
+
+    func testDelayedAvailableFloorResponseDoesNotTerminateNewReception() async throws {
+        let receiver = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            clock: SuspendingClock(), onUpdate: { _ in })
+        let available = FloorResponse(outcome: .available, owner: nil, leaseId: nil,
+            acquiredAt: nil, leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false)
+        var response: CheckedContinuation<FloorResponse, Never>?
+        let pending = Task { @MainActor in
+            try await withCurrentFloorStatus(
+                context: { receiver.currentSnapshot().generation },
+                request: { await withCheckedContinuation { response = $0 } },
+                apply: { receiver.reconcileFloor($0) })
+        }
+        while response == nil { await Task.yield() }
+        receiver.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        response?.resume(returning: available)
+        let applied = try await pending.value
+        XCTAssertFalse(applied)
+        XCTAssertEqual(receiver.currentSnapshot().state, .arming)
+        XCTAssertNil(receiver.currentSnapshot().rxFloorEndObservedAt)
+        // A subsequent status requested for this reception must still end it.
+        let appliedCurrent = try await withCurrentFloorStatus(
+            context: { receiver.currentSnapshot().generation }, request: { available },
+            apply: { receiver.reconcileFloor($0) })
+        XCTAssertTrue(appliedCurrent)
+        XCTAssertNotNil(receiver.currentSnapshot().rxFloorEndObservedAt)
+        await receiver.resetAndAwait()
+    }
+
+    func testDelayedFloorResponseCannotAffectReplacementRuntimeOrNewPress() async throws {
+        for changeRuntime in [false, true] {
+            var runtime = 1
+            var press = 1
+            var response: CheckedContinuation<FloorResponse, Never>?
+            var applied = false
+            let pending = Task { @MainActor in
+                try await withCurrentFloorStatus(
+                    context: { [runtime, press] },
+                    request: { await withCheckedContinuation { response = $0 } },
+                    apply: { _ in applied = true })
+            }
+            while response == nil { await Task.yield() }
+            if changeRuntime { runtime += 1 } else { press += 1 }
+            response?.resume(returning: FloorResponse(outcome: .available, owner: nil, leaseId: nil,
+                acquiredAt: nil, leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false))
+            let result = try await pending.value
+            XCTAssertFalse(result)
+            XCTAssertFalse(applied)
+        }
+    }
+
     func testWarmReadyExpectedIncludesRemoteSessionsAndExcludesLocalDuplicates() {
         let expected = LiveKitRoomController.expectedRxReadySessions(
             serverExpected: ["wake-a", "remote-b", "remote-b"],
@@ -68,6 +271,55 @@ final class RxAudioControllerTests: XCTestCase {
             return XCTFail("Expected RX Ready and start cue events")
         }
         XCTAssertLessThan(readyIndex, cueIndex)
+    }
+
+    func testReceiverReadyRetriesTransientPublicationFailure() async throws {
+        var attempts = 0
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            onReceiverReady: { _, _ in
+                attempts += 1
+                if attempts < 3 { throw NSError(domain: "test.transient-ready", code: 1) }
+            }, onUpdate: { _ in })
+        controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        controller.audioSessionDidActivate()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(attempts, 3)
+        XCTAssertNotNil(controller.currentSnapshot().rxReadySentAt)
+        controller.reset()
+    }
+
+    func testBufferedReadyRepeatsUntilMediaConfirmsReception() async throws {
+        var sent = 0
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            onReceiverReady: { _, _ in sent += 1 }, onUpdate: { _ in })
+        var start = event(type: "start", sequence: 1)
+        start.bufferedGenerationId = "10000000-0000-4000-8000-000000000001"
+        controller.handleControl(start, senderSessionId: "session-a")
+        controller.audioSessionDidActivate()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertGreaterThanOrEqual(sent, 2)
+        controller.handleRemotePcm(at: Date())
+        let atMedia = sent
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(sent, atMedia)
+        controller.reset()
+    }
+
+    func testReceiverReadyFailureDoesNotReportSuccessAndResetStopsRetry() async throws {
+        var attempts = 0
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            onReceiverReady: { _, _ in
+                attempts += 1
+                throw NSError(domain: "test.disconnected-ready", code: 1)
+            }, onUpdate: { _ in })
+        controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        controller.audioSessionDidActivate()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(attempts, 1)
+        XCTAssertNil(controller.currentSnapshot().rxReadySentAt)
+        controller.reset()
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(attempts, 1)
     }
 
     func testFieldLabCueOffStillSendsReceiverReadyWithoutPlayingStartCue() async {
@@ -968,7 +1220,7 @@ final class RxAudioControllerTests: XCTestCase {
                 connectionState: .connected,
                 appLifecycleState: "background"
             ),
-            .resumeImmediately
+            .awaitReconnectThenResume
         )
         XCTAssertEqual(
             incomingPushRuntimeAction(
@@ -976,7 +1228,7 @@ final class RxAudioControllerTests: XCTestCase {
                 connectionState: .connected,
                 appLifecycleState: "inactive"
             ),
-            .resumeImmediately
+            .awaitReconnectThenResume
         )
         XCTAssertEqual(
             incomingPushRuntimeAction(
@@ -984,7 +1236,7 @@ final class RxAudioControllerTests: XCTestCase {
                 connectionState: .reconnecting,
                 appLifecycleState: "background"
             ),
-            .resumeImmediately
+            .awaitReconnectThenResume
         )
     }
 

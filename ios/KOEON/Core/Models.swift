@@ -157,6 +157,36 @@ struct Batv1PublishResponse: Codable, Sendable {
     let latestSequence: Int
 }
 
+struct Batv1ResolveRequest: Codable, Sendable {
+    let sessionId: String
+    let speakerSessionId: String
+    let leaseId: String
+}
+
+struct Batv1ResolveResponse: Codable, Sendable {
+    let generation: Batv1ResolvedGeneration?
+}
+
+struct Batv1ResolvedGeneration: Codable, Sendable {
+    let protocolVersion: Int
+    let generationId: String
+    let channelId: String
+    let speakerSessionId: String
+    let speakerDeviceId: String
+    let leaseId: String
+    let codec: String
+    let sampleRate: Int
+    let channels: Int
+    let frameDurationMs: Int
+
+    func matches(_ incoming: PttIncomingEvent) -> Bool {
+        protocolVersion == batv1ProtocolVersion && UUID(uuidString: generationId) != nil &&
+            channelId == incoming.channelId && speakerSessionId == incoming.speakerSessionId &&
+            leaseId == incoming.leaseId && !speakerDeviceId.isEmpty && codec == "pcm16le" &&
+            sampleRate == batv1SampleRate && channels == batv1Channels && frameDurationMs == batv1FrameDurationMilliseconds
+    }
+}
+
 struct Batv1SubscribeRequest: Codable, Sendable {
     let sessionId: String
     let generationId: String
