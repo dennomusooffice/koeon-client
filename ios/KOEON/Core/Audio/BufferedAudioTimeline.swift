@@ -1173,6 +1173,7 @@ final class BufferedAudioReceiver {
     private let monotonicNow: () -> TimeInterval
     private var task: Task<Void, Never>?
     private var audioSessionActive = false
+    private var isRetired = false
     private var generationToken = 0
     private var expectedLeaseId: String?
     private var senderUserId: String?
@@ -1206,6 +1207,7 @@ final class BufferedAudioReceiver {
     }
 
     func start(generationId: String, senderSessionId: String?, leaseId: String? = nil, senderUserId: String? = nil) {
+        guard !isRetired else { return }
         // Reliable/fast START duplicates must not rewind an already playing timeline.
         if diagnostics.generationId == generationId, activeSenderSessionId == senderSessionId,
            task != nil, !diagnostics.timelineLost { return }
@@ -1231,6 +1233,7 @@ final class BufferedAudioReceiver {
     }
 
     func audioSessionDidActivate() {
+        guard !isRetired else { return }
         audioSessionActive = true
         do { try player.resumeIfNeeded() } catch {
             diagnostics.timelineLost = true
@@ -1259,26 +1262,36 @@ final class BufferedAudioReceiver {
         subscriptionActive = false
         generationToken += 1
         task?.cancel()
-        if let activeSenderSessionId { onActivity(activeSenderSessionId, false) }
+        let stoppedSender = activeSenderSessionId
         activeSenderSessionId = nil
         diagnostics.generationId = nil
+        if let stoppedSender { onActivity(stoppedSender, false) }
     }
 
     func stopAndAwait() async {
         subscriptionActive = false
         generationToken += 1
+        let stoppingToken = generationToken
         let previous = task
         previous?.cancel()
         await previous?.value
+        // start() can replace the receive task while its predecessor finishes.
+        // A late stop owns only the generation it invalidated, not that replacement.
+        guard generationToken == stoppingToken else { return }
         task = nil
-        if let activeSenderSessionId { onActivity(activeSenderSessionId, false) }
+        let stoppedSender = activeSenderSessionId
         activeSenderSessionId = nil
         diagnostics.generationId = nil
+        if let stoppedSender { onActivity(stoppedSender, false) }
     }
 
     func awaitCurrentGenerationTermination() async { await task?.value }
 
     func shutdownAndAwait() async {
+        // Runtime teardown is terminal for this receiver, unlike a receive stop.
+        // Reject late START/activation callbacks before yielding to the old task.
+        isRetired = true
+        audioSessionActive = false
         await stopAndAwait()
         player.shutdown()
     }

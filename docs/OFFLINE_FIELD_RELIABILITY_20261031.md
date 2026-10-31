@@ -9,7 +9,7 @@
 | 項目 | 現在確認できている結果 |
 | --- | --- |
 | Android単体テスト / Lint / assembleDebug | 184件成功、Lint・ビルド成功（#48の追加修正を含む） |
-| iOS Simulator | 275件成功、追加3件は修正前に失敗を確認 |
+| iOS Simulator | 278件成功。受信停止／廃棄競合の追加3件を含む（この追加修正は未配信） |
 | feature-parity-contract / diff whitespace | 成功 |
 | iOS1.0（2026103110） | Apple VALID / IN_BETA_TESTING、同じ2内部グループ・テスト説明を再取得確認。実機に更新し、停止診断と1.5秒PCM輸送を確認。1秒以下の短押下は未解決 |
 | Android1.0.13（14） | 2cfff78の署名済み候補完成。APK SHA-256 `083c57348f01aaa444be99649e93dd52dc02234f3ec47dc623294d320bc2510e`。A303OPへローカル導入しAPKハッシュ一致確認、GitHub Release未公開 |
@@ -269,3 +269,11 @@ Androidの次の人声送信は19:53:51.955開始（最後のロック確認か�
 Androidの19:55:15診断では245フレーム送信、最終sequence244 ACCEPTED、TXエラーなし、受信準備の応答1/期待1・拒否0、Floor239ms／Ready543ms。MANUAL+6dB、235200サンプル、入力RMS −26.51→出力−20.51dBFS、出力peak−1.24dBFS、limiter適用12サンプル。送信側だけの記録であり、iPhoneの245フレーム受信や再生の成功を意味しない。
 
 iPhoneは利用者の解除後に診断を取得しようとしたが、30秒自動ロックで再びロックされていた。再送・POWER操作をせず、解除を検知した直後に診断を保存する待受を準備した。この追記時点ではiPhone側の今回の受信・音声出力診断は未回収。前面での人声聴取成功やOPPO画面オフ受信成功と区別し、#39の解決・原因確定は宣言しない。21:00 JSTの実機操作期限は維持する。
+
+### 受信停止の完了が次の受信を壊す競合（#45）
+
+`BufferedAudioReceiver.stopAndAwait`は旧Taskをawaitした後に世代を再照合せず、新しいTask・話者・generationIdを消していた。`shutdownAndAwait`も廃棄待ち中のSTARTを拒否しなかった。旧drainの完了通知を制御した2テストは修正前に両方失敗（6 assertions）。次の話者への誤ったinactive通知、所有Taskの喪失、廃棄後のグラフ再起動を確認した。
+
+停止待ち後は世代を照合し、状態を消してから通知する。shutdown開始時にインスタンスを退役させ、START/音声有効化を拒否する。通知コールバックから次の受信が同期的に始まる場合も含む追加3件で検証し、iOS全278件・parity成功。未配信・実機未検証。19:53無音と11:00クラッシュの原因と同一視しない。
+
+20:09 JSTにiPhone3110の失敗時診断を回収できた。19:53:53にAPPLE_DID_ACTIVATE、RX_START、RX_GRAPH_PREPARE_ENDの後、RX_PLAYER_STARTの前にRX_FAILED/NSErrorが記録された。この区間のthrow箇所は初回engine.start()で、当該受信は音声取得前に失敗している。下位エラーのdomain/codeが残らないため、エンジン初回起動の再試行と診断を別途#39で修正する。現在の0フレームやA2DPポートは復帰後の値で、当該受信のフレーム損失数／出力経路とは扱わない。

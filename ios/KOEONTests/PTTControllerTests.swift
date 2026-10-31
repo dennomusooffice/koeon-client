@@ -1830,6 +1830,109 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testLateStopCompletionPreservesReplacementReceiverTask() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0, bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())])
+        }
+        var releaseOldDrain: CheckedContinuation<Void, Never>?
+        var drainCount = 0
+        var activities: [(String?, Bool)] = []
+        let player = Batv1PcmPlayerMock()
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "local",
+            onActivity: { activities.append(($0, $1)) },
+            onTimelineDrained: {
+                drainCount += 1
+                if drainCount == 1 { await withCheckedContinuation { releaseOldDrain = $0 } }
+            }, player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "old", senderSessionId: "old-speaker")
+        for _ in 0..<100 where releaseOldDrain == nil { try? await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertNotNil(releaseOldDrain)
+        receiver.audioSessionDidDeactivate()
+        var stopEntered = false
+        let stopping = Task { @MainActor in
+            stopEntered = true
+            await receiver.stopAndAwait()
+        }
+        while !stopEntered { await Task.yield() }
+        receiver.start(generationId: "replacement", senderSessionId: "next-speaker")
+        releaseOldDrain?.resume()
+        await stopping.value
+
+        XCTAssertEqual(receiver.diagnostics.generationId, "replacement")
+        XCTAssertFalse(activities.contains { $0.0 == "next-speaker" && !$0.1 },
+            "The obsolete stop must not clear the replacement speaker's activity")
+        receiver.audioSessionDidActivate()
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertEqual(drainCount, 2, "The replacement Task must remain owned and awaitable")
+        XCTAssertEqual(player.enqueueCount, 2)
+        await receiver.shutdownAndAwait()
+    }
+
+    @MainActor
+    func testStopActivityCallbackCanStartReplacementWithoutLosingItsState() async {
+        for awaitStop in [false, true] {
+            var receiver: BufferedAudioReceiver!
+            receiver = BufferedAudioReceiver(api: Batv1APIStub(), sessionId: "local",
+                onActivity: { sender, active in
+                    if sender == "old-speaker", !active {
+                        receiver.start(generationId: "replacement", senderSessionId: "next-speaker")
+                    }
+                }, player: Batv1PcmPlayerMock())
+            // No Apple audio activation: both tasks wait without fetching PCM.
+            receiver.start(generationId: "old", senderSessionId: "old-speaker")
+            if awaitStop { await receiver.stopAndAwait() } else { receiver.stop() }
+            XCTAssertEqual(receiver.diagnostics.generationId, "replacement")
+            await receiver.shutdownAndAwait()
+        }
+    }
+
+    @MainActor
+    func testShutdownRejectsStartsWhilePreviousDrainIsFinishing() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0, bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())])
+        }
+        var releaseOldDrain: CheckedContinuation<Void, Never>?
+        var drainCount = 0
+        let player = Batv1PcmPlayerMock()
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "local", onTimelineDrained: {
+            drainCount += 1
+            if drainCount == 1 { await withCheckedContinuation { releaseOldDrain = $0 } }
+        }, player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "old", senderSessionId: "old-speaker")
+        for _ in 0..<100 where releaseOldDrain == nil { try? await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertNotNil(releaseOldDrain)
+        receiver.audioSessionDidDeactivate()
+        var shutdownEntered = false
+        let shuttingDown = Task { @MainActor in
+            shutdownEntered = true
+            await receiver.shutdownAndAwait()
+        }
+        while !shutdownEntered { await Task.yield() }
+        receiver.start(generationId: "during-shutdown", senderSessionId: "next-speaker")
+        releaseOldDrain?.resume()
+        await shuttingDown.value
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "after-shutdown", senderSessionId: "next-speaker")
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertEqual(player.beginCount, 1, "A retired receiver cannot restart its audio graph")
+        XCTAssertEqual(player.enqueueCount, 1)
+        XCTAssertEqual(player.shutdownCount, 1)
+        XCTAssertNil(receiver.diagnostics.generationId)
+    }
+
+    @MainActor
     func testReceiverDrainsFinalSequenceWhenControlEndArrivesFirst() async {
         let api = Batv1APIStub()
         api.subscribeHandler = { request in
