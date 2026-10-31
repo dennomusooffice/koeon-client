@@ -118,7 +118,14 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     }
 
     static func recommendedGain(speechRmsDbfs: Float) -> Float { min(12, max(-6, -18 - speechRmsDbfs)) }
-    static func nextAutoTrim(current: Float, speechRmsDbfs: Float) -> Float { min(12, max(-6, current + min(1, max(-1, -18 - speechRmsDbfs)))) }
+    static func nextAutoTrim(current: Float, speechRmsDbfs: Float) -> Float {
+        let boundedCurrent = current.isFinite ? min(12, max(-6, current)) : 0
+        // RMS is measured before our gain. Converge on the required total
+        // gain, and never use silence/non-finite measurements to train AUTO.
+        guard speechRmsDbfs.isFinite, speechRmsDbfs > -60 else { return boundedCurrent }
+        let targetGain = recommendedGain(speechRmsDbfs: speechRmsDbfs)
+        return boundedCurrent + min(1, max(-1, targetGain - boundedCurrent))
+    }
     static func processSample(_ sample: Float, gainDb: Float) -> (sample: Float, limited: Bool) {
         let amplified = sample * powf(10, min(12, max(-6, gainDb)) / 20)
         return softLimitSample(amplified)

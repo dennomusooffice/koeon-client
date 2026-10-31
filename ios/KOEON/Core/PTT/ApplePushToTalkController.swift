@@ -5,6 +5,34 @@ import Foundation
 import PushToTalk
 import UIKit
 
+/// Shares the entire initialization, including restoration configuration.
+/// A non-nil framework manager alone does not mean configuration has finished.
+@MainActor
+final class PttInitializationGate {
+    private var completed = false
+    private var inFlight: Task<Void, Error>?
+
+    func run(_ operation: @escaping @MainActor () async throws -> Void) async throws {
+        if completed { return }
+        if let inFlight {
+            try await inFlight.value
+            return
+        }
+        let task = Task { try await operation() }
+        inFlight = task
+        do {
+            try await task.value
+            completed = true
+            inFlight = nil
+        } catch {
+            // Failed configuration must be retryable, even if creation of the
+            // framework manager succeeded before the configuration failed.
+            inFlight = nil
+            throw error
+        }
+    }
+}
+
 enum PushToTalkFrameworkState: String, Sendable {
     case initializing = "INITIALIZING"
     case ready = "READY"
@@ -526,6 +554,7 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     var canRestorePersistedChannel: (@MainActor @Sendable () -> Bool)?
 
     private var manager: PTChannelManager?
+    private let initializationGate = PttInitializationGate()
     private var channelId: String?
     private var channelName = "KOEON"
     private var canPublish = false
@@ -546,10 +575,17 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     }
 
     func initialize() async throws {
-        if manager != nil { return }
+        try await initializationGate.run { [self] in
+            try await initializeManager()
+        }
+    }
+
+    private func initializeManager() async throws {
         state = .initializing
         do {
-            manager = try await PTChannelManager.channelManager(delegate: self, restorationDelegate: self)
+            if manager == nil {
+                manager = try await PTChannelManager.channelManager(delegate: self, restorationDelegate: self)
+            }
             guard let manager else { throw PushToTalkControllerError.notInitialized }
             if let restoredUUID = manager.activeChannelUUID {
                 let descriptor = PttRestoreDescriptor.load(from: defaults)

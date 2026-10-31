@@ -9,6 +9,32 @@ import org.junit.Test
 
 class InputGainProcessorTest {
     @Test
+    fun `auto converges to the output target instead of accumulating input error`() {
+        var trim = 0f
+        repeat(30) { trim = InputGainProcessor.nextAutoTrim(trim, -24f) }
+        assertEquals(6f, trim, 0.001f)
+        assertEquals(5f, InputGainProcessor.nextAutoTrim(6f, -18f), 0.001f)
+    }
+
+    @Test
+    fun `silent transmissions do not train auto gain upwards`() {
+        val processor = InputGainProcessor(initialMode = InputGainMode.AUTO)
+        repeat(8) {
+            processor.beginTransmission()
+            processor.processPcm16(samples(*IntArray(5_000)))
+            processor.endTransmission()
+        }
+        assertEquals(0f, processor.snapshot().autoTrimDb, 0f)
+    }
+
+    @Test
+    fun `auto ignores negligible signal and invalid measurements`() {
+        for (level in listOf(-120f, -90f, -60f, Float.NaN, Float.NEGATIVE_INFINITY)) {
+            assertEquals(4f, InputGainProcessor.nextAutoTrim(4f, level), 0f)
+        }
+    }
+
+    @Test
     fun `default mode is transparent with zero effective gain`() {
         val processor = InputGainProcessor()
 

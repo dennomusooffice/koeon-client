@@ -298,8 +298,15 @@ class InputGainProcessor(
         internal fun recommendedGain(speechRmsDbfs: Float): Float =
             (-18f - speechRmsDbfs).coerceIn(-6f, 12f)
 
-        internal fun nextAutoTrim(current: Float, speechRmsDbfs: Float): Float =
-            (current + (-18f - speechRmsDbfs).coerceIn(-1f, 1f)).coerceIn(-6f, 12f)
+        internal fun nextAutoTrim(current: Float, speechRmsDbfs: Float): Float {
+            val boundedCurrent = current.takeIf { it.isFinite() }?.coerceIn(-6f, 12f) ?: 0f
+            // This is pre-gain RMS. Move towards the required *total* gain,
+            // rather than adding the entire input error again on every PTT.
+            // Negligible energy cannot train AUTO; this gate is not a VAD.
+            if (!speechRmsDbfs.isFinite() || speechRmsDbfs <= -60f) return boundedCurrent
+            val targetGain = recommendedGain(speechRmsDbfs)
+            return boundedCurrent + (targetGain - boundedCurrent).coerceIn(-1f, 1f)
+        }
 
         internal fun nextAutoTrim(
             current: Float,
@@ -307,11 +314,11 @@ class InputGainProcessor(
             inputPeakDbfs: Float,
             limiterRatio: Double,
         ): Float {
-            // Platform/WebRTC AGC runs before this optional trim. Persistent
-            // full-scale input or limiter activity must pull AUTO down, never
-            // become a condition that freezes an excessive positive profile.
+            // BATv1 taps AudioRecord before APM: software WebRTC AGC is not
+            // guaranteed here. Pull down on overload regardless of pipeline.
             if (inputPeakDbfs >= -0.5f || limiterRatio >= 0.01) {
-                return (current - 1f).coerceAtLeast(-6f)
+                val boundedCurrent = current.takeIf { it.isFinite() }?.coerceIn(-6f, 12f) ?: 0f
+                return (boundedCurrent - 1f).coerceAtLeast(-6f)
             }
             return nextAutoTrim(current, speechRmsDbfs)
         }

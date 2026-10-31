@@ -3,6 +3,77 @@ import XCTest
 @testable import KOEON
 
 @MainActor
+final class PttInitializationGateTests: XCTestCase {
+    func testConcurrentCallersWaitForTheSameCompleteRestoration() async throws {
+        let gate = PttInitializationGate()
+        let configurationStarted = expectation(description: "Manager created, restoration suspended")
+        let secondEntered = expectation(description: "Second caller entered")
+        var releaseConfiguration: CheckedContinuation<Void, Never>?
+        var starts = 0
+        var configured = false
+        var secondReturned = false
+        let first = Task {
+            try await gate.run {
+                starts += 1
+                await withCheckedContinuation { continuation in
+                    releaseConfiguration = continuation
+                    configurationStarted.fulfill()
+                }
+                configured = true
+            }
+        }
+        await fulfillment(of: [configurationStarted], timeout: 1)
+        let second = Task {
+            secondEntered.fulfill()
+            try await gate.run { starts += 1 }
+            secondReturned = true
+            XCTAssertTrue(configured)
+        }
+        await fulfillment(of: [secondEntered], timeout: 1)
+        XCTAssertEqual(starts, 1)
+        XCTAssertFalse(secondReturned)
+        releaseConfiguration?.resume()
+        try await first.value
+        try await second.value
+        XCTAssertEqual(starts, 1)
+        XCTAssertTrue(secondReturned)
+        try await gate.run { XCTFail("Successful initialization must not repeat") }
+    }
+
+    func testFailedRestorationCanRetryInsteadOfTreatingCreatedManagerAsReady() async throws {
+        enum Failure: Error { case configuration }
+        let gate = PttInitializationGate()
+        var attempts = 0
+        do {
+            try await gate.run { attempts += 1; throw Failure.configuration }
+            XCTFail("Configuration failure must reach the caller")
+        } catch Failure.configuration { }
+        try await gate.run { attempts += 1 }
+        try await gate.run { XCTFail("Completed retry must be shared") }
+        XCTAssertEqual(attempts, 2)
+    }
+
+    func testCancellationOfOneCallerDoesNotCancelSharedInitialization() async throws {
+        let gate = PttInitializationGate()
+        let started = expectation(description: "Shared operation started")
+        var release: CheckedContinuation<Void, Never>?
+        var cancelledInsideOperation = false
+        let caller = Task {
+            try await gate.run {
+                await withCheckedContinuation { release = $0; started.fulfill() }
+                cancelledInsideOperation = Task.isCancelled
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+        caller.cancel()
+        release?.resume()
+        try await caller.value
+        try await gate.run { XCTFail("Cancelled waiter must not restart the shared operation") }
+        XCTAssertFalse(cancelledInsideOperation)
+    }
+}
+
+@MainActor
 final class PTTControllerTests: XCTestCase {
     func testC1C2C8SpeakerBluetoothSpeakerPolicySurvivesFiftySwitches() {
         for _ in 0 ..< 50 {
@@ -740,6 +811,19 @@ final class PTTControllerTests: XCTestCase {
 }
 
 final class InputGainProcessorTests: XCTestCase {
+    func testAutoConvergesToOutputTargetAndReducesExcessGain() {
+        var trim: Float = 0
+        for _ in 0..<30 { trim = InputGainProcessor.nextAutoTrim(current: trim, speechRmsDbfs: -24) }
+        XCTAssertEqual(trim, 6, accuracy: 0.001)
+        XCTAssertEqual(InputGainProcessor.nextAutoTrim(current: 6, speechRmsDbfs: -18), 5)
+    }
+
+    func testAutoIgnoresSilentAndInvalidMeasurements() {
+        for level: Float in [-120, -90, -60, .nan, -.infinity] {
+            XCTAssertEqual(InputGainProcessor.nextAutoTrim(current: 4, speechRmsDbfs: level), 4)
+        }
+    }
+
     func testPositiveAndNegativeSamplesReceiveSymmetricManualGain() {
         let positive = InputGainProcessor.processSample(0.1, gainDb: 6)
         let negative = InputGainProcessor.processSample(-0.1, gainDb: 6)
