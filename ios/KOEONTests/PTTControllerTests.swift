@@ -2350,6 +2350,82 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 }
 
+final class Batv1BreadcrumbLifecycleTests: XCTestCase {
+    private func isolatedDefaults() -> UserDefaults {
+        let name = "koeon.breadcrumb.tests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testLegacyFlagsDoNotProveCleanExitOrUnexpectedTermination() {
+        for clean in [false, true] {
+            let defaults = isolatedDefaults()
+            defaults.set(true, forKey: "batv1.runKnown")
+            defaults.set(clean, forKey: "batv1.cleanExit")
+            let store = Batv1CrashBreadcrumbStore(defaults: defaults)
+            store.startRun(build: "test")
+            XCTAssertEqual(store.previousRunTermination, "UNKNOWN",
+                "A lifecycle flag without a termination report cannot identify the cause")
+        }
+    }
+
+    func testBackgroundTransitionIsNotEvidenceOfCleanProcessExit() {
+        let defaults = isolatedDefaults()
+        let before = Batv1CrashBreadcrumbStore(defaults: defaults)
+        before.startRun(build: "before")
+        before.recordAppLifecycle("background")
+        let after = Batv1CrashBreadcrumbStore(defaults: defaults)
+        after.startRun(build: "after")
+        XCTAssertEqual(after.previousRunTermination, "UNKNOWN")
+        XCTAssertEqual(after.previousRunLastLifecycleState, "BACKGROUND")
+        XCTAssertEqual(before.snapshot().last?.stage, "APP_BACKGROUND")
+    }
+
+    func testBackgroundAudioDoesNotChangeLastObservedAppLifecycle() {
+        let defaults = isolatedDefaults()
+        let before = Batv1CrashBreadcrumbStore(defaults: defaults)
+        before.startRun(build: "before")
+        before.recordAppLifecycle("background")
+        for _ in 0..<100 { before.record(role: "RX", stage: "RX_SUBSCRIBE_END") }
+        let after = Batv1CrashBreadcrumbStore(defaults: defaults)
+        after.startRun(build: "after")
+        XCTAssertEqual(after.previousRunTermination, "UNKNOWN")
+        XCTAssertEqual(after.previousRunLastLifecycleState, "BACKGROUND",
+            "Audio callbacks and bounded breadcrumb eviction do not imply a foreground transition")
+    }
+
+    func testForegroundResumeUpdatesObservedLifecycleWithoutInferringTermination() {
+        let defaults = isolatedDefaults()
+        let before = Batv1CrashBreadcrumbStore(defaults: defaults)
+        before.startRun(build: "before")
+        before.recordAppLifecycle("background")
+        before.recordAppLifecycle("inactive")
+        before.recordAppLifecycle("active")
+        let after = Batv1CrashBreadcrumbStore(defaults: defaults)
+        after.startRun(build: "after")
+        XCTAssertEqual(after.previousRunTermination, "UNKNOWN")
+        XCTAssertEqual(after.previousRunLastLifecycleState, "ACTIVE")
+    }
+
+    func testStartupAndUnknownLifecycleAreReportedWithoutInventingACause() {
+        let defaults = isolatedDefaults()
+        let first = Batv1CrashBreadcrumbStore(defaults: defaults)
+        first.startRun(build: "first")
+        XCTAssertEqual(first.previousRunLastLifecycleState, "UNKNOWN")
+        let second = Batv1CrashBreadcrumbStore(defaults: defaults)
+        second.startRun(build: "second")
+        XCTAssertEqual(second.previousRunLastLifecycleState, "STARTING")
+        second.recordAppLifecycle("unrecognized-private-value")
+        let third = Batv1CrashBreadcrumbStore(defaults: defaults)
+        third.startRun(build: "third")
+        XCTAssertEqual(third.previousRunLastLifecycleState, "UNKNOWN")
+        XCTAssertFalse(third.snapshot().contains { $0.stage.contains("private") })
+        XCTAssertEqual(third.previousRunTermination, "UNKNOWN")
+    }
+}
+
 final class FieldLabSafetyTests: XCTestCase {
     func testVolumeProbeNeverTriggersPttIncludingMinMaxNoChange() {
         for mode in IOSVolumeProbeMode.allCases {

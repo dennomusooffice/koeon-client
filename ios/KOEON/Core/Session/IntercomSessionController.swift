@@ -3235,6 +3235,7 @@ final class IntercomSessionController: ObservableObject {
             ],
             "crashBreadcrumbs": [
                 "previousRunTermination": Batv1CrashBreadcrumbStore.shared.previousRunTermination,
+                "previousRunLastLifecycleState": Batv1CrashBreadcrumbStore.shared.previousRunLastLifecycleState,
                 "events": Batv1CrashBreadcrumbStore.shared.snapshot().map { event in
                     [
                         "timestamp": ISO8601DateFormatter().string(from: event.timestamp),

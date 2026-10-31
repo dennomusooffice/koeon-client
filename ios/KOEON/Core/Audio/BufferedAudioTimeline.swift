@@ -22,25 +22,28 @@ final class Batv1CrashBreadcrumbStore: @unchecked Sendable {
     static let shared = Batv1CrashBreadcrumbStore()
 
     private let lock = NSLock()
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private let eventsKey = "batv1.crashBreadcrumbs.v1"
     private let runKnownKey = "batv1.runKnown"
-    private let cleanExitKey = "batv1.cleanExit"
+    private let lastLifecycleKey = "batv1.lastObservedLifecycle.v1"
     private var events: [Batv1CrashBreadcrumb] = []
     private var build = "unknown"
-    private(set) var previousRunTermination = "UNKNOWN"
+    // A lifecycle marker is not an OS termination report. Keep this legacy
+    // diagnostic unknown instead of inferring a crash or clean exit from it.
+    let previousRunTermination = "UNKNOWN"
+    private(set) var previousRunLastLifecycleState = "UNKNOWN"
     private var initialized = false
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
     func startRun(build: String) {
         lock.withLock {
             guard !initialized else { return }
             self.build = String(build.prefix(64))
-            previousRunTermination = if !defaults.bool(forKey: runKnownKey) {
-                "UNKNOWN"
-            } else if defaults.bool(forKey: cleanExitKey) {
-                "CLEAN"
-            } else {
-                "UNEXPECTED_TERMINATION_OR_KILL"
+            if defaults.bool(forKey: runKnownKey),
+               let previous = defaults.string(forKey: lastLifecycleKey),
+               ["STARTING", "ACTIVE", "INACTIVE", "BACKGROUND", "UNKNOWN"].contains(previous) {
+                previousRunLastLifecycleState = previous
             }
             if let data = defaults.data(forKey: eventsKey),
                let saved = try? JSONDecoder().decode([Batv1CrashBreadcrumb].self, from: data) {
@@ -48,7 +51,8 @@ final class Batv1CrashBreadcrumbStore: @unchecked Sendable {
             }
             initialized = true
             defaults.set(true, forKey: runKnownKey)
-            defaults.set(false, forKey: cleanExitKey)
+            defaults.removeObject(forKey: "batv1.cleanExit")
+            defaults.set("STARTING", forKey: lastLifecycleKey)
         }
         record(role: "APP", stage: "APP_START")
     }
@@ -76,13 +80,23 @@ final class Batv1CrashBreadcrumbStore: @unchecked Sendable {
                 events.removeFirst(events.count - batv1BreadcrumbMaximumEvents)
             }
             if let data = try? JSONEncoder().encode(events) { defaults.set(data, forKey: eventsKey) }
-            defaults.set(false, forKey: cleanExitKey)
         }
     }
 
-    func markCleanExit() {
-        record(role: "APP", stage: "APP_CLEAN_EXIT")
-        lock.withLock { defaults.set(true, forKey: cleanExitKey) }
+    func recordAppLifecycle(_ phase: String) {
+        let state: String
+        let stage: String
+        switch phase {
+        case "active": (state, stage) = ("ACTIVE", "APP_RESUME")
+        case "inactive": (state, stage) = ("INACTIVE", "APP_INACTIVE")
+        case "background": (state, stage) = ("BACKGROUND", "APP_BACKGROUND")
+        default: (state, stage) = ("UNKNOWN", "APP_LIFECYCLE_UNKNOWN")
+        }
+        lock.withLock {
+            guard initialized else { return }
+            defaults.set(state, forKey: lastLifecycleKey)
+        }
+        record(role: "APP", stage: stage)
     }
 
     func snapshot() -> [Batv1CrashBreadcrumb] { lock.withLock { events } }
