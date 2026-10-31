@@ -323,10 +323,15 @@ final class Batv1CaptureBuffer: @unchecked Sendable {
     func awaitCapture(timeoutMilliseconds: Int = 750) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(timeoutMilliseconds))
         while ContinuousClock.now < deadline {
+            guard !Task.isCancelled else { return false }
             if frameCount > 0 { return true }
-            try? await Task.sleep(for: .milliseconds(5))
+            do {
+                try await Task.sleep(for: .milliseconds(5))
+            } catch {
+                return false
+            }
         }
-        return frameCount > 0
+        return !Task.isCancelled && frameCount > 0
     }
 
     /// Seeds the consumer and installs forwarding while holding the same lock,
@@ -520,8 +525,14 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
     }
 
     func awaitCaptureAndMarkCueBoundary(generationId: String) async -> Bool {
-        guard self.generationId == generationId, diagnostics.captureArmed else { return false }
+        guard self.generationId == generationId, diagnostics.captureArmed,
+              lifecycleState == .active, !Task.isCancelled else { return false }
+        let token = lifecycleToken
         let confirmed = await capture.awaitCapture()
+        // The shared capture buffer may already belong to the next PTT after this await.
+        // A stale completion must neither rewrite diagnostics nor clear its pre-roll.
+        guard self.generationId == generationId, lifecycleToken == token,
+              lifecycleState == .active, !Task.isCancelled else { return false }
         diagnostics.captureConfirmed = confirmed
         diagnostics.firstPcmAt = capture.firstPcmTimestamp
         diagnostics.captureConfirmedAt = confirmed ? Date() : nil

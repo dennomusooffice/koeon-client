@@ -1480,6 +1480,75 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testCancelledCaptureWaitDoesNotAcceptBufferedPcm() async {
+        let capture = Batv1CaptureBuffer()
+        capture.arm(generationId: "cancelled")
+        capture.append(samples: Array(repeating: Int16(7), count: batv1BytesPerFrame / 2),
+                       sampleRate: batv1SampleRate, channels: batv1Channels)
+        let wait = Task { @MainActor in await capture.awaitCapture() }
+        wait.cancel()
+        let confirmed = await wait.value
+        XCTAssertFalse(confirmed)
+        XCTAssertEqual(capture.frameCount, 1)
+    }
+
+    @MainActor
+    func testLateCaptureConfirmationCannotOverwriteStoppedDiagnostics() async throws {
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let transmitter = BufferedAudioTransmitter(
+            api: Batv1APIStub(), capture: capture, channelId: "channel-a",
+            sessionId: "session-a", deviceId: "device-a", recordingAuthority: authority
+        )
+        await transmitter.prepare(generationId: "old")
+        try await transmitter.audioSessionDidActivate()
+        let started = expectation(description: "Old capture wait started")
+        let wait = Task { @MainActor in
+            started.fulfill()
+            return await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "old")
+        }
+        await fulfillment(of: [started], timeout: 1)
+        await transmitter.discard(generationId: "old")
+        let confirmed = await wait.value
+        XCTAssertFalse(confirmed)
+        XCTAssertEqual(transmitter.diagnostics.captureState, "STOPPED")
+        XCTAssertNil(transmitter.diagnostics.lastErrorCode)
+        XCTAssertFalse(authority.isRecording)
+    }
+
+    @MainActor
+    func testOldCaptureWaitCannotConsumeNewGenerationPreRoll() async throws {
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let transmitter = BufferedAudioTransmitter(
+            api: Batv1APIStub(), capture: capture, channelId: "channel-a",
+            sessionId: "session-a", deviceId: "device-a", recordingAuthority: authority
+        )
+        await transmitter.prepare(generationId: "old")
+        try await transmitter.audioSessionDidActivate()
+        let started = expectation(description: "Old capture wait started")
+        let wait = Task { @MainActor in
+            started.fulfill()
+            return await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "old")
+        }
+        await fulfillment(of: [started], timeout: 1)
+        await transmitter.prepare(generationId: "new")
+        try await transmitter.audioSessionDidActivate()
+        capture.append(samples: Array(repeating: Int16(17), count: batv1BytesPerFrame / 2),
+                       sampleRate: batv1SampleRate, channels: batv1Channels)
+        let oldConfirmed = await wait.value
+        XCTAssertFalse(oldConfirmed)
+        XCTAssertEqual(capture.frameCount, 1, "Old confirmation must not clear the new capture boundary")
+        XCTAssertEqual(transmitter.diagnostics.generationId, "new")
+        XCTAssertEqual(transmitter.diagnostics.captureState, "RECORDING")
+        XCTAssertFalse(transmitter.diagnostics.captureConfirmed)
+        XCTAssertTrue(authority.isRecording)
+        let newConfirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "new")
+        XCTAssertTrue(newConfirmed)
+        await transmitter.discard(generationId: "new")
+    }
+
+    @MainActor
     func testLocalRecordingStartsOnlyAfterDidActivateAndStopsIdempotently() async throws {
         let capture = Batv1CaptureBuffer()
         let authority = RecordingAuthorityMock()

@@ -1,6 +1,6 @@
 # 実機接続なしでのフィールド不具合調査（2026-10-31）
 
-実機操作は12:17:04 JSTに終了した。以後は保存済み証拠、ソース、Simulator／単体テスト、GitHub、App Store Connectの確認と承認済みの配信作業で調査・修正を進める。端末を再接続・操作していない。
+実機操作は12:17:04 JSTに一度終了し、その後は保存済み証拠と自動テストで修正した。同日夕方、利用者から接続済みOPPOとiPhoneでの試験再開を明示的に指示され、終了期限を21:00 JSTと確認した。オフライン調査履歴と再開後の実機結果を区別する。
 
 ## 最新の検証・配信状態（2026-10-31）
 
@@ -14,7 +14,7 @@ iOS3109の署名ソースは`c58ba5ab9a748dfcdca62f079e04569cb1516179`（tree `a
 | iOS1.0（2026103109） | 署名・アップロード成功、Apple VALID / IN_BETA_TESTING、前版と同じ内部グループへの割当とテスト説明を再取得して確認 |
 | Android1.0.13（14） | 2cfff78の署名済み候補完成。APK SHA-256 `083c57348f01aaa444be99649e93dd52dc02234f3ec47dc623294d320bc2510e`。実機未導入、GitHub Release未公開 |
 | GitHub Public CI / Android公開 | 5ジョブともrunner未割当・実行step 0。アカウント側の請求問題で開始できない。所有者は現時点では対応不可。[Issue #47](https://github.com/dennomusooffice/koeon-client/issues/47)で復旧待ち。コードのテスト失敗とは区別し、公開ゲートは迂回しない |
-| 実機の再検証 / 11:00頃クラッシュ | 未実施・新しい.ips未取得。Apple提出一覧は11件、最新9/1、次ページなし。クラッシュ不発生の証明ではない |
+| 実機の再検証 / 11:00頃クラッシュ | 夕方にA303OP/iPhoneで再開。人声＋6dBの聴取と限定的な双方向フレーム一致を確認し、短押下等を試験中。11:00の新しい.ipsは未取得。接続iPhoneのKOEON記録は既知の09:30のみ |
 | mainへのマージ | 未実施（PR #33 / #41 / #44） |
 
 保護ログ・署名候補のprovenanceは`.secret/offline-field/`、`.secret/testflight/`、`.secret/android-release/`に保持。公開資料へ生ログ・識別子・認証情報・接続先を転載しない。
@@ -198,3 +198,32 @@ Androidの`startForwarding`は録音済み音声を返す一方、ライブコ�
 録音済み音声のconsumerへの投入とライブ転送の有効化を同じcaptureロック内で行い、戻り値は録音済みフレーム数だけに変更した。呼出元の別経路でのキュー追加を廃止し、全PCMを同じ順序で扱う。ロック内でネットワーク処理をせず、既存の上限300フレームを維持する。iOSは既に同じ受渡し方式のため変更しない。
 
 Android全184件・Lint・assembleDebug・parity成功。凍結した短発話の末尾とUP後のサンプル除外、ゲイン一定の既存検証も通過した。旧APIを使うゲインテストのコンパイルエラー1箇所を修正後、全検証を正常終了。フィールドでの発生頻度や#46の遅延との因果関係は未確定。c58ba5aの旧Android候補には未収録。2cfff78から作成した現在の1.0.13（14）署名候補に収録し、署名・version・非debuggable等の検証を完了した。旧候補・provenanceは別名で保存済み。配信の可否は#47のCI復旧に従う。
+
+## 10月31日夕方のOPPO・iPhone実機試験（継続中、21:00 JST終了）
+
+利用者の再承認によりA303OP（Android 14）とiPhoneの試験を再開。Androidは2cfff78の1.0.13（14）をローカル導入し、端末から取得したAPKと署名候補のSHA-256一致を確認した。iPhoneはc58ba5aの1.0（2026103109）。Android公開は引き続き#47で保留、main未マージ。iPhoneの自動ロックを30秒から「なし」へ一時変更したため、終了前に30秒へ戻す。Androidの画面消灯時間変更はOEM権限で拒否され、元の30秒のまま。
+
+### 人声の音量と前面での双方向
+
+- A303OP内蔵マイク・OFF/0dB: 入力RMS −27.24dBFS、peak −8.40dBFS。利用者はiPhoneのBluetoothイヤフォンで「少し小さい」と聴取。SO-52Cの過去値との差は声量・距離を統制していないため機種差の確定値ではない。
+- 同機・MANUAL +6dB: 利用者は「十分な音量で明瞭」。570240サンプルの入力RMS −24.89→出力 −18.93dBFS、peak −2.17→−1.00dBFS、limiter適用681サンプル（約0.12%）。594送信/594受信、最終sequence593一致。iPhone受信PCM RMS −18.934dBFS、Bluetooth HFP16kHz、出力音量1.0、正常drain、両端末READY。入力声量が別試行で違うため、主観評価を完全に統制したA/B比較とは扱わない。
+- Macの読み上げ音は入力RMSが約−53dBFSと人声より弱く、利用者はMacだけ聞こえてiPhoneイヤフォンでは聞こえないと回答した。人声は同じイヤフォンで聞こえており、この試験音源だけでBluetooth受信障害とは断定しない。
+- Android→iPhoneの6秒試行: 309/309フレーム、最終308一致、Floor 200ms、RX_READY 394ms、両端末READY。
+- iPhone Bluetooth→Androidの6秒試行: 260/260、最終259一致、Floor 99ms、録音確認653ms、RX_READY 397ms、押下→TALKING 1552ms、UP→READY1866ms。送信終端の順序監査はPASS。録音開始を含む待ち時間は残り、4秒ACK待ちだけを遅延原因とはしない。逆方向の人声聴取・先頭欠けはまだ未確認。
+
+### 短押下とiOS旧録音確認の競合（#37）
+
+環境音PCMによる輸送確認であり、短い単語の可聴確認ではない。
+
+| 送信側・押下時間 | 結果 |
+| --- | --- |
+| Android 500ms | PTT_UP_DURING_READY、24/24フレーム、最終23一致、RX_READY476ms、UP後409msで終了、両端末READY |
+| iPhone Bluetooth 500ms | 送信0、新規受信なし、両端末READY。停止後に録音確認の診断がACTIVEへ更新される記録あり |
+| iPhone Bluetooth 1000ms | 15/15、最終14一致、RX_READY281ms、押下→TALKING1132ms、UP→READY364ms |
+| iPhone Bluetooth 1500ms | 54/54、最終53一致、RX_READY194ms、押下→TALKING992ms、UP→READY1847ms |
+
+`awaitCaptureAndMarkCueBoundary`は録音確認をawaitした後、世代やライフサイクルを再照合せず、診断更新とcue boundaryによるバッファ消去をしていた。旧待機中にdiscardや新prepareが入ると、停止診断の書換えや新世代のpre-roll消失が起きる。追加3回帰テストは修正前にすべて失敗（8 assertions）。停止後STOPPED→ERRORと誤ったZERO_FRAMES、旧待機による新世代PCMの1→0フレーム消失、キャンセル済み待機によるPCM受理を再現した。
+
+待機前後に世代・lifecycle token・稼働状態・キャンセルを照合し、古い完了処理による変更を防いだ。PCM待機ループはキャンセル時に終了し、CancellationErrorを握り潰して待ち続けない。修正後は追加3件を含むiOS全275テスト成功。実機の500msで録音開始が間に合わない現象、クラッシュ原因、すべての先頭欠けをこの修正だけで解決したとはしない。新修正のTestFlight配信・実機確認はこの記録時点では未実施。
+
+AUTO補正、ロック／バックグラウンド、反復送受信、設定復元を続ける。生の診断JSON・音声・識別子は公開せず、ここでは集計値だけを記録する。
