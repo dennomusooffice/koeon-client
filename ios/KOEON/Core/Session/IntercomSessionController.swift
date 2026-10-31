@@ -609,7 +609,10 @@ final class IntercomSessionController: ObservableObject {
         room.onUnsafeDisconnect = { [weak self] reason in
             guard let self else { return }
             self.runtimeLiveness.invalidate()
-            self.remoteReceive?.reset()
+            // A transport failure is not the end of an Apple PTT reception.
+            // The APNs response may have just activated it, and BATv1 playout
+            // can outlive this Room. Keep ownership until drain/terminal cleanup
+            // or the runtime replacement, which preserves Apple's participant.
             self.resetRxConsistency()
             let controller = self.ptt
             let runtime = self.runtimeLiveness.generation
@@ -1753,7 +1756,7 @@ final class IntercomSessionController: ObservableObject {
                         ))
                     },
                     onFreshSessionReceived: { _ in self.resumeResponseAt = Date() },
-                    teardownStaleRuntime: { await self.prepareStaleRuntimeForResume(rejoinSystemChannel: reason == .rxSelfHeal) },
+                    teardownStaleRuntime: { await self.prepareStaleRuntimeForResume() },
                     establishFreshRuntime: { response in
                         self.applyResumeIdentity(response)
                         return await self.establishResumedRuntime(response)
@@ -1802,7 +1805,7 @@ final class IntercomSessionController: ObservableObject {
         }
     }
 
-    private func prepareStaleRuntimeForResume(rejoinSystemChannel: Bool = false) async {
+    private func prepareStaleRuntimeForResume() async {
         staleRuntimeTeardownStartedAt = Date()
         defer { staleRuntimeTeardownCompletedAt = Date() }
         guard joinedSession != nil || room.connectionState != .disconnected else { return }
@@ -1829,11 +1832,11 @@ final class IntercomSessionController: ObservableObject {
         resetRxConsistency()
         joinedSession = nil
         await room.disconnect()
-        if rejoinSystemChannel {
-            // Escalation only, not per-PTT: the same selected channel is left and
-            // rejoined internally, including Apple's stale remote binding.
-            await pushToTalk.leave()
-        }
+        // Even escalated RX recovery replaces only the network runtime.
+        // Leaving the Apple channel here destroys its push registration and
+        // requires a foreground join; a locked/background receiver cannot
+        // recreate it. Explicit POWER OFF and terminal identity failures still
+        // leave through their own cleanup paths.
         // Keep Apple PushToTalk audio ownership across the stale LiveKit runtime swap.
         // incomingPushResult may already have activated this AVAudioSession.
     }
