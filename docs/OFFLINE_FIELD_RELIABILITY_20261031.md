@@ -4,14 +4,15 @@
 
 ## 最新の検証・配信状態（2026-10-31）
 
-修正6fe000f8ac2c6cbc4695399c8025bd60f8b91143は291件で検証し、iOS3112の署名・アップロードを実行中。配信済みiOS3111の署名ソースは`34a13c165fdfe95958f9fa2f141557c96dd459fb`。旧3110の署名ソースは`65cb7bf310b7ab0eb02f962bebb788d6c2385cc9`（tree `4a39e7db73101c664b2352d62e44415cde593b50`）。旧3109はc58ba5a。Android候補の署名ソースは`2cfff78df072e4a6e0bafdf2ed56dc10ac619e5a`（tree `08969b9417e744c2effbaad07efed84bddfe5514`）。以下の調査本文にある個別テスト数・配信前の記述は各修正時点の履歴であり、現在の状態はこの表を優先する。
+最新iOS3112の署名ソースは6fe000f8ac2c6cbc4695399c8025bd60f8b91143で、291件の検証と21:31 JSTの内部配信確認を完了。旧iOS3111の署名ソースは`34a13c165fdfe95958f9fa2f141557c96dd459fb`。旧3110の署名ソースは`65cb7bf310b7ab0eb02f962bebb788d6c2385cc9`（tree `4a39e7db73101c664b2352d62e44415cde593b50`）。旧3109はc58ba5a。Android候補の署名ソースは`2cfff78df072e4a6e0bafdf2ed56dc10ac619e5a`（tree `08969b9417e744c2effbaad07efed84bddfe5514`）。以下の調査本文にある個別テスト数・配信前の記述は各修正時点の履歴であり、現在の状態はこの表を優先する。
 
 | 項目 | 現在確認できている結果 |
 | --- | --- |
 | Android単体テスト / Lint / assembleDebug | 184件成功、Lint・ビルド成功（#48の追加修正を含む） |
-| iOS Simulator | 最新291件成功。3111のソースは282件で検証済み。終了原因の診断誤分類5件と通知登録保持4件の追加修正は3112としてアップロード中 |
+| iOS Simulator | 最新291件成功。3111のソースは282件で検証済み。終了原因の診断誤分類5件と通知登録保持4件の追加修正は3112内部配信済み・実機未検証 |
 | feature-parity-contract / diff whitespace | 成功 |
-| iOS1.0（2026103111） | Apple VALID / IN_BETA_TESTING、20:24 JSTに同じ2内部グループ・日本語説明を再取得確認。実機のbundleVersion3111・READY/Bluetoothを確認。ロック後も無音申告。承認延長で診断回収、21:03に実機接続終了 |
+| iOS1.0（2026103112） | 6fe000fから署名・アップロード成功。21:31 JSTにApple VALID / IN_BETA_TESTING、同じ2内部グループと日本語説明を再取得確認。実機へは導入していない |
+| 旧iOS1.0（2026103111） | Apple VALID / IN_BETA_TESTING、20:24 JSTに同じ2内部グループ・日本語説明を再取得確認。実機のbundleVersion3111・READY/Bluetoothを確認。ロック後も無音申告。承認延長で診断回収、21:03に実機接続終了 |
 | 旧iOS1.0（2026103110） | Apple VALID / IN_BETA_TESTING、同じ2内部グループ・テスト説明を再取得確認。実機に更新し、停止診断と1.5秒PCM輸送を確認。1秒以下の短押下は未解決 |
 | Android1.0.13（14） | 2cfff78の署名済み候補完成。APK SHA-256 `083c57348f01aaa444be99649e93dd52dc02234f3ec47dc623294d320bc2510e`。A303OPへローカル導入しAPKハッシュ一致確認、GitHub Release未公開 |
 | GitHub Public CI / Android公開 | 5ジョブともrunner未割当・実行step 0。アカウント側の請求問題で開始できない。所有者は現時点では対応不可。[Issue #47](https://github.com/dennomusooffice/koeon-client/issues/47)で復旧待ち。コードのテスト失敗とは区別し、公開ゲートは迂回しない |
@@ -330,3 +331,11 @@ iOS1.0（2026103111、34a13c165fdfe95958f9fa2f141557c96dd459fb）の導入・REA
 修正6fe000f8ac2c6cbc4695399c8025bd60f8b91143は復帰失敗で登録を解除せず、Resumeで割り当てられた最新のセッションIDを接続前に保持・復元用設定へ保存する。この保存自体は通知登録APIを送らない。明示POWER OFF／チャンネル離脱では、接続済み・接続途中・保存済みの所有情報から解除対象を求める。接続未成立や次のアプリ起動でも解除できる。失敗の永続診断RUNTIME_CONNECT_FAILEDも追加し、固定分類のみ記録する。
 
 実IntercomSessionControllerとLiveKit SDKのURL検証失敗を使った追加3テストは修正前に失敗（7 assertions）。ネットワーク通信は開かない。修正後は一時失敗・連続失敗・キャンセル後の明示停止・再起動相当の保存情報からの停止を含む4件、iOS全291件・parity・diff checkが成功した。最後のテストでは正しいチャンネルUUIDを持つ復元データを使用している。新しい修正は3112として署名・アップロード中で、配信・実機改善はまだ確認していない。元の接続失敗を防げたことや一般的な背景安定性まで証明したものではない。
+
+### iOS3112内部配信（21:31 JST）
+
+ソース6fe000f8ac2c6cbc4695399c8025bd60f8b91143、tree 73497a37c4e670fdcfe4a360772b0b191f5e018cから1.0（2026103112）をローカル署名・アップロード。署名候補の検証とTESTFLIGHT_UPLOADは成功。IPA SHA-256は53ab3f90bb852117c8e69ca06af7a00cfe455d9ef400b6a7ed63b4205c724dc6。AppleのNOT_INDEXED→VALID/MISSING_EXPORT_COMPLIANCE→READY_FOR_BETA_TESTINGを経て、前版と同じ暗号化申告・2内部グループ・日本語テスト説明を設定。21:31:26 JSTの再取得でVALID/IN_BETA_TESTING、両グループ割当と説明の一致を確認した。
+
+#49の通知登録保持と、#42の終了原因診断の誤分類対策e4eddf7を含む。自動テストは291件成功。端末の更新・操作は行っておらず、接続端末で最後に確認したビルドは3111。新修正の背景受信・POWER OFF・次のPOWER ONの実機受入れは残る。#39/#42/#49は未解決として維持する。
+
+ソース6fe000fの[Public client checks #138](https://github.com/dennomusooffice/koeon-client/actions/runs/41200989174)も5ジョブfailure・steps/logsなし。Android公開とmainマージの保留を継続する。実機操作の追加承認はなく、保存済みログとコードの調査だけを継続する。
