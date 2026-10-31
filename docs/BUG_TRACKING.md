@@ -28,11 +28,11 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#36](https://github.com/dennomusooffice/koeon-client/issues/36) | ロック中のOS強制終了 | 3104で再現、3106の単回試験では再発なし、原因確定は残る |
 | [#37](https://github.com/dennomusooffice/koeon-client/issues/37) | 準備待ち中に短い発話が失われる | Android500ms・iOS1/1.5秒のPCM輸送を実機確認、iOS500msは0。旧録音確認の競合を追加修正・275テスト成功、iOS3110内部配信・停止診断と1.5秒輸送確認、1秒以下は未解決 |
 | [#38](https://github.com/dennomusooffice/koeon-client/issues/38) | Bluetoothイヤフォンで送信不能 | 3107へ修正配信、Bluetooth送信と再接続後の送信を実機確認 |
-| [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | iOS3109の前面人声は聴取成功。3110の再接続・ロック後は無音を利用者が報告、Android245送信・最終244受理。診断で初回engine.startのNSErrorを特定。限定再試行・安全な診断を修正、282テスト成功、3111内部配信済み・実機未検証 |
+| [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | iOS3109の前面人声は聴取成功。3110の再接続・ロック後は無音を利用者が報告、Android245送信・最終244受理。診断で初回engine.startのNSErrorを特定。限定再試行・安全な診断を修正、282テスト成功、3111内部配信・実機導入後もロック中の無音申告。最新診断未回収・原因継続調査 |
 | [#40](https://github.com/dennomusooffice/koeon-client/issues/40) | SO-52Cの送信音声が非常に小さい | SO-52C内蔵+18dB・有線+24dB、A303OP1.0.13内蔵+6dBで聴取改善確認、PR未マージ |
 | [#42](https://github.com/dennomusooffice/koeon-client/issues/42) | 別利用者のiPhoneで11:00頃クラッシュ | 実ビルド・新しい.ips未取得。内部配信した対策との因果関係は未確定。終了原因の診断誤分類も修正、287テスト成功・追加分未配信 |
 | [#43](https://github.com/dennomusooffice/koeon-client/issues/43) | AUTOが目標到達後・無音でも増加 | 両OSを修正。A303OP1.0.13内蔵AUTOの段階更新・聴取を確認、収束・他ルートは未検証、Android公開保留 |
-| [#45](https://github.com/dennomusooffice/koeon-client/issues/45) | 再生待ちのキャンセル無視で停止・次の受信が戻らない | 再生待ち修正は3109内部配信。停止完了が次世代を消す競合も修正、278テスト成功、後続修正込み282件。3111内部配信済み・実機未検証 |
+| [#45](https://github.com/dennomusooffice/koeon-client/issues/45) | 再生待ちのキャンセル無視で停止・次の受信が戻らない | 再生待ち修正は3109内部配信。停止完了が次世代を消す競合も修正、278テスト成功、後続修正込み282件。3111内部配信・実機導入済み。#39の無音は残り、停止競合対策の実機受入れは未完了 |
 | [#46](https://github.com/dennomusooffice/koeon-client/issues/46) | 前面でも双方向の音声到達が遅い | iOS3109・A303OP1.0.13の前面ACK約394/397ms、フレーム一致。iOS押下→TALKING1552ms等は残り、全面改善とは扱わない |
 | [#47](https://github.com/dennomusooffice/koeon-client/issues/47) | GitHub Actions開始前失敗でAndroid公開不可 | アカウント側の復旧待ち。所有者は現時点で対応不可。署名候補を保存し、公開ゲートを維持 |
 | [#48](https://github.com/dennomusooffice/koeon-client/issues/48) | Android録音済み音声へのライブ音声の割込み | 原子的な受渡しへ修正、184件・Lint・ビルド成功。A303OPに導入し通常送信と500ms保持を確認、競合の実機再現未確認・公開保留 |
