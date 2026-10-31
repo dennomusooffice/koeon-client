@@ -27,7 +27,8 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#35](https://github.com/dennomusooffice/koeon-client/issues/35) | 復帰時の発話発見・バッファ再生終端 | 修正・限定条件で改善確認、反復検証が残る |
 | [#36](https://github.com/dennomusooffice/koeon-client/issues/36) | ロック中のOS強制終了 | 3104で再現、3106の単回試験では再発なし、原因確定は残る |
 | [#37](https://github.com/dennomusooffice/koeon-client/issues/37) | 準備待ち中に短い発話が失われる | 約3秒で改善確認、さらに短い発話が残る |
-| [#38](https://github.com/dennomusooffice/koeon-client/issues/38) | Bluetoothイヤフォンで送信不能 | 16kHz入力の破棄を実機で特定、音声変換を修正・自動テスト済み、配信と実機確認はIssue参照 |
+| [#38](https://github.com/dennomusooffice/koeon-client/issues/38) | Bluetoothイヤフォンで送信不能 | 3107へ修正配信、Bluetooth送信と再接続後の送信を実機確認 |
+| [#39](https://github.com/dennomusooffice/koeon-client/issues/39) | Bluetooth受信のログと聴取結果が不一致 | 3107で利用者が受信音声を聞けず、原因未確定 |
 
 関連変更は[PR #33](https://github.com/dennomusooffice/koeon-client/pull/33)、詳しい時系列・ビルドと実測値は[IOS_RECOVERY_20261031.md](IOS_RECOVERY_20261031.md)。サーバー変更はクライアント変更と混同せず、同記録の別リポジトリPRへ辿る。
 

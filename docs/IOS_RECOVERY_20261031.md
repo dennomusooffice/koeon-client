@@ -102,3 +102,13 @@ Apple SDKと[公式仕様](https://developer.apple.com/documentation/pushtotalk/
 Batv1CaptureBufferが48kHzだけを受け入れていたことが原因。AVAudioConverterで8/16/24/32/44.1kHz monoを送信用PCM16LE・48kHzへ変換する。48kHzは無変換とし、不正形式は拒否する。変換履歴はコールバック間で維持し、録音世代・開始音の境界でリセットする。Floor取得前の音声送出は引き続き禁止する。
 
 各入力レート、48kHz既存経路、不正形式拒否、開始音境界で旧音声を混ぜないことを含むiOS全236テスト成功。実機の効果・配信結果は確認後に追記する。追跡: [Issue #38](https://github.com/dennomusooffice/koeon-client/issues/38)。
+
+Bluetooth修正は3003414でPushし、TestFlight 2026103107としてdefault/MTOYへ配信（VALID / IN_BETA_TESTING）、実機の更新を確認した。利用者が最終10:20まで操作を許可した。
+
+3107では、Bluetoothマイクの16kHz入力を変換し、93フレームを送信、Androidでも93フレームの再生完了を10:15:37 JSTに確認。送信エラーはなく、両端末READY。逆方向もiPhoneで136フレームを受信し、BluetoothA2DPOutputで10:16:33 JSTに再生完了、READYへ戻った。開始確認時の正規化サンプル数は960。聴取確認・再接続試験の結果は後段に追記する。
+
+利用者の聴取確認は「Android本体だけ聞こえた」。したがってBluetooth送信の改善は確認できたが、イヤフォンへの受信は可聴性未確認ではなく、聞こえなかったとの報告が残る。ログのRX_DRAIN_ENDだけで正常受信とは扱わない。この問題は[Issue #39](https://github.com/dennomusooffice/koeon-client/issues/39)へ分離した。
+
+利用者によるイヤフォン切断・再接続後の送信でも16kHz入力から104フレームを送出し、Androidで104フレームの再生完了（10:18:59 JST）と両端末READYを確認した。再接続後の受信再試験は、AndroidのREADYボタンを自動操作で取得できず送信開始前に中止したため、未実施。これは製品のPTT故障と断定しない。
+
+実機試験を終了し、自動ロック30秒、Mac音量100・ミュートへ復元。Androidの診断補助アプリを削除し、自動操作セッションを終了した。追加の端末操作には新しい時間枠が必要。残件はIssue #35〜#37および#39を参照。
