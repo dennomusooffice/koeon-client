@@ -189,6 +189,7 @@ data class SessionDiagnostics(
     val liveKitEndpointHost: String? = null,
     val bufferedAudioTx: BufferedAudioTxDiagnostics = BufferedAudioTxDiagnostics(),
     val bufferedAudioRx: BufferedAudioRxDiagnostics = BufferedAudioRxDiagnostics(),
+    val lastBufferedReceive: com.dennomuso.koeon.core.audio.BufferedAudioRxSnapshot? = null,
     val controlSenderIdentityResolution: String = "REJECTED",
 )
 
@@ -269,7 +270,7 @@ class IntercomSessionManager(
     )
     private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer(inputGain = gainProcessor)
     private var batv1Transmitter: com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter? = null
-    private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
+    @Volatile private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
     private val room = LiveKitRoomController(appContext, scope, gainProcessor, batv1Capture) { event ->
         when (event) {
             is AudioFocusEvent.Lost -> handleAudioInterruption(event.reason)
@@ -550,6 +551,7 @@ class IntercomSessionManager(
                         enrollmentRequired = true,
                         operationalState = OperationalState.UNENROLLED,
                         diagnostics = SessionDiagnostics(
+                            lastBufferedReceive = _state.value.diagnostics.lastBufferedReceive,
                             headsetPttEnabled = headsetPttEnabled,
                             headsetPttMode = headsetPttMode,
                             hardwareVolumePttMode = hardwareVolumePttMode,
@@ -867,6 +869,7 @@ class IntercomSessionManager(
                 enrollmentRequired = false,
                 operationalState = if (powerOff) OperationalState.ENROLLED_POWERED_OFF else OperationalState.SWITCHING_CHANNEL,
                 diagnostics = SessionDiagnostics(
+                    lastBufferedReceive = _state.value.diagnostics.lastBufferedReceive,
                     headsetPttEnabled = headsetPttEnabled,
                     headsetPttMode = headsetPttMode,
                     hardwareVolumePttMode = hardwareVolumePttMode,
@@ -1037,16 +1040,25 @@ class IntercomSessionManager(
         }
         val deviceId = join.deviceId
         batv1Receiver?.shutdown()
-        batv1Receiver = com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver(
+        lateinit var installedReceiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver
+        installedReceiver = com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver(
             scope = scope,
             api = api,
             sessionId = join.sessionId,
             onActivity = { active -> room.handleBufferedAudioActivity(active) },
             onTimelineDrained = { room.completeBufferedAudioTimelineDrain() },
+            onTerminalSnapshot = { snapshot ->
+                _state.update { current ->
+                    if (batv1Receiver === installedReceiver) {
+                        current.copy(diagnostics = current.diagnostics.copy(lastBufferedReceive = snapshot))
+                    } else current
+                }
+            },
             onFailure = { code ->
                 scope.launch { _state.update { it.copy(error = "Buffered RX failed safely: $code") } }
             },
         )
+        batv1Receiver = installedReceiver
         room.onBufferedAudioStart = { generationId -> batv1Receiver?.start(generationId) }
         room.onBufferedAudioEnd = { batv1Receiver?.noteControlEnd() }
         room.onBufferedAudioEndCue = { batv1Receiver?.noteEndCue() }

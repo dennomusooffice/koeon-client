@@ -37,7 +37,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 | [#47](https://github.com/dennomusooffice/koeon-client/issues/47) | GitHub Actions開始前失敗でAndroid公開不可 | アカウント側の復旧待ち。所有者は現時点で対応不可。署名候補を保存し、公開ゲートを維持 |
 | [#48](https://github.com/dennomusooffice/koeon-client/issues/48) | Android録音済み音声へのライブ音声の割込み | 原子的な受渡しへ修正、184件・Lint・ビルド成功。A303OPに導入し通常送信と500ms保持を確認、競合の実機再現未確認・公開保留 |
 | [#49](https://github.com/dennomusooffice/koeon-client/issues/49) | 復帰失敗が通知登録を消して次の背景受信を阻害 | 6fe000fで修正・291件成功・3112内部配信。7分33秒ロック後の聴取、通知先維持、明示OFFの解除とONの再登録を実機確認。元の接続失敗を今回通ったかは未確定、電池単独・長時間反復は未検証、main未マージ |
-| [#50](https://github.com/dennomusooffice/koeon-client/issues/50) | 復帰後に受信履歴・再生統計が失われる | 3112実機で正常ポーリングが64件の履歴を占有し、前面復帰で直近の受信統計も初期化されることを確認。両OSの正常ポーリング重複抑制を実装。iOS294件・Android187件成功、未配信。直近受信統計保持はiOSに実装・295ケース成功（最終結果収集中）、Android対応・JSON契約検証が残る |
+| [#50](https://github.com/dennomusooffice/koeon-client/issues/50) | 復帰後に受信履歴・再生統計が失われる | 3112実機で正常ポーリングが64件の履歴を占有し、前面復帰で直近の受信統計も初期化されることを確認。両OSの正常ポーリング重複抑制を実装。iOS294件・Android187件成功、未配信。直近受信統計保持は両OSに実装。iOS295ケース成功（最終結果収集中）、Android189件・Lint・build成功。iOS JSON契約・再接続統合検証が残る |
 
 実機接続なしで進めた修正、機種差と自動ゲインの検討、残件は[OFFLINE_FIELD_RELIABILITY_20261031.md](OFFLINE_FIELD_RELIABILITY_20261031.md)を参照。
 

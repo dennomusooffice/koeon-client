@@ -101,7 +101,20 @@ data class BufferedAudioRxDiagnostics(
     val finalFrameWrittenAtEpochMs: Long? = null,
     val playerDrainCompletedAtEpochMs: Long? = null,
     val endCueAtEpochMs: Long? = null,
+    val terminalReason: String? = null,
 )
+
+/** One terminal value copy; no receive identifier, audio or credentials. */
+data class BufferedAudioRxSnapshot private constructor(
+    val capturedAtEpochMs: Long,
+    val receive: BufferedAudioRxDiagnostics,
+) {
+    companion object {
+        fun capture(receive: BufferedAudioRxDiagnostics) = BufferedAudioRxSnapshot(
+            System.currentTimeMillis(), receive.copy(generationId = null),
+        )
+    }
+}
 
 /** Realtime callback only copies bytes into a bounded RAM ring; it never performs network I/O. */
 class Batv1CaptureBuffer(
@@ -630,6 +643,7 @@ class HttpBufferedAudioReceiver(
     private val onActivity: (Boolean) -> Unit = {},
     private val onTimelineDrained: suspend () -> Unit = {},
     private val onFailure: (String) -> Unit = {},
+    private val onTerminalSnapshot: (BufferedAudioRxSnapshot) -> Unit = {},
 ) {
     private var job: Job? = null
     @Volatile private var generationToken = 0L
@@ -700,11 +714,14 @@ class HttpBufferedAudioReceiver(
                             backlogMs = 0,
                             playbackRate = 1f,
                             playerDrainCompletedAtEpochMs = System.currentTimeMillis(),
+                            terminalReason = "final_sequence",
                         )
                         Batv1CrashBreadcrumbs.record("RX", "RX_DRAIN_END", generationId, "AUDIO_SERIAL_WORKER")
+                        if (token == generationToken) onTerminalSnapshot(BufferedAudioRxSnapshot.capture(diagnostics))
                         onActivity(false)
                         onTimelineDrained()
                         diagnostics = diagnostics.copy(endCueAtEpochMs = System.currentTimeMillis())
+                        if (token == generationToken) onTerminalSnapshot(BufferedAudioRxSnapshot.capture(diagnostics))
                         timelineDrainCompleted = true
                         break
                     }
@@ -713,7 +730,8 @@ class HttpBufferedAudioReceiver(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                diagnostics = diagnostics.copy(timelineLost = true)
+                diagnostics = diagnostics.copy(timelineLost = true, terminalReason = "receive_failed")
+                if (token == generationToken) onTerminalSnapshot(BufferedAudioRxSnapshot.capture(diagnostics))
                 Batv1CrashBreadcrumbs.record("RX", "RX_FAILED", generationId, "AUDIO_SERIAL_WORKER", error.javaClass.simpleName)
                 onFailure("BATV1_RX_${error.javaClass.simpleName.uppercase()}")
             } finally {

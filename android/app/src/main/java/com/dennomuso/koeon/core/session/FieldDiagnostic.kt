@@ -41,6 +41,26 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
     val rx = d.rx
     val gain = d.inputGain
     val value = buildJsonObject {
+        put("lastBufferedReceive", d.lastBufferedReceive?.let { snapshot ->
+            val receive = snapshot.receive
+            buildJsonObject {
+                fun time(value: Long?) = nullable(value?.let { Instant.ofEpochMilli(it).toString() })
+                put("capturedAt", time(snapshot.capturedAtEpochMs))
+                put("build", JsonPrimitive("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"))
+                put("outcome", JsonPrimitive(if (receive.timelineLost) "failed" else "completed"))
+                put("terminalReason", nullable(receive.terminalReason))
+                put("playbackCursor", JsonPrimitive(receive.playbackCursor))
+                put("latestSequence", JsonPrimitive(receive.latestSequence))
+                put("finalSequence", receive.finalSequence?.let(::JsonPrimitive) ?: JsonNull)
+                put("missingSequenceCount", JsonPrimitive(receive.missingSequenceCount))
+                put("duplicateSequenceCount", JsonPrimitive(receive.duplicateSequenceCount))
+                put("playerDrainCompletedAt", time(receive.playerDrainCompletedAtEpochMs))
+                put("endCueAt", time(receive.endCueAtEpochMs))
+                // These output observations are not measured by the Android player yet.
+                for (key in listOf("lastEnqueueOutput", "lastCompletionOutput", "engineStartFailures",
+                    "lastErrorCode", "inputRmsDbfs", "inputPeakDbfs")) put(key, JsonNull)
+            }
+        } ?: JsonNull)
         put("schema", JsonPrimitive(FIELD_DIAGNOSTIC_SCHEMA)); put("capturedAt", JsonPrimitive(capturedAt)); put("platform", JsonPrimitive("android"))
         put("settings", buildJsonObject { put("headsetPttMode", JsonPrimitive(d.headsetPttMode.name)); put("hardwareVolumePttMode", JsonPrimitive(d.hardwareVolumePttMode.name)) })
         put("state", buildJsonObject { put("connection", JsonPrimitive(state.connectionState.name)); put("ptt", JsonPrimitive(state.ptt.state.name)); put("pttSemanticState", JsonPrimitive(semantic.name)); put("pttEligible", JsonPrimitive(eligible)); put("pttBlockReason", nullable(blockReason)); put("rx", JsonPrimitive(rx.state.name)) })

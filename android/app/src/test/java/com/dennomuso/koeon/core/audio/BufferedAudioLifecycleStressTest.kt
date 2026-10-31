@@ -23,6 +23,35 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 class BufferedAudioLifecycleStressTest {
+    @Test fun `terminal evidence survives receiver disposal and separates failure from drain`() = runBlocking {
+        for (failDrain in listOf(false, true)) {
+            val retained = java.util.concurrent.atomic.AtomicReference<BufferedAudioRxSnapshot>()
+            fun receiver() = HttpBufferedAudioReceiver(this, Batv1StressApi(), "private-session",
+                playerFactory = { object : Batv1PcmPlayer {
+                    override fun start() = Unit
+                    override fun setRate(rate: Float) = Unit
+                    override fun write(bytes: ByteArray) = Unit
+                    override suspend fun drain() { if (failDrain) error("simulated drain failure") }
+                    override fun stop() = Unit
+                } }, onTerminalSnapshot = { retained.set(it) })
+            val active = receiver()
+            try {
+                active.start("private-generation")
+                withTimeout(2_000) {
+                    while (retained.get()?.let { it.receive.timelineLost || it.receive.endCueAtEpochMs != null } != true) delay(1)
+                }
+            } finally { active.shutdownAndAwait() }
+            val snapshot = retained.get()
+            assertEquals(null, snapshot.receive.generationId)
+            assertEquals(1, snapshot.receive.playbackCursor)
+            assertEquals(failDrain, snapshot.receive.timelineLost)
+            assertEquals(if (failDrain) "receive_failed" else "final_sequence", snapshot.receive.terminalReason)
+            assertEquals(!failDrain, snapshot.receive.playerDrainCompletedAtEpochMs != null)
+            receiver().shutdownAndAwait()
+            assertEquals(snapshot, retained.get())
+        }
+    }
+
     @Test fun `slow HTTP catches up four second pre-roll and preserves live audio and final marker`() = runTest {
         for (requestMs in listOf(150L, 250L, 500L)) {
             val api = Batv1StressApi(publishDelayMs = requestMs)

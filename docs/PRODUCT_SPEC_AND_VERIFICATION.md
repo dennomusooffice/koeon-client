@@ -81,3 +81,8 @@ LiveKit接続設定の照合では、iOSはRoomOptionsの音声設定だけを�
 iOSは受信オブジェクトが再作成されてもSessionControllerが値コピーを保持する実装を追加した。正常drain／失敗の通知前にコピーし、通知中の世代交代でも証拠を失わない。古いruntimeの通知は採用しない。開始前の取消や空の新runtimeで直近終端を上書きしない。コピーから受信世代IDと再生世代tokenを除き、音声・認証情報を保存しない。保持はプロセス内のRAMだけで、アプリ再起動を越える永続保持は今回の対象外。
 
 新規の交換・停止・識別子除去テスト、既存のdrain失敗テストを検証。iOS295ケース成功（22:58 JST）、xcodebuildの最終結果収集は進行中。未配信・実機未検証。Androidの同じ`lastBufferedReceive`契約への対応とJSON出力の契約検証は残件であり、両OS対応完了とはしない。既存Android187件の結果はこの新しい保持機能の証明には使わない。
+
+
+Androidにも同じ直近終端保持を実装した。SessionDiagnosticsに独立した値を保持し、runtime再接続／POWER OFF・ONで作り直す診断にも引き継ぐ。交換済みreceiverからの通知は採用せず、受信世代IDは値コピーから除外する。`lastBufferedReceive`の項目名はiOSと同じとし、Androidのプレイヤーで未測定の出力観測・エンジン失敗回数・PCMレベルはnullとする。異なるOSの0と未測定を同一視しない。
+
+Androidは正常終端・drain失敗・破棄後保持・JSONでの現行値との分離・未測定値・識別子除去を検証し、189件／Lint／assembleDebugが成功（2026-10-31 23:03 JST）。iOSのJSON出力自体の契約テストと両OSでのruntime再接続を含む統合検証は残る。今回のdebug APKは未導入・未公開。配信版はAndroid1.0.13（14）、iOS1.0（2026103112）のまま。
