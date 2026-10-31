@@ -273,6 +273,38 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertLessThan(readyIndex, cueIndex)
     }
 
+    func testReceiverReadyRetriesTransientPublicationFailure() async throws {
+        var attempts = 0
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            onReceiverReady: { _, _ in
+                attempts += 1
+                if attempts < 3 { throw NSError(domain: "test.transient-ready", code: 1) }
+            }, onUpdate: { _ in })
+        controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        controller.audioSessionDidActivate()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(attempts, 3)
+        XCTAssertNotNil(controller.currentSnapshot().rxReadySentAt)
+        controller.reset()
+    }
+
+    func testReceiverReadyFailureDoesNotReportSuccessAndResetStopsRetry() async throws {
+        var attempts = 0
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            onReceiverReady: { _, _ in
+                attempts += 1
+                throw NSError(domain: "test.disconnected-ready", code: 1)
+            }, onUpdate: { _ in })
+        controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        controller.audioSessionDidActivate()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(attempts, 1)
+        XCTAssertNil(controller.currentSnapshot().rxReadySentAt)
+        controller.reset()
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(attempts, 1)
+    }
+
     func testFieldLabCueOffStillSendsReceiverReadyWithoutPlayingStartCue() async {
         let ready = expectation(description: "RX Ready sent with cue disabled")
         let order = EventOrderRecorder { value in

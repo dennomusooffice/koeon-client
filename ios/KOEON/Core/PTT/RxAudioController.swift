@@ -701,7 +701,7 @@ final class RxAudioController {
     private let onValidatedStart: @MainActor (PttControlEvent, Int) -> Void
     private let onAudioActivity: @MainActor (String?, Bool) -> Void
     private let onDrainCompleted: @MainActor (Int, String, String, String) -> Bool
-    private let onReceiverReady: @MainActor (String, String) async -> Void
+    private let onReceiverReady: @MainActor (String, String) async throws -> Void
     private var startCueEnabled: Bool
 
     private var snapshot = RxSnapshot()
@@ -719,6 +719,7 @@ final class RxAudioController {
     private var capTask: Task<Void, Never>?
     private var startupTimeoutTask: Task<Void, Never>?
     private var readySentLeaseId: String?
+    private var readyPublicationGeneration: Int?
     private var pendingPushTiming: (incoming: Date, acquired: Date)?
 
     init(
@@ -728,7 +729,7 @@ final class RxAudioController {
         onValidatedStart: @escaping @MainActor (PttControlEvent, Int) -> Void = { _, _ in },
         onAudioActivity: @escaping @MainActor (String?, Bool) -> Void = { _, _ in },
         onDrainCompleted: @escaping @MainActor (Int, String, String, String) -> Bool = { _, _, _, _ in true },
-        onReceiverReady: @escaping @MainActor (String, String) async -> Void = { _, _ in },
+        onReceiverReady: @escaping @MainActor (String, String) async throws -> Void = { _, _ in },
         startCueEnabled: Bool = true,
         onUpdate: @escaping @Sendable (RxSnapshot) -> Void
     ) {
@@ -909,6 +910,7 @@ final class RxAudioController {
         pendingEndReason = nil
         pendingActiveSessionId = nil
         readySentLeaseId = nil
+        readyPublicationGeneration = nil
         pendingPushTiming = nil
         silenceStartedAt = nil
         lastSequenceBySession.removeAll()
@@ -1014,6 +1016,7 @@ final class RxAudioController {
         snapshot.endCueResult = .notPlayed
         publish()
         readySentLeaseId = nil
+        readyPublicationGeneration = nil
         if appleAudioActive {
             if voiceAlreadyActive {
                 snapshot.startCueResult = .notPlayed
@@ -1163,12 +1166,29 @@ final class RxAudioController {
               appleAudioActive,
               let speakerSessionId = snapshot.sessionId,
               let leaseId = snapshot.leaseId,
-              readySentLeaseId != leaseId else { return }
-        readySentLeaseId = leaseId
-        await onReceiverReady(speakerSessionId, leaseId)
-        guard operation == generation else { return }
-        snapshot.rxReadySentAt = clock.now
-        publish()
+              readySentLeaseId != leaseId,
+              readyPublicationGeneration != operation else { return }
+        readyPublicationGeneration = operation
+        defer {
+            if readyPublicationGeneration == operation { readyPublicationGeneration = nil }
+        }
+        // A connected room may still be reopening its reliable data channel.
+        // Failed publication is not an acknowledgement and must remain retryable.
+        for attempt in 0..<10 {
+            guard operation == generation, appleAudioActive, snapshot.state != .idle,
+                  !Task.isCancelled else { return }
+            do {
+                try await onReceiverReady(speakerSessionId, leaseId)
+                guard operation == generation else { return }
+                readySentLeaseId = leaseId
+                snapshot.rxReadySentAt = clock.now
+                publish()
+                return
+            } catch {
+                guard attempt < 9 else { return }
+                do { try await clock.sleep(milliseconds: 150) } catch { return }
+            }
+        }
     }
 
     private func scheduleDrainCheck() {

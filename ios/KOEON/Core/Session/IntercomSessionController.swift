@@ -635,6 +635,7 @@ final class IntercomSessionController: ObservableObject {
                 self.beginReconnectAttempt(reason: "livekit_reconnecting")
             } else if state == .connected {
                 self.completeReconnectAttempt(result: "connected")
+                if self.audio.pushToTalkAudioSessionActive { self.rx?.audioSessionDidActivate() }
             } else if state == .disconnected {
                 self.completeReconnectAttempt(result: "disconnected")
                 if self.restoreTask == nil { self.scheduleRuntimeRetry() }
@@ -1108,13 +1109,14 @@ final class IntercomSessionController: ObservableObject {
                 },
                 onDrainCompleted: { [weak self, weak remoteReceive] generation, sessionId, leaseId, reason in
                     self?.bufferedReceiver?.noteEndCue()
+                    if reason == "buffered_terminal_timeout" { self?.bufferedReceiver?.stop() }
                     return remoteReceive?.completeDrain(
                         generation: generation, sessionId: sessionId, leaseId: leaseId, reason: reason
                     ) ?? false
                 },
                 onReceiverReady: { [weak self, weak room] speakerSessionId, leaseId in
                     guard let self, let room else { return }
-                    await self.publishReceiverReadyWithDiagnostics(
+                    try await self.publishReceiverReadyWithDiagnostics(
                         room: room, speakerSessionId: speakerSessionId, leaseId: leaseId
                     )
                 },
@@ -1920,7 +1922,7 @@ final class IntercomSessionController: ObservableObject {
             },
             onReceiverReady: { [weak self, weak room] speakerSessionId, leaseId in
                 guard let self, let room else { return }
-                await self.publishReceiverReadyWithDiagnostics(
+                try await self.publishReceiverReadyWithDiagnostics(
                     room: room, speakerSessionId: speakerSessionId, leaseId: leaseId
                 )
             },
@@ -2793,17 +2795,22 @@ final class IntercomSessionController: ObservableObject {
         room: LiveKitRoomController,
         speakerSessionId: String,
         leaseId: String
-    ) async {
+    ) async throws {
+        let runtime = runtimeLiveness.generation
         rxReadyPublishAttemptedAt = Date()
         rxReadyPublishSessionIdGeneration = rxWakeGeneration
         rxReadyPublishDeviceIdPresent = (joinedSession?.deviceId ?? identity?.device.id) != nil
         do {
             try await room.publishRxReady(speakerSessionId: speakerSessionId, leaseId: leaseId)
+            guard runtimeLiveness.generation == runtime else { return }
             rxReadyPublishedAt = Date()
             rxReadyPublishResult = "SUCCESS"
         } catch {
             // Only the error type is retained; tokens, endpoint details and payloads are excluded.
-            rxReadyPublishResult = "FAILED_\(type(of: error))"
+            if runtimeLiveness.generation == runtime {
+                rxReadyPublishResult = "FAILED_\(type(of: error))"
+            }
+            throw error
         }
     }
 
