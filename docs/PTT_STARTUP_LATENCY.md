@@ -43,4 +43,10 @@ LAG_CONVERGE_P95_MS <= 250
 REMOTE_END_TO_NEXT_PTT_P95_MS <= 500
 ```
 
-今回の実装は既存のprepared audio pathとSDK prewarmを維持します。独自PCM pre-roll / adaptive replayは、floor authorization、Apple PushToTalk、WebRTC captureの境界を跨ぐため、この変更では未実装です。leading clipおよびcatch-up値は実機受入で確定し、未計測値をPASSとして扱いません。
+既存のprepared audio pathとSDK prewarmを維持します。現在のBATv1には上限6秒のPCMバッファがあります。leading clipおよびcatch-up値は実機受入で確定し、未計測値をPASSとして扱いません。
+
+## Androidの短い発話（2026-10-31修正、未配信）
+
+Floor取得済み・RX_READY待ち中にUPした場合、BATv1では取得済みPCMを凍結し、準備完了または従来の4,000ms上限まで待って送信します。UP後の新たなPCMは保持せず、最後の不完全な20msフレームはゼロ埋めします。凍結後にhangover録音を追加しません。音声final marker、control END、Floor releaseの順に終了します。
+
+Floor取得前のUPや、安全停止・準備待ち中のFloor更新失敗は保留音声を破棄します。非バッファ経路は従来どおり準備待ちをキャンセルします。iOS送信側と実機受入は別途確認が必要です。詳細は[オフライン調査記録](OFFLINE_FIELD_RELIABILITY_20261031.md)、[Issue #37](https://github.com/dennomusooffice/koeon-client/issues/37)を参照してください。

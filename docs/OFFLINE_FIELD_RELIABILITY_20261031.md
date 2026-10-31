@@ -59,11 +59,23 @@ AUTOの上限を一律+24dBにするだけでは、一定の環境雑音も増�
 
 次の検証ではSO-52Cと別機種について、同じ声・距離・受信音量で内蔵／有線／Bluetoothを比較する。測定は入力・処理後RMS/peak、リミッター比率、入力ルート、実際の聴取結果を揃える。音声内容を保存せず集計値で評価する。
 
+## AndroidでRX_READY待ち中に離した短い発話
+
+[Issue #37](https://github.com/dennomusooffice/koeon-client/issues/37)、修正 `1424668a93cb8fd1e6f99d1897a483c7f629da49`。Floor取得済み・受信準備待ち中にUPすると、旧実装は準備待ちをキャンセルして録音済み音声を破棄していた。追加した回帰テスト2件が修正前に失敗した。
+
+AndroidのBATv1経路では、UPでその世代のPCM取り込みを凍結する。取得済みのFloorを更新しながらRX_READYのACKまたは既存4秒上限まで待ち、凍結した音声だけを送信して終了する。最後の20ms未満の取得済みPCMはゼロ埋めして保持する。UP後の新たなマイクサンプルは保持・送出しない。セッションのSDK録音経路を毎回作り直す変更ではない。
+
+最終音声マーカー、control END、Floor releaseの順で終了する。凍結済み音声へ追加のhangover録音は行わない。準備待ち中の安全停止・切断・Floor更新失敗は即座に待機をキャンセルして破棄する。Floorをまだ取得していない段階でのUP、非バッファ経路、凍結を実装していないgatewayは送信を継続しない。
+
+追加7テストで、500ms後のUPと2.8秒後のACK、4秒上限維持、安全停止・Floor更新失敗、PCMの末尾保持とUP後の除外、世代分離、実HTTP送信処理へ渡すフレームとfinal markerを検証した。Android全166件・Lint・assembleDebug・parity gate成功。実際の音声は保存せず合成PCMを使用した。
+
+iOSの送信側はこの変更では未修正。Androidの0.5/1/2/3秒発話、ロックしたiPhoneへの聴取、先頭・末尾、回線遅延を含む実機検証は未実施。#37はOpenを維持する。
+
 ## 今回の検証・配信状態
 
 | 項目 | 結果 |
 | --- | --- |
-| Android単体テスト | 159件成功（追加3件） |
+| Android単体テスト | 166件成功（AUTO3件・短発話7件追加） |
 | Android Lint / assembleDebug | 成功 |
 | iOS Simulator全テスト | 243件成功（初期化3件・AUTO2件・再生待ち2件追加） |
 | feature-parity-contract / diff whitespace | 成功 |
@@ -78,5 +90,5 @@ AUTOの上限を一律+24dBにするだけでは、一定の環境雑音も増�
 - #42: 新しいクラッシュ記録から終了理由・スタックを照合する。
 - #39: Bluetooth受信時の出力ポート、音量、PCMレベル、エンジン状態を同時に記録できるようにする。終了後のA2DP表示は受信中の経路の証拠にならない。
 - #39: Appleの[AVAudioEngineConfigurationChange通知](https://developer.apple.com/documentation/avfaudio/avaudioengineconfigurationchangenotification)では、ハードウェアのサンプルレート／チャンネル数変更でエンジンが停止・未初期化になる。現行プレイヤーはこの通知を監視しておらず、Apple音声セッション有効化時にのみ再開する。今回の無音との因果関係は未確認で、ルート変更中の再生・完了扱いを自動テストで調べる。
-- #37: 受信準備待ち中にPTTを離す短い発話が破棄される経路を、Floor所有権と録音停止を保ったまま修正する。
+- #37: Androidの短発話保持は修正・自動テスト済み。iOSの送信側、実機の短発話・ロック受信・先頭末尾の確認は残る。
 - #43: AUTOの雑音判定・補正範囲の拡張は、今回の計算修正とは区別して検証する。
