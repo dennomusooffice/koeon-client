@@ -22,6 +22,29 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 class BufferedAudioLifecycleStressTest {
+    @Test fun `frozen pre-roll is published only after authorization and excludes post-UP samples`() = runBlocking {
+        val api = Batv1StressApi()
+        val capture = Batv1CaptureBuffer()
+        val transmitter = HttpBufferedAudioTransmitter(this, api, capture, "channel", "session", "device")
+        launch { delay(1); capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME))) }
+        assertTrue(transmitter.armAndConfirmCapture("short"))
+        assertTrue(transmitter.markCueBoundary("short"))
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME + 200) { 7 }))
+        assertTrue(transmitter.freezePendingCapture("short"))
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { 9 }))
+        assertTrue(api.published.isEmpty())
+        assertTrue(transmitter.authorize("lease", "short"))
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { 11 }))
+        assertTrue(transmitter.finish("short"))
+        val frames = api.published.flatMap { it.chunks }
+        assertEquals(listOf(0, 1), frames.map { it.sequence })
+        val tail = java.util.Base64.getDecoder().decode(frames.last().payloadBase64)
+        assertTrue(tail.take(200).all { it == 7.toByte() })
+        assertTrue(tail.drop(200).all { it == 0.toByte() })
+        assertEquals(1, api.published.last().finalSequence)
+        assertEquals(0, transmitter.diagnostics().framesAcceptedAfterPttUp)
+    }
+
     @Test fun `tail hangover includes delayed frames and final marker is last`() = runBlocking {
         val api = Batv1StressApi()
         val capture = Batv1CaptureBuffer()

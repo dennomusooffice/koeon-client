@@ -8,6 +8,35 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class BufferedAudioTimelineTest {
+    @Test fun `freeze retains speech tail and never accepts microphone samples after UP`() {
+        var processed = 0
+        val capture = Batv1CaptureBuffer { processed += 1 }
+        capture.arm("generation")
+        val source = ByteArray(BATV1_BYTES_PER_FRAME + 200) { 7 }
+        capture.appendLiveKitPcm(ByteBuffer.wrap(source), 16, 48000, 1, source.size / 2)
+        assertTrue(capture.freeze("generation"))
+        var forwarded = 0
+        val retained = capture.startForwarding { forwarded += 1 }
+        capture.appendLiveKitPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { 9 }), 16, 48000, 1, 960)
+        assertEquals(2, retained.size)
+        assertArrayEquals(ByteArray(200) { 7 } + ByteArray(BATV1_BYTES_PER_FRAME - 200), retained.last())
+        assertEquals(2, capture.frameCount())
+        assertEquals(1, processed)
+        assertEquals(0, forwarded)
+        assertTrue(capture.freeze("generation"))
+        assertEquals(2, capture.frameCount())
+    }
+
+    @Test fun `stale freeze cannot stop a new capture generation`() {
+        val capture = Batv1CaptureBuffer()
+        capture.arm("old")
+        assertTrue(capture.freeze("old"))
+        capture.arm("new")
+        assertEquals(false, capture.freeze("old"))
+        capture.appendPostProcessedPcm(ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME)))
+        assertEquals(1, capture.frameCount())
+    }
+
     @Test fun `canonical PCM frames are 20ms and ordered from seq0`() {
         val capture = Batv1CaptureBuffer()
         capture.arm("generation")

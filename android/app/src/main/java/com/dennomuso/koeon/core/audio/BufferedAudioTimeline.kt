@@ -108,6 +108,7 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
     private var armedGeneration: String? = null
     private var firstFrameSignal = Channel<Unit>(Channel.CONFLATED)
     private var inputProcessingActive = false
+    private var frozen = false
     private var dropped = 0
     private var armedAtEpochMs: Long? = null
     private var firstPcmAtEpochMs: Long? = null
@@ -124,6 +125,7 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
         lastErrorCode = null
         armedGeneration = generationId
         inputProcessingActive = true
+        frozen = false
         firstFrameSignal = Channel(Channel.CONFLATED)
         return generationId
     }
@@ -181,7 +183,7 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
 
     @Synchronized
     private fun appendBytes(bytes: ByteArray, applyInputGain: Boolean = false) {
-        if (armedGeneration == null) return
+        if (armedGeneration == null || frozen) return
         if (applyInputGain && inputProcessingActive) processPcm16?.invoke(ByteBuffer.wrap(bytes))
         if (bytes.isNotEmpty() && firstPcmAtEpochMs == null) firstPcmAtEpochMs = System.currentTimeMillis()
         var joined = partial + bytes
@@ -204,8 +206,26 @@ class Batv1CaptureBuffer(private val processPcm16: ((ByteBuffer) -> Unit)? = nul
 
     @Synchronized fun snapshotFrames(): List<ByteArray> = frames.map(ByteArray::copyOf)
     @Synchronized
+    fun freeze(generationId: String): Boolean {
+        if (armedGeneration != generationId) return false
+        if (frozen) return true
+        // Keep the last <20ms of speech. Pad only the canonical tail, without
+        // accepting any microphone samples after this boundary.
+        if (partial.isNotEmpty()) {
+            if (frames.size == BATV1_MAX_FRAMES) { frames.removeFirst(); dropped += 1 }
+            frames.addLast(partial.copyOf(BATV1_BYTES_PER_FRAME))
+            partial = ByteArray(0)
+            firstFrameSignal.trySend(Unit)
+        }
+        frozen = true
+        inputProcessingActive = false
+        onCanonicalFrame = null
+        return true
+    }
+
+    @Synchronized
     fun startForwarding(consumer: (ByteArray) -> Unit): List<ByteArray> {
-        onCanonicalFrame = consumer
+        onCanonicalFrame = if (frozen) null else consumer
         return frames.map(ByteArray::copyOf)
     }
     @Synchronized fun stopForwarding() { onCanonicalFrame = null; inputProcessingActive = false }
@@ -220,6 +240,8 @@ interface BufferedAudioTxGateway {
     suspend fun armAndConfirmCapture(generationId: String): Boolean
     fun markCueBoundary(generationId: String): Boolean
     suspend fun authorize(leaseId: String, generationId: String): Boolean
+    /** Stop accepting microphone samples, retaining only this generation's recorded PCM. */
+    fun freezePendingCapture(generationId: String): Boolean = false
     fun beginReleaseHangover(generationId: String, atEpochMs: Long = System.currentTimeMillis()): Boolean = true
     fun completeReleaseHangover(generationId: String, atEpochMs: Long = System.currentTimeMillis()): Boolean = true
     suspend fun finish(generationId: String): Boolean
@@ -338,6 +360,18 @@ class HttpBufferedAudioTransmitter(
         return true
     }
 
+    override fun freezePendingCapture(generationId: String): Boolean {
+        if (this.generationId != generationId || authorized || !capture.freeze(generationId)) return false
+        val now = System.currentTimeMillis()
+        diagnostics = diagnostics.copy(
+            captureState = "FROZEN_WAITING_READY",
+            pttUpAtEpochMs = now,
+            captureForwardingStoppedAtEpochMs = now,
+            pendingFramesAtPttUp = capture.frameCount(),
+        )
+        return true
+    }
+
     override fun beginReleaseHangover(generationId: String, atEpochMs: Long): Boolean {
         if (this.generationId != generationId || !authorized) return false
         releaseHangoverActive = true
@@ -367,7 +401,9 @@ class HttpBufferedAudioTransmitter(
         diagnostics = diagnostics.copy(captureState = "FINISHING")
         Batv1CrashBreadcrumbs.record("TX", "TX_FINISH_BEGIN", generationId)
         capture.stopForwarding()
-        diagnostics = diagnostics.copy(captureForwardingStoppedAtEpochMs = System.currentTimeMillis())
+        diagnostics = diagnostics.copy(
+            captureForwardingStoppedAtEpochMs = diagnostics.captureForwardingStoppedAtEpochMs ?: System.currentTimeMillis(),
+        )
         releaseHangoverActive = false
         authorized = false
         signal.trySend(Unit)

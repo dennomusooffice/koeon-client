@@ -60,6 +60,96 @@ class PttControllerTest {
     }
 
     @Test
+    fun `buffered UP during READY wait freezes capture and delivers after ACK`() = runTest {
+        val events = mutableListOf<String>()
+        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
+            acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1",
+                rxReadyExpectedSessionIds = listOf("receiver-a")))
+        val down = backgroundScope.launch { harness.controller.pressDown(true) }
+        runCurrent()
+        advanceTimeBy(500)
+        val up = backgroundScope.launch { harness.controller.pressUp() }
+        runCurrent()
+        assertTrue(events.contains("capture-frozen"))
+        assertFalse(events.contains("authorized"))
+        assertFalse(events.contains("release"))
+        advanceTimeBy(2_300)
+        harness.ack("receiver-a")
+        runCurrent()
+        down.join(); up.join()
+        assertEquals(PttState.IDLE, harness.controller.current().state)
+        assertTrue(events.contains("authorized"))
+        assertTrue(events.contains("final-marker"))
+        assertFalse(events.contains("hangover-begin"))
+        assertTrue(events.indexOf("capture-frozen") < events.indexOf("authorized"))
+        assertTrue(events.indexOf("final-marker") < events.indexOf("control-end"))
+        assertTrue(events.indexOf("control-end") < events.indexOf("release"))
+    }
+
+    @Test
+    fun `safety cancels a frozen short utterance before receiver ACK`() = runTest {
+        val events = mutableListOf<String>()
+        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
+            acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1",
+                rxReadyExpectedSessionIds = listOf("receiver-a")))
+        val down = backgroundScope.launch { harness.controller.pressDown(true) }
+        runCurrent()
+        val up = backgroundScope.launch { harness.controller.pressUp() }
+        runCurrent()
+        assertTrue(events.contains("capture-frozen"))
+        harness.controller.stopForSafety("disconnected")
+        runCurrent()
+        harness.ack("receiver-a")
+        runCurrent()
+        down.join(); up.join()
+        assertFalse(events.contains("authorized"))
+        assertFalse(events.contains("final-marker"))
+        assertEquals(PttState.IDLE, harness.controller.current().state)
+    }
+
+    @Test
+    fun `failed lease renewal aborts a frozen short utterance before ACK`() = runTest {
+        val events = mutableListOf<String>()
+        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
+            failRenewAt = 1,
+            acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1",
+                rxReadyExpectedSessionIds = listOf("receiver-a")))
+        val down = backgroundScope.launch { harness.controller.pressDown(true) }
+        runCurrent()
+        val up = backgroundScope.launch { harness.controller.pressUp() }
+        runCurrent()
+        advanceTimeBy(1_001)
+        runCurrent()
+        harness.ack("receiver-a")
+        runCurrent()
+        down.join(); up.join()
+        assertFalse(events.contains("authorized"))
+        assertFalse(events.contains("final-marker"))
+        assertEquals(PttState.IDLE, harness.controller.current().state)
+    }
+
+    @Test
+    fun `buffered short utterance preserves four second READY timeout`() = runTest {
+        val events = mutableListOf<String>()
+        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
+            acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1",
+                rxReadyExpectedSessionIds = listOf("receiver-a")))
+        val down = backgroundScope.launch { harness.controller.pressDown(true) }
+        runCurrent()
+        val up = backgroundScope.launch { harness.controller.pressUp() }
+        runCurrent()
+        advanceTimeBy(3_999)
+        runCurrent()
+        assertFalse(events.contains("authorized"))
+        advanceTimeBy(2)
+        runCurrent()
+        down.join(); up.join()
+        assertTrue(events.contains("final-marker"))
+        assertTrue(harness.controller.current().rxReadyTimedOut)
+        assertEquals(PttState.IDLE, harness.controller.current().state)
+    }
+
+    @Test
     fun `UP during RX Ready wait cancels arm and never enables microphone`() = runTest {
         val harness = Harness(
             testScheduler,
@@ -493,6 +583,11 @@ class PttControllerTest {
             return true
         }
         override fun markCueBoundary(generationId: String): Boolean = generation == generationId
+        override fun freezePendingCapture(generationId: String): Boolean {
+            if (generation != generationId || forwarding) return false
+            events += "capture-frozen"
+            return true
+        }
         override suspend fun authorize(leaseId: String, generationId: String): Boolean {
             forwarding = generation == generationId
             events += "authorized"
