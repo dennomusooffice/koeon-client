@@ -2351,6 +2351,37 @@ final class BufferedAudioTimelineTests: XCTestCase {
 }
 
 final class Batv1BreadcrumbLifecycleTests: XCTestCase {
+    func testPollingDoesNotEvictBackgroundAndFailureEvidenceAcrossReload() {
+        let defaults = isolatedDefaults()
+        let store = Batv1CrashBreadcrumbStore(defaults: defaults)
+        store.startRun(build: "test")
+        store.recordAppLifecycle("background")
+        store.record(role: "APP", stage: "RUNTIME_CONNECT_FAILED", resultClass: "LISTENING_RETAINED")
+        for _ in 0..<200 {
+            store.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: "generation-a")
+            store.record(role: "RX", stage: "RX_SUBSCRIBE_END", generationId: "generation-a")
+        }
+        let restored = Batv1CrashBreadcrumbStore(defaults: defaults)
+        restored.startRun(build: "next")
+        XCTAssertTrue(restored.snapshot().contains { $0.stage == "APP_BACKGROUND" })
+        XCTAssertTrue(restored.snapshot().contains { $0.stage == "RUNTIME_CONNECT_FAILED" })
+        XCTAssertEqual(restored.snapshot().filter { $0.stage == "RX_SUBSCRIBE_BEGIN" }.count, 1)
+        XCTAssertEqual(restored.snapshot().filter { $0.stage == "RX_SUBSCRIBE_END" }.count, 1)
+    }
+
+    func testPollingCoalescingSeparatesFullGenerationsAndPreservesErrors() {
+        let store = Batv1CrashBreadcrumbStore(defaults: isolatedDefaults())
+        store.startRun(build: "test")
+        for generation in ["samepref-one", "samepref-two"] {
+            for _ in 0..<20 {
+                store.record(role: "RX", stage: "RX_SUBSCRIBE_END", generationId: generation)
+            }
+        }
+        store.record(role: "RX", stage: "RX_SUBSCRIBE_END", generationId: "samepref-two", resultClass: "ERROR")
+        XCTAssertEqual(store.snapshot().filter { $0.stage == "RX_SUBSCRIBE_END" }.count, 3)
+        XCTAssertEqual(store.snapshot().last?.resultClass, "ERROR")
+    }
+
     private func isolatedDefaults() -> UserDefaults {
         let name = "koeon.breadcrumb.tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: name)!

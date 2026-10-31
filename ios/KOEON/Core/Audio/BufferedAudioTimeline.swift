@@ -27,6 +27,12 @@ final class Batv1CrashBreadcrumbStore: @unchecked Sendable {
     private let runKnownKey = "batv1.runKnown"
     private let lastLifecycleKey = "batv1.lastObservedLifecycle.v1"
     private var events: [Batv1CrashBreadcrumb] = []
+    private struct PollKey: Equatable {
+        let generation: String
+        let stage: String
+    }
+    // Exact IDs are used only in bounded RAM, never added to persisted evidence.
+    private var recordedPolls: [PollKey] = []
     private var build = "unknown"
     // A lifecycle marker is not an OS termination report. Keep this legacy
     // diagnostic unknown instead of inferring a crash or clean exit from it.
@@ -66,6 +72,13 @@ final class Batv1CrashBreadcrumbStore: @unchecked Sendable {
     ) {
         lock.withLock {
             guard initialized else { return }
+            if role == "RX", resultClass == "OK", let generationId,
+               stage == "RX_SUBSCRIBE_BEGIN" || stage == "RX_SUBSCRIBE_END" {
+                let key = PollKey(generation: generationId, stage: stage)
+                guard !recordedPolls.contains(key) else { return }
+                if recordedPolls.count >= batv1BreadcrumbMaximumEvents { recordedPolls.removeFirst() }
+                recordedPolls.append(key)
+            }
             events.append(Batv1CrashBreadcrumb(
                 timestamp: Date(),
                 platform: "ios",
