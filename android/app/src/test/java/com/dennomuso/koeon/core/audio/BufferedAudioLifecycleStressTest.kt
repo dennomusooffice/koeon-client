@@ -14,6 +14,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -22,6 +23,32 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 class BufferedAudioLifecycleStressTest {
+    @Test fun `slow HTTP catches up four second pre-roll and preserves live audio and final marker`() = runTest {
+        for (requestMs in listOf(150L, 250L, 500L)) {
+            val api = Batv1StressApi(publishDelayMs = requestMs)
+            val capture = Batv1CaptureBuffer()
+            val transmitter = HttpBufferedAudioTransmitter(this, api, capture, "channel", "session", "device")
+            fun append(index: Int) = capture.appendPostProcessedPcm(
+                ByteBuffer.wrap(ByteArray(BATV1_BYTES_PER_FRAME) { index.toByte() }))
+            launch { delay(1); append(0) }
+            assertTrue(transmitter.armAndConfirmCapture("slow"))
+            assertTrue(transmitter.markCueBoundary("slow"))
+            repeat(200) { append(it) }
+            assertTrue(transmitter.authorize("lease", "slow"))
+            // Keep recording at 50 frames/sec while actual sender HTTP calls suspend.
+            repeat(50) { delay(20); append(200 + it) }
+            assertTrue(withTimeout(6_000) { transmitter.finish("slow") })
+            val frames = api.published.flatMap { it.chunks }
+            assertEquals((0 until 250).toList(), frames.map { it.sequence })
+            frames.forEachIndexed { index, frame ->
+                assertTrue(java.util.Base64.getDecoder().decode(frame.payloadBase64).all { it == index.toByte() })
+            }
+            assertTrue(api.published.all { it.chunks.size <= 32 })
+            assertEquals(249, api.published.last().finalSequence)
+            assertEquals(1, api.published.count { it.finalSequence != null })
+        }
+    }
+
     @Test fun `only acknowledged final marker commits capture gain learning`() = runBlocking {
         for (rejectFinal in listOf(false, true)) {
             val api = Batv1StressApi(publishFailure = { rejectFinal && it.finalSequence != null })
@@ -280,10 +307,12 @@ private suspend fun HttpBufferedAudioReceiver.stopAndAwaitAfterNaturalCompletion
 private class Batv1StressApi(
     private val publishFailure: (Batv1PublishRequest) -> Boolean = { false },
     private val failureFactory: ((Batv1PublishRequest) -> Throwable)? = null,
+    private val publishDelayMs: Long = 0,
 ) : KoeonApi {
     val published = java.util.Collections.synchronizedList(mutableListOf<Batv1PublishRequest>())
     override suspend fun publishBufferedAudio(request: Batv1PublishRequest): Batv1PublishResponse {
         published += request
+        delay(publishDelayMs)
         failureFactory?.invoke(request)?.let { throw it }
         if (publishFailure(request)) error("expected stress failure")
         return Batv1PublishResponse("accepted", request.chunks.size, request.chunks.lastOrNull()?.sequence ?: request.finalSequence ?: -1)

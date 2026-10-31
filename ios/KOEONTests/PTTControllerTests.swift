@@ -1577,6 +1577,49 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testSlowHttpCatchesUpPreRollAndPreservesLiveSpeechThroughFinalMarker() async throws {
+        for requestMs in [150, 250, 500] {
+            let capture = Batv1CaptureBuffer()
+            let api = Batv1APIStub()
+            api.publishDelay = .milliseconds(requestMs)
+            let transmitter = BufferedAudioTransmitter(
+                api: api, capture: capture, channelId: "channel-a", sessionId: "session-a",
+                deviceId: "device-a", recordingAuthority: RecordingAuthorityMock()
+            )
+            func append(_ index: Int) {
+                capture.append(samples: [Int16](repeating: Int16(index), count: 960), sampleRate: 48_000, channels: 1)
+            }
+            await transmitter.prepare(generationId: "slow")
+            try await transmitter.audioSessionDidActivate()
+            append(0)
+            let confirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "slow")
+            XCTAssertTrue(confirmed)
+            for index in 0..<200 { append(index) }
+            try await transmitter.authorize(leaseId: "lease-a", generationId: "slow")
+            // Continue recording at 50 frames/sec during real sender HTTP suspension.
+            for index in 200..<250 {
+                try await Task.sleep(for: .milliseconds(20))
+                append(index)
+            }
+            let finishing = ContinuousClock.now
+            try await transmitter.finish(generationId: "slow")
+            XCTAssertLessThan(finishing.duration(to: .now), .seconds(6), "HTTP \(requestMs)ms must fit terminal budget")
+            let chunks = api.publishedRequests.flatMap(\.chunks)
+            XCTAssertEqual(chunks.map(\.sequence), Array(0..<250))
+            for (index, chunk) in chunks.enumerated() {
+                let pcm = try XCTUnwrap(Data(base64Encoded: chunk.payloadBase64))
+                XCTAssertEqual(pcm.count, 1920)
+                for offset in stride(from: 0, to: pcm.count, by: 2) {
+                    XCTAssertEqual(Int(pcm[offset]) | Int(pcm[offset + 1]) << 8, index)
+                }
+            }
+            XCTAssertTrue(api.publishedRequests.allSatisfy { $0.chunks.count <= 32 })
+            XCTAssertEqual(api.publishedRequests.last?.finalSequence, 249)
+            XCTAssertEqual(api.publishedRequests.filter { $0.finalSequence != nil }.count, 1)
+        }
+    }
+
+    @MainActor
     func testFrozenRecordingStopsBeforeReadinessAndPublishesOnlyRetainedPcm() async throws {
         let capture = Batv1CaptureBuffer()
         let authority = RecordingAuthorityMock()
@@ -2244,6 +2287,7 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
 }
 
 private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
+    var publishDelay: Duration = .zero
     var rejectFinal = false
     var subscribeHandler: ((Batv1SubscribeRequest) throws -> Batv1SubscribeResponse)?
     var floorStatusHandler: (() throws -> FloorResponse)?
@@ -2265,6 +2309,7 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     func unregisterPttToken(sessionId: String) async throws { throw MockError.expected }
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
         publishedRequests.append(request)
+        if publishDelay > .zero { try await Task.sleep(for: publishDelay) }
         if rejectFinal, request.finalSequence != nil { throw MockError.expected }
         return Batv1PublishResponse(outcome: "accepted", acceptedChunks: request.chunks.count, latestSequence: request.chunks.last?.sequence ?? -1)
     }

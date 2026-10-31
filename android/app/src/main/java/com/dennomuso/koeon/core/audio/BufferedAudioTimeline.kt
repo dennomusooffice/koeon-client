@@ -35,6 +35,8 @@ const val BATV1_SAMPLE_RATE = 48_000
 const val BATV1_CHANNELS = 1
 const val BATV1_FRAME_DURATION_MS = 20
 const val BATV1_BYTES_PER_FRAME = 1_920
+// Server publish schema permits 32 frames. Take only what is already queued: no fill delay.
+const val BATV1_MAX_PUBLISH_FRAMES = 32
 const val BATV1_MAX_FRAMES = 300
 const val BATV1_MAX_PLAYBACK_RATE = 1.50f
 
@@ -352,7 +354,7 @@ class HttpBufferedAudioTransmitter(
             try {
                 while (isActive) {
                     val batch = synchronized(pending) {
-                        buildList { repeat(minOf(10, pending.size)) { add(pending.removeFirst()) } }
+                        buildList { repeat(minOf(BATV1_MAX_PUBLISH_FRAMES, pending.size)) { add(pending.removeFirst()) } }
                     }
                     if (batch.isEmpty()) {
                         if (!authorized) break
@@ -430,7 +432,7 @@ class HttpBufferedAudioTransmitter(
         return try {
             while (true) {
                 val batch = synchronized(pending) {
-                    buildList { repeat(minOf(10, pending.size)) { add(pending.removeFirst()) } }
+                    buildList { repeat(minOf(BATV1_MAX_PUBLISH_FRAMES, pending.size)) { add(pending.removeFirst()) } }
                 }
                 if (batch.isEmpty()) break
                 publishBatch(requireNotNull(leaseId), generationId, batch, diagnostics.preRollBufferedFrames)

@@ -4,6 +4,8 @@ import LiveKit
 
 private let batv1BreadcrumbMaximumEvents = 64
 let batv1ReleaseHangoverMilliseconds = 180
+// Server publish schema permits 32 frames; never wait to fill a batch.
+private let batv1MaximumPublishFrames = 32
 
 struct Batv1CrashBreadcrumb: Codable, Equatable, Sendable {
     let timestamp: Date
@@ -683,7 +685,7 @@ final class BufferedAudioTransmitter: BufferedAudioTransmitting {
     private func sendLoop(token: Int, generationId: String) async {
         guard token == lifecycleToken, self.generationId == generationId, let leaseId else { return }
         while !Task.isCancelled {
-            let batch = pending.take(maximum: 10)
+            let batch = pending.take(maximum: batv1MaximumPublishFrames)
             if batch.isEmpty {
                 if !authorized { break }
                 try? await Task.sleep(for: .milliseconds(20))
