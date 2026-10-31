@@ -1090,13 +1090,13 @@ final class BufferedAudioTimelineTests: XCTestCase {
         let returned = expectation(description: "Cancelled drain returned")
         let draining = Task { @MainActor in
             entered.fulfill()
-            await player.drain(generationToken: 1)
+            try await player.drain(generationToken: 1)
             returned.fulfill()
         }
         await fulfillment(of: [entered], timeout: 1)
         draining.cancel()
         await fulfillment(of: [returned], timeout: 1)
-        await draining.value
+        try await draining.value
         XCTAssertEqual(player.pendingFrames, 1)
         XCTAssertEqual(player.completedFrames, 0)
         player.endGeneration(token: 1)
@@ -1115,7 +1115,7 @@ final class BufferedAudioTimelineTests: XCTestCase {
         try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
         var returned = false
         let draining = Task { @MainActor in
-            await player.drain(generationToken: 1)
+            try await player.drain(generationToken: 1)
             returned = true
         }
         try await Task.sleep(for: .milliseconds(40))
@@ -1123,8 +1123,175 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(player.pendingFrames, 1)
         XCTAssertEqual(player.completedFrames, 0)
         player.endGeneration(token: 1)
-        await draining.value
+        try await draining.value
         XCTAssertTrue(returned)
+    }
+
+    @MainActor
+    func testConfigurationChangeRetainsUnplayedPcmUntilAppleAudioActivation() async throws {
+        let engine = AVAudioEngine()
+        let player = IOSBatv1PcmPlayer(engine: engine)
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(player.configurationChangeCount, 1)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertEqual(player.recoveryCount, 0)
+        XCTAssertFalse(engine.isRunning, "Configuration changes do not grant Apple audio authority")
+        XCTAssertEqual(player.playbackDiagnostics.inputRmsDbfs, -120)
+        XCTAssertNotNil(player.playbackDiagnostics.lastEnqueueOutput)
+        XCTAssertNil(player.playbackDiagnostics.lastCompletionOutput)
+    }
+
+    @MainActor
+    func testConfigurationChangeRestartsEngineAndRendersRetainedPcm() async throws {
+        for (outputRate, outputChannels) in [(16_000.0, AVAudioChannelCount(1)), (44_100.0, AVAudioChannelCount(2))] {
+            let engine = AVAudioEngine()
+            let player = IOSBatv1PcmPlayer(engine: engine)
+            defer { player.shutdown() }
+            let format = try XCTUnwrap(player.playbackGraphFormat)
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
+            try player.prepareGraphIfNeeded()
+            try player.beginGeneration(token: 1)
+            var data = Data()
+            for _ in 0..<(batv1BytesPerFrame / 2) { data.append(contentsOf: [0x00, 0x10]) }
+            try player.enqueue(data, generationToken: 1)
+            try player.enqueue(data, generationToken: 1)
+            engine.stop()
+            engine.disableManualRenderingMode()
+            let changedFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: outputRate, channels: outputChannels))
+            try engine.enableManualRenderingMode(.offline, format: changedFormat, maximumFrameCount: 4096)
+            NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+            for _ in 0..<100 where player.recoveryCount == 0 { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(engine.isRunning)
+            XCTAssertEqual(player.recoveryCount, 1)
+            XCTAssertEqual(player.pendingFrames, 2, "Stopped buffers must not be counted as played")
+            XCTAssertEqual(player.completedFrames, 0)
+            let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: changedFormat, frameCapacity: 4096))
+            var observedNonzeroPcm = false
+            for _ in 0..<20 {
+                _ = try engine.renderOffline(4096, to: output)
+                if let samples = output.floatChannelData?[0] {
+                    observedNonzeroPcm = observedNonzeroPcm || (0..<Int(output.frameLength)).contains { abs(samples[$0]) > 0.01 }
+                }
+                await Task.yield()
+            }
+            XCTAssertTrue(observedNonzeroPcm, "Recovery must render the retained speech, not just restart an empty node")
+            XCTAssertEqual(player.graphPreparationCount, 1)
+            XCTAssertEqual(try XCTUnwrap(player.playbackDiagnostics.inputRmsDbfs), -18.0618, accuracy: 0.001)
+            // Offline manual rendering does not deliver dataPlayedBack on this
+            // Simulator. The realtime test below checks actual callback accounting.
+        }
+    }
+
+    @MainActor
+    func testRealtimeRecoveryCompletesEachRetainedFrameExactlyOnce() async throws {
+        let engine = AVAudioEngine()
+        let player = IOSBatv1PcmPlayer(engine: engine)
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1)
+        // Silent synthetic PCM: use the Simulator render clock without speech
+        // playback, recording, or any connected phone operation.
+        for _ in 0..<3 { try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1) }
+        engine.stop()
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+        XCTAssertEqual(player.pendingFrames, 3)
+        XCTAssertEqual(player.completedFrames, 0)
+        for _ in 0..<100 where player.completedFrames != 3 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(player.recoveryCount, 1)
+        XCTAssertEqual(player.completedFrames, 3)
+        XCTAssertEqual(player.pendingFrames, 0)
+        XCTAssertNotNil(player.playbackDiagnostics.lastCompletionOutput)
+        XCTAssertNil(player.playbackDiagnostics.lastErrorCode)
+    }
+
+    @MainActor
+    func testConfigurationChangeFromEndedGenerationCannotRestartNextIdleGeneration() async throws {
+        let engine = AVAudioEngine()
+        let player = IOSBatv1PcmPlayer(engine: engine)
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+        player.endGeneration(token: 1)
+        try player.beginGeneration(token: 2, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 2)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertEqual(player.configurationChangeCount, 0)
+        XCTAssertEqual(player.recoveryCount, 0)
+        XCTAssertFalse(engine.isRunning)
+    }
+
+    @MainActor
+    func testFailedEngineRecoveryTerminatesDrainWithoutFalsePlaybackCompletion() async throws {
+        var attempts = 0
+        let player = IOSBatv1PcmPlayer(startEngine: { _ in
+            attempts += 1
+            throw BufferedAudioError.playbackEngineUnavailable
+        })
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        try player.resumeIfNeeded()
+        for _ in 0..<100 where player.playbackDiagnostics.lastErrorCode == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(attempts, 6)
+        XCTAssertEqual(player.playbackDiagnostics.lastErrorCode, "RX_ENGINE_RECOVERY_FAILED")
+        guard player.playbackDiagnostics.lastErrorCode != nil else { return }
+        XCTAssertThrowsError(try player.checkPlaybackHealth())
+        do {
+            try await player.drain(generationToken: 1)
+            XCTFail("Failed recovery must not finish a successful drain")
+        } catch BufferedAudioError.playbackEngineUnavailable { }
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertNil(player.playbackDiagnostics.lastCompletionOutput)
+    }
+
+    @MainActor
+    func testAppleDeactivationCancelsRecoveryAndReactivationResumesRetainedAudio() async throws {
+        let engine = AVAudioEngine()
+        var attempts = 0
+        let player = IOSBatv1PcmPlayer(engine: engine, startEngine: {
+            attempts += 1
+            try $0.start()
+        })
+        defer { player.shutdown() }
+        try engine.enableManualRenderingMode(.offline, format: XCTUnwrap(player.playbackGraphFormat), maximumFrameCount: 4096)
+        try player.prepareGraphIfNeeded()
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        try player.resumeIfNeeded()
+        player.audioSessionDidDeactivate()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(attempts, 0)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertFalse(engine.isRunning)
+        try player.resumeIfNeeded()
+        for _ in 0..<100 where player.recoveryCount == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(player.recoveryCount, 1)
+        XCTAssertTrue(engine.isRunning)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+    }
+
+    @MainActor
+    func testPlayerRetainedQueueIsBoundedWithoutSilentlyDroppingSpeech() throws {
+        let player = IOSBatv1PcmPlayer()
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        for _ in 0..<batv1MaximumFrames { try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1) }
+        XCTAssertThrowsError(try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1))
+        XCTAssertEqual(player.pendingFrames, batv1MaximumFrames)
+        XCTAssertEqual(player.completedFrames, 0)
     }
 
     @MainActor
@@ -1432,6 +1599,65 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertNotNil(receiver.diagnostics.playerDrainCompletedAt)
         XCTAssertNotNil(receiver.diagnostics.endCueAt)
         XCTAssertEqual(receiver.diagnostics.controlEndReceivedAt, Date(timeIntervalSince1970: 1))
+    }
+
+    @MainActor
+    func testReceiverDrainFailureIsNotPublishedAsSuccessfulPlayback() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0,
+                bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())]
+            )
+        }
+        let player = Batv1PcmPlayerMock()
+        player.drainError = BufferedAudioError.playbackEngineUnavailable
+        var failureReported = false
+        let receiver = BufferedAudioReceiver(
+            api: api, sessionId: "session-a", onFailure: { _ in failureReported = true }, player: player
+        )
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "failed-engine", senderSessionId: "speaker")
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertTrue(failureReported)
+        XCTAssertTrue(receiver.diagnostics.timelineLost)
+        XCTAssertNil(receiver.diagnostics.playerDrainCompletedAt)
+        XCTAssertEqual(receiver.diagnostics.terminalReason, "receive_failed")
+        XCTAssertEqual(player.endCount, 1)
+    }
+
+    @MainActor
+    func testReceiverWaitsForQueuedPlaybackBeforeFetchingMoreFrames() async throws {
+        let api = Batv1APIStub()
+        let payload = Data(count: batv1BytesPerFrame).base64EncodedString()
+        api.subscribeHandler = { request in
+            let first = request.nextSequence == 0
+            return Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 76, nextSequence: first ? 76 : 77, finalSequence: first ? nil : 76,
+                bufferHeadExpired: false, timelineEnded: !first,
+                chunks: (first ? Array(0..<76) : [76]).map { Batv1Chunk(sequence: $0, payloadBase64: payload) }
+            )
+        }
+        let player = Batv1PcmPlayerMock()
+        player.holdFrames = true
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "session-a", player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "backpressure", senderSessionId: "speaker")
+        for _ in 0..<100 where player.enqueueCount < 76 { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(player.enqueueCount, 76, "Do not fetch the next batch while playback is behind")
+        player.completeHeldFrames()
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertEqual(player.enqueueCount, 77)
+        XCTAssertFalse(receiver.diagnostics.timelineLost)
+        XCTAssertNotNil(receiver.diagnostics.playerDrainCompletedAt)
     }
 
     @MainActor
@@ -1840,6 +2066,8 @@ private final class RecordingAuthorityMock: Batv1LocalRecordingAuthority {
 
 @MainActor
 private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
+    var drainError: Error?
+    var holdFrames = false
     private(set) var pendingFrames = 0
     private(set) var completedFrames = 0
     private(set) var beginCount = 0
@@ -1853,9 +2081,14 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
     func enqueue(_ data: Data, generationToken: Int) throws {
         guard activeToken == generationToken else { throw BufferedAudioError.generationMismatch }
         enqueueCount += 1
-        completedFrames += 1
+        if holdFrames { pendingFrames += 1 } else { completedFrames += 1 }
     }
-    func drain(generationToken: Int) async {}
+    func completeHeldFrames() {
+        completedFrames += pendingFrames
+        pendingFrames = 0
+        holdFrames = false
+    }
+    func drain(generationToken: Int) async throws { if let drainError { throw drainError } }
     func endGeneration(token: Int) {
         guard activeToken == token else { return }
         activeToken = nil

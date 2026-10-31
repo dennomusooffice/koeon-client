@@ -167,6 +167,27 @@ struct BufferedAudioRxDiagnostics: Equatable, Sendable {
     var terminalReason: String?
 }
 
+struct Batv1PlaybackOutputObservation: Equatable, Sendable {
+    var sampledAt: Date
+    var outputPortTypes: [String]
+    var outputVolume: Double
+    var sampleRate: Double
+    var engineRunning: Bool
+    var playerPlaying: Bool
+}
+
+struct Batv1PlaybackDiagnostics: Equatable, Sendable {
+    var generationToken: Int?
+    var lastEnqueueOutput: Batv1PlaybackOutputObservation?
+    var lastCompletionOutput: Batv1PlaybackOutputObservation?
+    var configurationChanges = 0
+    var recoveries = 0
+    var ignoredCompletions = 0
+    var lastErrorCode: String?
+    var inputRmsDbfs: Double?
+    var inputPeakDbfs: Double?
+}
+
 /// Realtime capture only copies post-processed PCM into bounded RAM.
 /// It never performs network I/O and never writes audio to disk.
 final class Batv1CaptureBuffer: @unchecked Sendable {
@@ -743,6 +764,8 @@ enum BufferedAudioError: Error {
     case timelineHeadExpired
     case illegalLifecycle
     case invalidAudioGraphFormat
+    case playbackEngineUnavailable
+    case playbackBacklogExceeded
 }
 
 func makeBatv1PlaybackGraphFormat() -> AVAudioFormat? {
@@ -799,15 +822,33 @@ enum Batv1Pcm16LEConverter {
 
 @MainActor
 protocol IOSBatv1PcmPlaying: AnyObject {
+    var playbackDiagnostics: Batv1PlaybackDiagnostics { get }
     var pendingFrames: Int { get }
     var completedFrames: Int { get }
     func beginGeneration(token: Int) throws
     func setRate(_ rate: Float)
     func enqueue(_ data: Data, generationToken: Int) throws
-    func drain(generationToken: Int) async
+    func drain(generationToken: Int) async throws
     func endGeneration(token: Int)
     func resumeIfNeeded() throws
+    func audioSessionDidDeactivate()
+    func checkPlaybackHealth() throws
     func shutdown()
+}
+
+extension IOSBatv1PcmPlaying {
+    var playbackDiagnostics: Batv1PlaybackDiagnostics { Batv1PlaybackDiagnostics() }
+    func audioSessionDidDeactivate() {}
+    func checkPlaybackHealth() throws {}
+}
+
+/// Invalidated synchronously on the framework notification queue, before any
+/// MainActor work. Late callbacks from an unscheduled queue cannot consume PCM.
+final class Batv1PlaybackCallbackEpoch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var revision = 0
+    func invalidate() -> Int { lock.withLock { revision += 1; return revision } }
+    func accepts(_ value: Int) -> Bool { lock.withLock { revision == value } }
 }
 
 @MainActor
@@ -820,18 +861,52 @@ final class Batv1GenerationCompletionFence {
 
 @MainActor
 final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
-    private let engine = AVAudioEngine()
+    private let engine: AVAudioEngine
+    private let startEngine: @MainActor (AVAudioEngine) throws -> Void
     private let player = AVAudioPlayerNode()
     private let timePitch = AVAudioUnitTimePitch()
     let playbackGraphFormat: AVAudioFormat?
     private(set) var graphPrepared = false
     private(set) var graphPreparationCount = 0
     private let completionFence = Batv1GenerationCompletionFence()
-    private(set) var pendingFrames = 0
+    private let callbackEpoch = Batv1PlaybackCallbackEpoch()
+    private var configurationObserver: NSObjectProtocol?
+    private var queued: [(id: Int, buffer: AVAudioPCMBuffer)] = []
+    private var nextFrameId = 0
+    private var playbackPermitted = false
+    private var needsReschedule = false
+    private var recoveryTask: Task<Void, Never>?
+    private var playbackFailure: Error?
+    private(set) var configurationChangeCount = 0
+    private(set) var recoveryCount = 0
+    private(set) var ignoredCompletionCount = 0
+    var pendingFrames: Int { queued.count }
     private(set) var completedFrames = 0
+    private(set) var playbackDiagnostics = Batv1PlaybackDiagnostics()
+    private var inputSumSquares: Double = 0
+    private var inputSampleCount = 0
+    private var inputPeak: Double = 0
 
-    init(playbackGraphFormat: AVAudioFormat? = makeBatv1PlaybackGraphFormat()) {
+    init(
+        playbackGraphFormat: AVAudioFormat? = makeBatv1PlaybackGraphFormat(),
+        engine: AVAudioEngine = AVAudioEngine(),
+        startEngine: @escaping @MainActor (AVAudioEngine) throws -> Void = { try $0.start() }
+    ) {
         self.playbackGraphFormat = playbackGraphFormat
+        self.engine = engine
+        self.startEngine = startEngine
+        let epoch = callbackEpoch
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            let revision = epoch.invalidate()
+            Task { @MainActor [weak self] in self?.configurationDidChange(revision: revision) }
+        }
+    }
+
+    deinit {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        recoveryTask?.cancel()
     }
 
     func beginGeneration(token: Int) throws {
@@ -865,13 +940,25 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
     }
 
     func beginGeneration(token: Int, startEngine: Bool) throws {
+        recoveryTask?.cancel()
+        activeScheduleRevision = callbackEpoch.invalidate()
+        playbackPermitted = startEngine
+        needsReschedule = false
+        playbackFailure = nil
+        configurationChangeCount = 0
+        recoveryCount = 0
+        ignoredCompletionCount = 0
+        playbackDiagnostics = Batv1PlaybackDiagnostics(generationToken: token)
+        inputSumSquares = 0
+        inputSampleCount = 0
+        inputPeak = 0
+        queued.removeAll()
+        completionFence.begin(token)
         try prepareGraphIfNeeded()
-        if startEngine, !engine.isRunning { try engine.start() }
+        if startEngine, !engine.isRunning { try self.startEngine(engine) }
         player.stop()
         player.reset()
-        pendingFrames = 0
         completedFrames = 0
-        completionFence.begin(token)
         setRate(1)
         if startEngine { player.play() }
     }
@@ -886,22 +973,58 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
               let playbackGraphFormat else {
             throw BufferedAudioError.invalidWireFormat
         }
+        if let playbackFailure { throw playbackFailure }
+        guard queued.count < batv1MaximumFrames else {
+            playbackDiagnostics.lastErrorCode = "RX_PLAYBACK_BACKLOG_EXCEEDED"
+            throw BufferedAudioError.playbackBacklogExceeded
+        }
         let buffer = try Batv1Pcm16LEConverter.playbackBuffer(from: data, format: playbackGraphFormat)
-        pendingFrames += 1
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+        if let samples = buffer.floatChannelData?[0] {
+            for index in 0..<Int(buffer.frameLength) {
+                let value = Double(samples[index])
+                inputSumSquares += value * value
+                inputPeak = max(inputPeak, abs(value))
+            }
+            inputSampleCount += Int(buffer.frameLength)
+            playbackDiagnostics.inputRmsDbfs = 20 * log10(max(0.000_001, sqrt(inputSumSquares / Double(inputSampleCount))))
+            playbackDiagnostics.inputPeakDbfs = 20 * log10(max(0.000_001, inputPeak))
+        }
+        playbackDiagnostics.lastEnqueueOutput = outputObservation()
+        nextFrameId += 1
+        let frame = (id: nextFrameId, buffer: buffer)
+        queued.append(frame)
+        if !needsReschedule { schedule(frame, generationToken: generationToken, revision: activeScheduleRevision) }
+    }
+
+    private var activeScheduleRevision = 0
+
+    private func schedule(_ frame: (id: Int, buffer: AVAudioPCMBuffer), generationToken: Int, revision: Int) {
+        let epoch = callbackEpoch
+        let frameId = frame.id
+        player.scheduleBuffer(frame.buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            // Never query AVAudioEngine here: stop() drains this callback queue
+            // while holding the engine lock. Only our own small fence is read.
+            let currentAtCallback = epoch.accepts(revision)
             Task { @MainActor [weak self] in
-                guard let self, self.completionFence.accepts(generationToken) else {
-                    Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "IGNORE_STALE_CALLBACK", resultClass: "GENERATION_FENCED")
+                guard let self else { return }
+                guard self.completionFence.accepts(generationToken) else { return }
+                guard currentAtCallback, self.callbackEpoch.accepts(revision), self.playbackPermitted,
+                      self.engine.isRunning, self.player.isPlaying,
+                      let index = self.queued.firstIndex(where: { $0.id == frameId }) else {
+                    self.ignoredCompletionCount += 1
+                    self.playbackDiagnostics.ignoredCompletions = self.ignoredCompletionCount
                     return
                 }
-                self.pendingFrames = max(0, self.pendingFrames - 1)
+                self.queued.remove(at: index)
                 self.completedFrames += 1
+                self.playbackDiagnostics.lastCompletionOutput = self.outputObservation()
             }
         }
     }
 
-    func drain(generationToken: Int) async {
+    func drain(generationToken: Int) async throws {
         while completionFence.accepts(generationToken), pendingFrames > 0, !Task.isCancelled {
+            if let playbackFailure { throw playbackFailure }
             do {
                 try await Task.sleep(for: .milliseconds(10))
             } catch {
@@ -913,20 +1036,91 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
         }
     }
 
+    func checkPlaybackHealth() throws {
+        if let playbackFailure { throw playbackFailure }
+    }
+
     func endGeneration(token: Int) {
         guard completionFence.accepts(token) else { return }
+        playbackPermitted = false
+        recoveryTask?.cancel()
+        _ = callbackEpoch.invalidate()
+        completionFence.end(token)
         player.stop()
         player.reset()
         setRate(1)
-        pendingFrames = 0
+        queued.removeAll()
         completedFrames = 0
-        completionFence.end(token)
     }
 
     func resumeIfNeeded() throws {
         guard completionFence.activeToken != nil else { return }
-        if !engine.isRunning { try engine.start() }
-        if !player.isPlaying { player.play() }
+        playbackPermitted = true
+        if needsReschedule || !engine.isRunning { requestRecovery() }
+        else if !player.isPlaying { player.play() }
+    }
+
+    func audioSessionDidDeactivate() {
+        playbackPermitted = false
+        recoveryTask?.cancel()
+        _ = callbackEpoch.invalidate()
+        needsReschedule = true
+        player.pause()
+    }
+
+    private func configurationDidChange(revision: Int) {
+        guard callbackEpoch.accepts(revision), completionFence.activeToken != nil else { return }
+        configurationChangeCount += 1
+        playbackDiagnostics.configurationChanges = configurationChangeCount
+        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_ENGINE_CONFIGURATION_CHANGE")
+        needsReschedule = true
+        requestRecovery()
+    }
+
+    private func requestRecovery() {
+        recoveryTask?.cancel()
+        guard playbackPermitted, let token = completionFence.activeToken else { return }
+        playbackFailure = nil
+        recoveryTask = Task { @MainActor [weak self] in
+            for attempt in 0..<6 {
+                guard let self, !Task.isCancelled, self.playbackPermitted,
+                      self.completionFence.accepts(token) else { return }
+                do {
+                    self.activeScheduleRevision = self.callbackEpoch.invalidate()
+                    self.player.stop()
+                    self.player.reset()
+                    if !self.engine.isRunning { try self.startEngine(self.engine) }
+                    guard self.engine.isRunning else { throw BufferedAudioError.playbackEngineUnavailable }
+                    for frame in self.queued {
+                        self.schedule(frame, generationToken: token, revision: self.activeScheduleRevision)
+                    }
+                    self.player.play()
+                    self.needsReschedule = false
+                    self.recoveryCount += 1
+                    self.playbackDiagnostics.recoveries = self.recoveryCount
+                    self.playbackDiagnostics.lastErrorCode = nil
+                    Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_ENGINE_RECOVERED")
+                    return
+                } catch {
+                    if attempt == 5 {
+                        self.playbackFailure = error
+                        self.playbackDiagnostics.lastErrorCode = "RX_ENGINE_RECOVERY_FAILED"
+                        Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_ENGINE_RECOVERY_FAILED")
+                        return
+                    }
+                }
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
+        }
+    }
+
+    private func outputObservation() -> Batv1PlaybackOutputObservation {
+        let session = AVAudioSession.sharedInstance()
+        return Batv1PlaybackOutputObservation(
+            sampledAt: Date(), outputPortTypes: session.currentRoute.outputs.map { $0.portType.rawValue },
+            outputVolume: Double(session.outputVolume), sampleRate: session.sampleRate,
+            engineRunning: engine.isRunning, playerPlaying: player.isPlaying
+        )
     }
 
     func shutdown() {
@@ -943,6 +1137,10 @@ final class IOSBatv1PcmPlayer: IOSBatv1PcmPlaying {
 
 @MainActor
 final class BufferedAudioReceiver {
+    var playbackDiagnostics: Batv1PlaybackDiagnostics {
+        let snapshot = player.playbackDiagnostics
+        return snapshot.generationToken == generationToken ? snapshot : Batv1PlaybackDiagnostics()
+    }
     private static let missingFinalStableGraceSeconds: TimeInterval = 0.75
     private static let floorStatusPollIntervalSeconds: TimeInterval = 0.25
     private let api: any KOEONAPIClientProtocol
@@ -1016,11 +1214,15 @@ final class BufferedAudioReceiver {
         audioSessionActive = true
         do { try player.resumeIfNeeded() } catch {
             diagnostics.timelineLost = true
+            diagnostics.terminalReason = player.playbackDiagnostics.lastErrorCode ?? "receive_failed"
             Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_RESUME_FAILED", resultClass: String(describing: type(of: error)))
             onFailure("BATV1_RX_RESUME_FAILED")
         }
     }
-    func audioSessionDidDeactivate() { audioSessionActive = false }
+    func audioSessionDidDeactivate() {
+        audioSessionActive = false
+        player.audioSessionDidDeactivate()
+    }
 
     func noteControlEnd(at: Date = Date()) {
         guard diagnostics.generationId != nil || diagnostics.terminalReason != nil else { return }
@@ -1081,8 +1283,15 @@ final class BufferedAudioReceiver {
             var cursor = 0
             var lastSequence = -1
             while !Task.isCancelled {
+                try player.checkPlaybackHealth()
                 if !audioSessionActive {
                     try? await Task.sleep(for: .milliseconds(20))
+                    continue
+                }
+                // Stop fetching while playback catches up. Merely sleeping after
+                // each HTTP batch can still fill the RAM queue faster than audio.
+                if player.pendingFrames > 75 {
+                    try await Task.sleep(for: .milliseconds(20))
                     continue
                 }
                 let response: Batv1SubscribeResponse
@@ -1150,7 +1359,7 @@ final class BufferedAudioReceiver {
                 }
                 if response.timelineEnded, let final = response.finalSequence, cursor > final {
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_DRAIN_BEGIN", generationId: generationId)
-                    await player.drain(generationToken: generationToken)
+                    try await player.drain(generationToken: generationToken)
                     guard !Task.isCancelled, self.generationToken == generationToken else { break }
                     diagnostics.playbackCursor = cursor
                     diagnostics.backlogMilliseconds = 0
@@ -1172,7 +1381,7 @@ final class BufferedAudioReceiver {
                         max(0, Int((now - $0) * 1_000))
                     }
                     Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_MISSING_FINAL_DRAIN_BEGIN", generationId: generationId)
-                    await player.drain(generationToken: generationToken)
+                    try await player.drain(generationToken: generationToken)
                     guard !Task.isCancelled, self.generationToken == generationToken else { break }
                     diagnostics.playbackCursor = cursor
                     diagnostics.backlogMilliseconds = 0
@@ -1205,6 +1414,7 @@ final class BufferedAudioReceiver {
                     diagnostics.graphLastErrorCode = "RX_AUDIO_GRAPH_PREPARE_FAILED"
                 }
             }
+            diagnostics.terminalReason = player.playbackDiagnostics.lastErrorCode ?? "receive_failed"
             Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_FAILED", generationId: generationId, resultClass: String(describing: type(of: error)))
             onFailure("BATV1_RX_\(String(describing: type(of: error)).uppercased())")
         }

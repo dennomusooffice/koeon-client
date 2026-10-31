@@ -2822,6 +2822,7 @@ final class IntercomSessionController: ObservableObject {
         let liveKitIngress = room.ingressDiagnosticSnapshot()
         let bufferedTx = bufferedTransmitter?.diagnostics ?? BufferedAudioTxDiagnostics()
         let bufferedRx = bufferedReceiver?.diagnostics ?? BufferedAudioRxDiagnostics()
+        let playback = bufferedReceiver?.playbackDiagnostics ?? Batv1PlaybackDiagnostics()
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unavailable"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unavailable"
         func number(_ value: Int?) -> Any { value.map { $0 as Any } ?? NSNull() }
@@ -2830,6 +2831,14 @@ final class IntercomSessionController: ObservableObject {
         func optional(_ value: Bool?) -> Any { value.map { $0 as Any } ?? NSNull() }
         func timestamp(_ value: Date?) -> Any {
             optional(value.map { ISO8601DateFormatter().string(from: $0) })
+        }
+        func outputObservation(_ value: Batv1PlaybackOutputObservation?) -> Any {
+            guard let value else { return NSNull() }
+            return [
+                "sampledAt": timestamp(value.sampledAt), "outputPortTypes": value.outputPortTypes,
+                "outputVolume": value.outputVolume, "sampleRate": value.sampleRate,
+                "engineRunning": value.engineRunning, "playerPlaying": value.playerPlaying,
+            ] as [String: Any]
         }
         func duration(_ start: Date?, _ end: Date?) -> Any {
             guard let start, let end else { return NSNull() }
@@ -3212,6 +3221,16 @@ final class IntercomSessionController: ObservableObject {
                 "rxMissingFinalFallbackStableMs": number(bufferedRx.missingFinalFallbackStableMilliseconds),
                 "rxTerminalReason": optional(bufferedRx.terminalReason),
                 "controlSenderIdentityResolution": room.controlSenderIdentityResolution.rawValue,
+            ],
+            "rxPlayback": [
+                "lastEnqueueOutput": outputObservation(playback.lastEnqueueOutput),
+                "lastCompletionOutput": outputObservation(playback.lastCompletionOutput),
+                "configurationChanges": playback.configurationChanges,
+                "recoveries": playback.recoveries,
+                "ignoredCompletions": playback.ignoredCompletions,
+                "lastErrorCode": optional(playback.lastErrorCode),
+                "inputRmsDbfs": playback.inputRmsDbfs.map { $0 as Any } ?? NSNull(),
+                "inputPeakDbfs": playback.inputPeakDbfs.map { $0 as Any } ?? NSNull(),
             ],
             "crashBreadcrumbs": [
                 "previousRunTermination": Batv1CrashBreadcrumbStore.shared.previousRunTermination,
