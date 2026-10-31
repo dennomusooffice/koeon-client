@@ -114,3 +114,8 @@ SDK2.28.0の公式[RoomOptions](https://raw.githubusercontent.com/livekit/client
 両OSの`liveKit.serverVersion`に、SDKが接続先から受け取ったバージョンを出す。AndroidはRoom.serverInfo.version、iOSはRoom.serverVersionを参照する。接続済みで未取得ならnull、切断・再接続中もnullとし、前の接続先の値を現在値と誤認しない。バージョンから互換性全体を判定せず、接続・再接続と制御交換を別々に確認する。
 
 Androidで既知値・未取得・古い値を持つ切断／再接続状態のJSONを検証し、190件・Lint・assembleDebug成功。iOS296ケース成功（最終結果収集中）。これは診断実装の検証であり、実際のネイティブ接続先バージョンの採取は続けて行う。SDK更新や接続設定変更は行っていない。
+
+
+接続先バージョンの実機採取: A303OPへ`da489256832c08b5aecab536c5a438f3aa984575`の署名済みローカル検証APK 1.0.13（14）を更新導入し、POWER ON後にCONNECTED／READYと`liveKit.serverVersion=1.13.11`を確認した。APK SHA-256は`b48d579eb5b2b0e17c474c5c782a0068294a9d119c3b2ddc539d14c594e483d4`。サーバー更新記録とネイティブSDKの接続先報告は一致した。診断補助アプリは削除済み、GitHub Release未公開、iOS未配信。
+
+稼働コンテナへのSSH経由の直接確認は成功していない（一般ユーザーのDockerソケット権限不足、その後のパスワード不要sudoによる取得も未確認）。サーバー／権限設定は変更していない。実機で報告されたバージョンと、この運用上の読み取り制約を混同しない。Androidの初回接続は確認できたが、1.13.11上のreliable data／RX_READY、再接続後の制御交換、iOSネイティブSDKでの接続試験は残る。
