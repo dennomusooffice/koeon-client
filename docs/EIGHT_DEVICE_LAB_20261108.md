@@ -257,3 +257,17 @@ An independent AudioTrack app generated10s of660Hz PCM (48kHz mono, VOICE_COMMUN
 All probe playback heads completed in about10.2-10.4s without an Android playback error. The failure persisted without KOEON running and recovered after AVD restart, supporting an emulator output/capture runtime fault rather than attributing this event to the KOEON receive path. Exact emulator subsystem/root cause remains unknown; do not generalize this finding to unresolved product issue#57.
 
 After restoring enrollment/READY, the original KOEON synthetic-speech trial API34->API36/API37 passed2/2: each captured1530879 samples, correlations0.194/0.252, ordered speech detected, senderREADY and cleanupErrors empty. Physical devices were untouched. Latest evidence is linked from#59; natural physical Join expiry and iOS locked first reception remain pending.
+
+### Repeated 128kbps codec matrix on retry-fixed Android15 (2026-11-09)
+
+SenderAPI35: signed private a74fc92 1.0.16(17); receiversAPI34/36/37: signed e7cf936 1.0.16(17). API34 andAPI35 both shaped with tc/IFB128kbit/s, burst8KiB, queue latency1000ms; API36/37 were unshaped comparison receivers. Independent256KiB calibration: API34 download98.33/upload119.34kbps; API35 download91.72/upload117.53kbps. These are TCP payload rates, not measured LTE or UDP rates.
+
+Each preset began with senderPOWER OFF, so initial join occurred while shaping was active. Real enrollment/backend Floor/LiveKit and normal PTT were used. Six synthetic6.88s utterances (two per preset) yielded18/18 known-speech detections across three receivers. All6 senderREADY/gesture/cleanup checks passed, and all12 shaping-wrapper cleanups were empty. Effective bitrate was independently read from diagnostics after each preset.
+
+| Opus setting | Effective bitrate | Trials | Receiver detections |
+| --- | --- | --- | --- |
+| LOW | 12kbps | 2 | 6/6 |
+| STANDARD | 24kbps | 2 | 6/6 |
+| HIGH | 48kbps | 2 | 6/6 |
+
+Conclusion limited to this controlled cap: all three settings carried known speech, including to the capped receiver. No artificial packet loss/jitter/handover was added; human intelligibility, speech-edge loss and end-to-end latency were not measured by waveform offset. Real carrier speed-limit acceptance and eight-device audibility remain open. Restored senderSTANDARD/READY, removed all shaping and disabled temporary adb root onboth AVDs. Existing physical sessions andpovo settings untouched. Evidence retry-codec-5554-summary.json plus per-round diagnostics/wrapper results stays private; #54/#56 track public conclusions.
