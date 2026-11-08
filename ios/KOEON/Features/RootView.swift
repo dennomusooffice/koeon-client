@@ -389,7 +389,7 @@ private struct DiagnosticsView: View {
                             get: { Double(session.inputGain.snapshot().manualGainDb) },
                             set: { session.setManualInputGain(Float($0)) }
                         ),
-                        in: -6...12,
+                        in: -6...24,
                         step: 1
                     )
                     row("Route / effective", "\(gain.route) / \(String(format: "%.1f", gain.effectiveGainDb)) dB")

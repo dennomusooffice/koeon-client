@@ -38,3 +38,9 @@ The production session callback treated every exit from TRANSMITTING/RELEASING a
 The callback lifecycle was extracted without changing behavior and tested with the real PttController, synthetic FloatS16 samples and the real gain processor. The baseline test failed on safety stop: AUTO advanced from0 to+1 dB despite an aborted transmission. A normal release correctly advanced to+1 dB. The fix requires both no terminal error and `release.terminalRecoveryResult == NORMAL_COMPLETE` before learning; other paths end measurement without learning. BATv1 retains its separate capture lifecycle. Tests cover normal release, explicit safety stop and microphone-stop failure.
 
 After the Android lifecycle fix: all225 Android tests passed, Lint/debug build and feature-parity checks passed. No new version has been released or installed for this change; device acceptance remains pending.
+
+## Manual range and selected-mode persistence
+
+Further regression atHEAD3b2527b reproduced six failing assertions in two new cases (15gain tests total). iOSmanual+24dB was clamped to+12dB: a FloatS16 sample100 produced398.095 instead of1584.845. A reconstructed processor lost explicitMANUAL/OFF selection and defaultedAUTO, even though routeprofile values themselves were persisted.
+
+The fix extends onlymanual/UI/samplehelper limits to+24dB and persists the selectedmode. Unset/invalidmode retains legacyiOSdefaultAUTO; this is deliberately not an unsolicited migration of existing users toAndroid'sOFFdefault. Storedmanual andAUTO values are bounded independently; non-finite storedvalues become0. AUTOstillcaps+12dB. Tests exercise actualFloatS16processing, symmetricwaveforms, +24dBpeaklimiting, routeisolation, reconstruction, OFFrestoration andAUTOconvergencebound. Full regression:323 tests executed,321 passed,2 dedicated lab tests skipped,no failures; feature-parity gate anddiffcheckpassed. No updatediOSbinary has yetbeen distributed.

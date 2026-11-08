@@ -1185,6 +1185,61 @@ final class PTTControllerTests: XCTestCase {
 }
 
 final class InputGainProcessorTests: XCTestCase {
+    func testManualHeadsetGainSupports24DbAndPersistsSeparatelyFromAuto() {
+        let suite = "gain-persistence-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let gain = InputGainProcessor(defaults: defaults)
+        XCTAssertEqual(gain.snapshot().mode, .auto)
+        gain.setRoute("Bluetooth")
+        gain.setMode(.manual)
+        gain.setManualGainDb(24)
+        gain.beginTransmission()
+        var samples: [Float] = [100, -100]
+        samples.withUnsafeMutableBufferPointer { buffer in
+            gain.processFloatS16(channels: 1, frames: buffer.count) { _ in buffer.baseAddress! }
+        }
+        XCTAssertEqual(gain.snapshot().effectiveGainDb, 24)
+        XCTAssertEqual(samples[0], 100 * powf(10, 24 / 20) * 32_767 / 32_768, accuracy: 0.1)
+        XCTAssertEqual(samples[0], -samples[1], accuracy: 0.1)
+        gain.endTransmission()
+        let restored = InputGainProcessor(defaults: defaults)
+        restored.setRoute("Bluetooth")
+        XCTAssertEqual(restored.snapshot().mode, .manual)
+        XCTAssertEqual(restored.snapshot().effectiveGainDb, 24)
+        restored.setRoute("Built-in")
+        XCTAssertEqual(restored.snapshot().manualGainDb, 0)
+        restored.setMode(.auto)
+        XCTAssertEqual(restored.snapshot().effectiveGainDb, 0)
+        XCTAssertEqual(InputGainProcessor.recommendedGain(speechRmsDbfs: -50), 12)
+        restored.setMode(.off)
+        XCTAssertEqual(InputGainProcessor(defaults: defaults).snapshot().mode, .off)
+    }
+
+    func testManual24DbStillLimitsPeaksAndDoesNotExpandAutoRange() {
+        withCapture { gain, _ in
+            gain.setMode(.manual)
+            gain.setManualGainDb(30)
+            gain.beginTransmission()
+            var samples: [Float] = [32_000, -32_000]
+            samples.withUnsafeMutableBufferPointer { buffer in
+                gain.processFloatS16(channels: 1, frames: buffer.count) { _ in buffer.baseAddress! }
+            }
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 24)
+            XCTAssertLessThan(abs(samples[0]), 0.9 * 32_768)
+            XCTAssertEqual(samples[0], -samples[1], accuracy: 0.1)
+            XCTAssertEqual(gain.snapshot().limiterHits, 2)
+            gain.endTransmission()
+            gain.setMode(.auto)
+            for _ in 0..<30 {
+                gain.beginTransmission()
+                feed(gain, value: 100, count: 9_600)
+                gain.endTransmission()
+            }
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 12)
+        }
+    }
+
     func testLimiterDominatedCompletedUtteranceReducesAutoGain() {
         withCapture { gain, _ in
             gain.setRoute("Bluetooth")

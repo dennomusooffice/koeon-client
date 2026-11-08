@@ -42,7 +42,11 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     private var channelCount = 0
     private var postProcessedPcmConsumer: (@Sendable ([Int16], Int, Int) -> Void)?
 
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        // Preserve the legacy iOS default for users without an explicit choice.
+        value.mode = defaults.string(forKey: "audio.gain.mode").flatMap(InputGainMode.init(rawValue:)) ?? .auto
+    }
     var audioProcessingName: String { "koeon_input_gain_v1" }
     func audioProcessingInitialize(sampleRate: Int, channels: Int) {
         lock.withLock {
@@ -60,8 +64,8 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         lock.withLock {
             guard value.route != route else { return }
             value.route = route
-            value.manualGainDb = defaults.float(forKey: key("manual", route))
-            value.autoTrimDb = defaults.float(forKey: key("auto", route))
+            value.manualGainDb = clamp(defaults.float(forKey: key("manual", route)), maximum: 24)
+            value.autoTrimDb = clamp(defaults.float(forKey: key("auto", route)))
             calibrationUntil = nil
             calibrationRms = []
             value.calibrationState = "IDLE"
@@ -77,9 +81,10 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         lock.withLock {
             if transmitting, value.mode != mode { learningAllowed = false }
             value.mode = mode
+            defaults.set(mode.rawValue, forKey: "audio.gain.mode")
         }
     }
-    func setManualGainDb(_ gain: Float) { lock.withLock { value.manualGainDb = clamp(gain); defaults.set(value.manualGainDb, forKey: key("manual", value.route)) } }
+    func setManualGainDb(_ gain: Float) { lock.withLock { value.manualGainDb = clamp(gain, maximum: 24); defaults.set(value.manualGainDb, forKey: key("manual", value.route)) } }
     func beginTransmission() { lock.withLock { transmitting = true; measurementsPaused = false; learningAllowed = true; fixedGainDb = effectiveGain(); resetMeasurements() } }
     func markCaptureBoundary() { lock.withLock { resetMeasurements() } }
     func pauseCaptureMeasurements() { lock.withLock { measurementsPaused = true } }
@@ -169,7 +174,7 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         return nextAutoTrim(current: current, speechRmsDbfs: speechRmsDbfs)
     }
     static func processSample(_ sample: Float, gainDb: Float) -> (sample: Float, limited: Bool) {
-        let amplified = sample * powf(10, min(12, max(-6, gainDb)) / 20)
+        let amplified = sample * powf(10, min(24, max(-6, gainDb)) / 20)
         return softLimitSample(amplified)
     }
     private static func softLimitSample(_ amplified: Float) -> (sample: Float, limited: Bool) {
@@ -188,11 +193,17 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         value.autoTrimDb = value.recommendationDb!
         defaults.set(value.autoTrimDb, forKey: key("auto", value.route))
     }
-    private func effectiveGain() -> Float { clamp(value.mode == .off ? 0 : value.mode == .manual ? value.manualGainDb : value.autoTrimDb) }
+    private func effectiveGain() -> Float {
+        switch value.mode {
+        case .off: return 0
+        case .manual: return clamp(value.manualGainDb, maximum: 24)
+        case .auto: return clamp(value.autoTrimDb)
+        }
+    }
     private func resetMeasurements() { sumSquares = 0; sampleCount = 0; peak = 0; value.limiterHits = 0 }
     private func rmsDbfs() -> Float? { sampleCount == 0 ? nil : dbfs(sqrtf(Float(sumSquares / Double(sampleCount)))) }
     private func dbfs(_ v: Float) -> Float { v <= 0 ? -120 : max(-120, 20 * log10f(v)) }
-    private func clamp(_ v: Float) -> Float { min(12, max(-6, v)) }
+    private func clamp(_ v: Float, maximum: Float = 12) -> Float { v.isFinite ? min(maximum, max(-6, v)) : 0 }
     private func key(_ field: String, _ route: String) -> String { "audio.gain.\(route.lowercased().replacingOccurrences(of: " ", with: "_").prefix(80)).\(field)" }
 }
 
