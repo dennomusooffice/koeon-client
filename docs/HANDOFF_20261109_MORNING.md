@@ -45,3 +45,5 @@ Completed at 08:46 JST: all eight endpoints were READY, USB stay-awake values we
 ## Stop status
 
 Physical operations ended at 08:46 JST, and distribution/records were finalized before the requested 09:00 JST pause. No additional test or upload is scheduled to resume automatically. The goal remains incomplete: physical listening, vehicle routes, diagnostic retention and emulator capture limitations above are still open. The next device window requires a new user instruction.
+
+Final cleanup also stopped the enrolled iOS simulator and its WebDriverAgent xcodebuild runner without deleting data. Android AVDs and the dedicated regression simulator were already stopped. No build/upload/test gesture remains pending; the latest Apple distribution read is recorded above.
