@@ -203,6 +203,7 @@ enum AudioRouteKind: String, Sendable {
     case bluetooth = "Bluetooth"
     case wired = "Wired"
     case usb = "USB"
+    case car = "CarPlay"
     case unknown = "Unknown"
 }
 
@@ -556,13 +557,18 @@ final class AudioSessionController: ObservableObject {
         updateRoute()
         applyLiveKitOutputPreference()
         routeChangeReason = Self.routeReasonLabel(reason)
-        let lostExternal = reason == .oldDeviceUnavailable && (oldRoute == .bluetooth || oldRoute == .wired || oldRoute == .usb)
+        let lostExternal = Self.lostExternalInputRoute(previous: oldRoute, reason: reason)
         onRouteChanged?(AudioRouteChangeSnapshot(
             previous: oldRoute,
             current: route,
             reason: routeChangeReason,
             lostExternalInputRoute: lostExternal
         ))
+    }
+
+    static func lostExternalInputRoute(previous: AudioRouteKind, reason: AVAudioSession.RouteChangeReason?) -> Bool {
+        reason == .oldDeviceUnavailable &&
+            (previous == .bluetooth || previous == .wired || previous == .usb || previous == .car)
     }
 
     static func routeReasonLabel(_ reason: AVAudioSession.RouteChangeReason?) -> String {
@@ -596,13 +602,18 @@ final class AudioSessionController: ObservableObject {
     }
 
     private static func mapRoute(_ port: AVAudioSessionPortDescription) -> AudioRouteKind {
-        switch port.portType {
+        mapPortType(port.portType)
+    }
+
+    static func mapPortType(_ type: AVAudioSession.Port) -> AudioRouteKind {
+        switch type {
         case .builtInSpeaker: .speaker
         case .builtInReceiver: .receiver
         case .builtInMic: .builtIn
         case .bluetoothA2DP, .bluetoothHFP, .bluetoothLE: .bluetooth
         case .headphones, .headsetMic, .lineOut: .wired
         case .usbAudio: .usb
+        case .carAudio: .car
         default: .unknown
         }
     }

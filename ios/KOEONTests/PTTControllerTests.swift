@@ -213,6 +213,17 @@ final class PTTControllerTests: XCTestCase {
         }
     }
 
+    func testCarAudioClassificationAndDisconnectSafety() {
+        let route = AudioSessionController.mapPortType(.carAudio)
+        XCTAssertEqual(route, .car)
+        XCTAssertTrue(AudioSessionController.lostExternalInputRoute(previous: route, reason: .oldDeviceUnavailable))
+        XCTAssertFalse(AudioSessionController.lostExternalInputRoute(previous: route, reason: .categoryChange))
+        XCTAssertFalse(AudioSessionController.lostExternalInputRoute(previous: .speaker, reason: .oldDeviceUnavailable))
+        for external: AudioRouteKind in [.bluetooth, .wired, .usb] {
+            XCTAssertTrue(AudioSessionController.lostExternalInputRoute(previous: external, reason: .oldDeviceUnavailable))
+        }
+    }
+
     func testC1C2C8SpeakerBluetoothSpeakerPolicySurvivesFiftySwitches() {
         for _ in 0 ..< 50 {
             XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: .speaker))

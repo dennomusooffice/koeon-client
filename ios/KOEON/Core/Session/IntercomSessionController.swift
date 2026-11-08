@@ -760,8 +760,8 @@ final class IntercomSessionController: ObservableObject {
                    ) {
                     self.resetPttRequestGate()
                     self.pushToTalk.stopTransmitting()
-                    await self.ptt?.stopForSafety(reason: "Headset route lost; TX stopped before microphone fallback.")
-                    self.lastError = "Headset disconnected during TX. Press PTT again to use the new route."
+                    await self.ptt?.stopForSafety(reason: "External audio route lost; TX stopped before microphone fallback.")
+                    self.lastError = "External audio device disconnected during TX. Press PTT again to use the new route."
                 }
             }
         }
