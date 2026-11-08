@@ -182,7 +182,7 @@ struct RxConsistencyGuard: Sendable {
         guard snapshot.validatedRemoteRxActive,
               generation == snapshot.validatedRxGeneration,
               sessionId == snapshot.validatedRxSessionId else { return .rejected }
-        let recovered = pcmTimeoutEmitted && snapshot.recoveryAttempts > 0
+        let recovered = !snapshot.remotePcmObserved && pcmTimeoutEmitted && snapshot.recoveryAttempts > 0
         snapshot.remotePcmObserved = true
         snapshot.pathState = "PCM_FLOWING"
         if snapshot.remoteMediaSpeakerSessionId == sessionId {

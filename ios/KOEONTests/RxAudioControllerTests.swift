@@ -746,6 +746,27 @@ final class RxAudioControllerTests: XCTestCase {
         }
     }
 
+    func testRecoveryIsReportedOnlyForFirstPcmOfEachGeneration() {
+        var guardState = RxConsistencyGuard()
+        let started = Date(timeIntervalSince1970: 1_000)
+        for generation in [1, 2] {
+            let at = started.addingTimeInterval(Double(generation * 10))
+            guardState.updateValidatedRx(active: true, sessionId: "session-a", generation: generation,
+                participantResolved: true, trackSubscribed: true, at: at)
+            XCTAssertEqual(guardState.evaluate(at: at.addingTimeInterval(0.3)).signals.map(\.event),
+                ["rx_pcm_timeout"])
+            XCTAssertEqual(guardState.handleRemotePcm(sessionId: "old", generation: generation - 1, at: at),
+                .rejected)
+            for frame in 0..<100 {
+                XCTAssertEqual(guardState.handleRemotePcm(sessionId: "session-a", generation: generation,
+                    at: at.addingTimeInterval(0.4 + Double(frame) * 0.02)),
+                    frame == 0 ? .recovered : .observed)
+            }
+            XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
+            XCTAssertTrue(guardState.evaluate(at: at.addingTimeInterval(5)).signals.isEmpty)
+        }
+    }
+
     func testOldGenerationPcmCannotSatisfyCurrentRxFence() {
         let started = Date(timeIntervalSince1970: 1_000)
         var guardState = RxConsistencyGuard()
