@@ -152,3 +152,9 @@ Android 14送信・Android 15/16/17受信、Android 14と15の両端末を上下
 - Google公式の[Desktop Head Unit](https://developer.android.com/training/cars/testing/dhu)はmacOSからAndroid Autoヘッドユニットを模擬できる。SDKパッケージの入手を進める。Android Automotive OSのAVDとは別の試験である。
 - Mac内の音声ループバックを、実Bluetooth HFP/A2DPのペアリング・ルート切替試験の代用として合格扱いしない。同等の仮想ヘッドセット環境を確認できなければ、指示どおり実ヘッドセット到着まで保留する。
 - 接続前後の音声ルート、双方向PTT、切断・再接続、割込み復旧を優先する。疑似環境での成功は、実車の音響・無線・全車種での動作保証ではない。
+
+### 公式Android Auto疑似ヘッドユニットの接続結果
+
+Android SDKの`extras/google/auto`、DHU 2.0-mac（build 2022-03-30-438482292）をインストールし起動確認。moto g64 5GのAndroid Auto 18.0.664264-releaseとUSB accessory modeで接続し、protocol 1.7、TLS1.2のネゴシエーション成功を記録した。OPPOのpovo回線設定は変更していない。
+
+その後、端末は「Android Autoへようこそ」の初回設定画面となり、連絡先・SMS・位置情報等へのアクセス同意を要求した。この同意は代行せず、DHUを終了してKOEONへ戻した。したがって確認済みなのは公式ツール導入とUSB通信開始までであり、車載音声ルート・送受信・再接続の合格ではない。利用者の初回設定後に続行する。CarPlayは公式ツール取得のApple認証待ち、Bluetoothの同等仮想環境は未確立のため実ヘッドセット試験を保留。通常音声と通信復旧の調査は続行する。
