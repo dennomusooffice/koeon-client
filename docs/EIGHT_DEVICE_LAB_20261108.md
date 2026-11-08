@@ -182,3 +182,13 @@ MockWebServerの実401応答からの判定、停止→再参加の順序、停�
 直前に参加したテストユーザーのセッションをfixtureとサーバー監査で一意に照合し、その1件だけをサーバー側leaveで無効化。旧sessionへのFloor statusが401/SESSION_INVALIDとなることを確認。その後利用者操作なしで同じユーザー・同じチャンネルへの新Joinが1件発生し、CONNECTED/READYへ復帰。失効操作開始から新Join監査まで0.966秒。これは実サービスでのセッション無効化試験であり、自然な2時間満了・失効中の実音声・再参加の通信失敗・全機種合格とは区別する。
 
 実機の原因照合も進めた。画面上のユーザーをfixtureと一致させてサーバー監査の最新Joinを確認すると、OPPOは23:11:05 JST、motoは23:14:33 JST。採取時点で各約3.35/3.30時間経過しており、どちらの最新sessionへのFloor statusも401/SESSION_INVALIDを返した。これでLiveKit CONNECTED/RX_IDLEと失効したFloorセッションの併存を確認。旧版が失効応答を無視して古いBUSYを維持する原因と整合する。実機の旧状態は保存済みで、この記録時点ではまだ候補へ更新していない。
+
+## 2026-11-09 候補17の実機導入とiOS失効対策
+
+OPPO・motoを署名候補1.0.16(17)、e7cf936へ上書き更新。登録と音質設定を保持し、両機のREADY復帰を確認。Android15候補からの12秒有限PTT（音声注入なし）で両機READY→BUSY REMOTE→READY、旧話者BUSYは残らなかった。更新自体が再起動・再参加を伴うため、これを自然な2時間満了への実機自動復旧の証拠とはしない。Android14/16/17 AVDも同候補へ更新し、全Android6端末をそろえた。
+
+iOSにもFloor照会の`try?`による失効応答の無視を確認したため、HTTP401のJSON error.codeがSESSION_INVALIDで、現在のセッション・POWER ONに一致する場合に既存のruntime resumeを要求する修正を追加。LiveKit CONNECTEDでもfresh resumeを選ぶ専用理由を設ける。Apple PTT登録・音声所有権を保持する既存処理を利用し、古い応答・POWER OFF・一般認証失敗を区別する。
+
+iOS27.2/arm64 Simulatorで310件中308成功・2件スキップ、parity成功。失効判定、旧セッション/POWER OFF拒否、他の認証エラー、fresh resume選択を追加し、既存の登録保持/明示OFF解除も回帰確認。初回の暗黙x86_64ビルドはLiveKit依存解決で失敗したが、Apple Silicon arm64を明示した再実行は成功。iOS変更は未配信・実機未検証。
+
+6台の制御マトリクスは送信開始前の画面採取中に中断した。Android14/15/17 Emulator本体がHangDetector→GenerateDumpAndDieで終了し、プロセス消失と3件の.ipsを確認。注入中のaudio_forwarderクラッシュとは異なるスタック。iOS回帰試験と同時間帯だが、メモリ不足等の原因は断定しない。失敗結果・原本は非公開保存、製品の通信不良判定から除外。回帰試験用iOS Simulatorは既にShutdown、登録済みiOS27.0 Simulatorは維持し、終了済み3AVDをデータ保持で再起動した。マトリクスは未完了。

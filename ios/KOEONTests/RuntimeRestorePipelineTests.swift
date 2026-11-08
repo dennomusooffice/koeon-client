@@ -69,6 +69,31 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         XCTAssertNil(PttRestoreDescriptor.load(from: defaults))
     }
 
+    func testBackendJoinExpiryRequiresFreshResumeEvenWhileLiveKitConnected() {
+        let error = APIClientError.http(401, #"{"error":{"code":"SESSION_INVALID","message":"expired"}}"#)
+        XCTAssertTrue(shouldRestoreExpiredBackendSession(error, requestedSessionId: "old", currentSessionId: "old", poweredOn: true))
+        XCTAssertEqual(runtimeRestoreEntryDecision(reason: .backendSessionExpired,
+            hasJoinedRuntime: true, connectionState: .connected), .performFreshResume)
+    }
+
+    func testLateExpiryCannotResumeAfterPowerOffOrNewSession() {
+        let error = APIClientError.http(401, #"{"error":{"code":"SESSION_INVALID"}}"#)
+        XCTAssertFalse(shouldRestoreExpiredBackendSession(error, requestedSessionId: "old", currentSessionId: "new", poweredOn: true))
+        XCTAssertFalse(shouldRestoreExpiredBackendSession(error, requestedSessionId: "old", currentSessionId: "old", poweredOn: false))
+    }
+
+    func testOtherAuthenticationAndMalformedErrorsAreNotJoinExpiry() {
+        let errors: [Error] = [
+            APIClientError.http(401, #"{"error":{"code":"DEVICE_REVOKED"}}"#),
+            APIClientError.http(403, #"{"error":{"code":"SESSION_INVALID"}}"#),
+            APIClientError.http(401, "SESSION_INVALID"),
+            APIClientError.invalidResponse,
+        ]
+        for error in errors {
+            XCTAssertFalse(shouldRestoreExpiredBackendSession(error, requestedSessionId: "old", currentSessionId: "old", poweredOn: true))
+        }
+    }
+
     private func isolatedResumeController(api: ResumeCleanupAPIStub) -> IntercomSessionController {
         IntercomSessionController(api: api,
             pushToTalk: ApplePushToTalkController(defaults: UserDefaults(suiteName: UUID().uuidString)!))

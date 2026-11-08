@@ -59,8 +59,20 @@ enum IncomingPushRuntimeAction: String, Sendable {
     case resumeImmediately = "RESUME_IMMEDIATELY"
 }
 
+func shouldRestoreExpiredBackendSession(
+    _ error: Error, requestedSessionId: String, currentSessionId: String?, poweredOn: Bool
+) -> Bool {
+    guard poweredOn, requestedSessionId == currentSessionId,
+          case let APIClientError.http(status, body) = error, status == 401,
+          let data = body.data(using: .utf8),
+          let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let detail = envelope["error"] as? [String: Any] else { return false }
+    return detail["code"] as? String == "SESSION_INVALID"
+}
+
 enum RuntimeRestoreReason: String, Sendable {
     case rxSelfHeal = "RX_SELF_HEAL"
+    case backendSessionExpired = "BACKEND_SESSION_EXPIRED"
     case incomingPushColdWake = "INCOMING_PUSH_COLD_WAKE"
     case foregroundRecovery = "FOREGROUND_RECOVERY"
     case systemChannelRestoration = "SYSTEM_CHANNEL_RESTORATION"
@@ -93,7 +105,7 @@ func runtimeRestoreEntryDecision(
 ) -> RuntimeRestoreEntryDecision {
     // Once the Apple incoming-Push path has classified this runtime as a cold
     // wake, a stale SDK `.connected` snapshot must not cancel the fresh resume.
-    if runtimeDirty || reason == .incomingPushColdWake || reason == .rxSelfHeal { return .performFreshResume }
+    if runtimeDirty || reason == .incomingPushColdWake || reason == .rxSelfHeal || reason == .backendSessionExpired { return .performFreshResume }
     return hasJoinedRuntime && connectionState == .connected
         ? .useConnectedRuntime
         : .performFreshResume
@@ -2110,11 +2122,24 @@ final class IntercomSessionController: ObservableObject {
                 guard let self else { return }
                 self.pushToTalk.setServiceConnection(self.room.connectionState)
                 if let session = self.joinedSession {
-                    _ = try? await withCurrentFloorStatus(
-                        context: { self.floorStatusContext },
-                        request: { try await self.api.floorStatus(sessionId: session.sessionId) },
-                        apply: { await self.applyAuthoritativeFloor($0) }
-                    )
+                    do {
+                        _ = try await withCurrentFloorStatus(
+                            context: { self.floorStatusContext },
+                            request: { try await self.api.floorStatus(sessionId: session.sessionId) },
+                            apply: { await self.applyAuthoritativeFloor($0) }
+                        )
+                    } catch {
+                        guard !Task.isCancelled else { return }
+                        if shouldRestoreExpiredBackendSession(error,
+                            requestedSessionId: session.sessionId,
+                            currentSessionId: self.joinedSession?.sessionId,
+                            poweredOn: self.isPoweredOn),
+                           let descriptor = PttRestoreDescriptor.load(from: .standard) ?? self.recoveryIntent.descriptor,
+                           descriptor.channelId == session.channel.id {
+                            self.runtimeLiveness.invalidate()
+                            self.requestRuntimeRestore(descriptor, reason: .backendSessionExpired)
+                        }
+                    }
                 }
                 try? await Task.sleep(for: .seconds(1))
             }
