@@ -16,6 +16,19 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FieldDiagnosticTest {
+    @Test fun subscriptionMetadataDoesNotClaimDecodedOrAudibleAudio() {
+        val state = IntercomUiState(
+            connectionState = IntercomConnectionState.CONNECTED,
+            diagnostics = SessionDiagnostics(remoteAudioTracks = 3, remoteAudioState = "subscribed"),
+        )
+        val liveKit = Json.parseToJsonElement(buildAndroidFieldDiagnostic(state))
+            .jsonObject.getValue("liveKit").jsonObject
+        assertEquals("3", liveKit.getValue("remoteAudioTracks").jsonPrimitive.content)
+        assertEquals("subscribed", liveKit.getValue("remoteAudioState").jsonPrimitive.content)
+        assertEquals(kotlinx.serialization.json.JsonNull, liveKit.getValue("remoteDecodedPcmObserved"))
+        assertEquals(kotlinx.serialization.json.JsonNull, liveKit.getValue("remoteAudiblePlaybackConfirmed"))
+    }
+
     @Test fun serverVersionIsReportedSeparatelyAndUnknownRemainsNull() {
         fun value(version: String?, connection: IntercomConnectionState = IntercomConnectionState.CONNECTED) = Json.parseToJsonElement(buildAndroidFieldDiagnostic(
             IntercomUiState(connectionState = connection, diagnostics = SessionDiagnostics(liveKitServerVersion = version)),
