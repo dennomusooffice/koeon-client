@@ -2544,6 +2544,10 @@ final class IntercomSessionController: ObservableObject {
             room.connectionState == .connected && audio.interruption.state == .ready
         let sessionId = state.validatedRxSessionId ?? state.remoteMediaSpeakerSessionId
         let diagnostic = RxDivergenceDiagnostic(
+            observedAt: Date(),
+            runtimeGeneration: runtimeLiveness.generation,
+            receiveGeneration: state.validatedRxGeneration,
+            appLifecycleState: appLifecycleState,
             event: event,
             elapsedMs: elapsedMilliseconds,
             roomConnectionState: room.connectionState.rawValue,
@@ -2981,6 +2985,10 @@ final class IntercomSessionController: ObservableObject {
         }
         let divergenceEvents: [[String: Any]] = rxDivergenceDiagnostics.map { event in
             [
+                "observedAt": timestamp(event.observedAt),
+                "runtimeGeneration": event.runtimeGeneration,
+                "receiveGeneration": event.receiveGeneration,
+                "appLifecycleState": event.appLifecycleState,
                 "event": event.event,
                 "elapsedMs": event.elapsedMs,
                 "roomConnectionState": event.roomConnectionState,

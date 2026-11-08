@@ -522,6 +522,10 @@ struct RxConsistencySnapshot: Equatable, Sendable {
 }
 
 struct RxDivergenceDiagnostic: Equatable, Sendable {
+    let observedAt: Date
+    let runtimeGeneration: Int
+    let receiveGeneration: Int
+    let appLifecycleState: String
     let event: String
     let elapsedMs: Int
     let roomConnectionState: String
