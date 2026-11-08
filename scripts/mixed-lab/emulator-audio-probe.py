@@ -150,7 +150,7 @@ def main():
               'injectionCompleted': False, 'pressCoordinates': coordinates}
     fmt = pb.AudioFormat(samplingRate=48000, channels=pb.AudioFormat.Mono,
                          format=pb.AudioFormat.AUD_FMT_S16, mode=pb.AudioFormat.MODE_REAL_TIME)
-    hold = duration + 8
+    hold = duration + 20  # UI dumps can stall on a busy multi-AVD host.
 
     def capture(serial):
         stub, metadata, _ = endpoints[serial]
@@ -179,6 +179,7 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(args.receivers)) as executor:
             captures = {s: executor.submit(capture, s) for s in args.receivers}
             time.sleep(1)
+            press_started = time.monotonic()
             press = subprocess.Popen([args.adb, '-s', 'emulator-'+args.sender, 'shell', 'input',
                                       'swipe', *coordinates, *coordinates, str(int(hold*1000))])
             time.sleep(1)
@@ -186,6 +187,13 @@ def main():
             result['talkingObservedBeforeInjection'] = talking
             if not talking:
                 raise RuntimeError('Actual sender TALKING state not observed; no audio injected')
+            remaining = hold - (time.monotonic() - press_started)
+            result['gestureBudgetBeforeInjectionSeconds'] = remaining
+            result['gestureActiveBeforeInjection'] = press.poll() is None
+            if press.poll() is not None or remaining < duration + 1:
+                raise RuntimeError('PTT gesture window expired or too short; no audio injected')
+            injection_started = time.monotonic()
+            result['injectionStartedAfterGestureSeconds'] = injection_started - press_started
             def packets():
                 start = time.monotonic()
                 for frame in range(math.ceil(duration/.02)):
@@ -195,29 +203,45 @@ def main():
             stub, metadata, _ = endpoints[args.sender]
             stub.injectAudio(packets(), metadata=metadata, timeout=duration+8)
             result['injectionCompleted'] = True
+            result['injectionDurationSeconds'] = time.monotonic() - injection_started
+            result['gestureActiveAfterInjection'] = press.poll() is None
+            if press.poll() is not None:
+                raise RuntimeError('PTT gesture ended before injection completed; invalid audio trial')
             press.wait(timeout=hold+5)
             result['receivers'] = {s: f.result(timeout=hold+10) for s, f in captures.items()}
     except Exception as error:
         result['probeError'] = type(error).__name__
+        if isinstance(error, grpc.RpcError):
+            result['probeTransportErrorCode'] = error.code().name
         if isinstance(error, RuntimeError):
             result['probeErrorDetail'] = str(error)
         result['receivers'] = {s: f.result() for s, f in captures.items() if f.done() and f.exception() is None}
     finally:
         # The gesture is finite even if the client failed; do not kill it while DOWN.
+        result['cleanupErrors'] = []
         if press is not None and press.poll() is None:
-            press.wait(timeout=hold+5)
+            try:
+                press.wait(timeout=hold+5)
+            except subprocess.TimeoutExpired:
+                result['cleanupErrors'].append('finite_gesture_wait_timeout')
         for serial, (stub, metadata, channel) in endpoints.items():
             try:
                 if serial in microphone_states:
                     stub.setMicrophoneState(pb.MicrophoneState(realAudioEnabled=microphone_states[serial]), metadata=metadata, timeout=5)
+            except Exception as error:
+                result['cleanupErrors'].append('microphone_restore_' + serial + '_' + type(error).__name__)
             finally:
                 channel.close()
-    result['senderReadyAfter'] = any(n.get('content-desc') == 'Push to talk, READY'
-                                     for n in ui(args.sender).iter('node'))
+    try:
+        result['senderReadyAfter'] = any(n.get('content-desc') == 'Push to talk, READY'
+                                         for n in ui(args.sender).iter('node'))
+    except Exception as error:
+        result['senderReadyAfter'] = False
+        result['senderInspectionError'] = type(error).__name__
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2))
     print(json.dumps(result), flush=True)
-    return 0 if result['injectionCompleted'] and 'probeError' not in result and result['senderReadyAfter'] and all(v['knownSpeechDetected'] for v in result['receivers'].values()) else 1
+    return 0 if result['injectionCompleted'] and 'probeError' not in result and not result.get('cleanupErrors') and result['senderReadyAfter'] and set(result.get('receivers', {})) == set(args.receivers) and all(v['knownSpeechDetected'] for v in result['receivers'].values()) else 1
 
 
 if __name__ == '__main__':

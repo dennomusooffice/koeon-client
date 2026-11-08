@@ -135,3 +135,20 @@ Android 14送信・Android 15/16/17受信、Android 14と15の両端末を上下
 これは前面・参加済み状態のPTT試験であり、接続開始自体は制限前。逆方向・制限下の初期接続・反復回数拡大・背景復帰・実LTE・人の聴取・実音声遅延の検証は残る。高音質がキャリア128kbpsで安定すると結論しない。
 
 公開した帯域測定ツール自身でも下り91.56kbps・上り118.75kbps、全256KiB転送を確認。通常終了後のcleanupFailuresは空。1秒タイムアウトで試験子プロセスを止める故障注入でも、追加した帯域設定は撤去されcleanupFailuresは空だった。標準・高音質は保存診断の実効公開値24/48kbpsとも照合済み（最後のPTT Floor36/37ms、RX_READY待機501/468ms）。これらは音声のend-to-end遅延ではない。
+
+## 2026-11-09 追加: 逆方向コーデック比較と測定基盤の限界
+
+ソース `49a6322baa9a876700be0c3dc0ade82bc0dd684f` の帯域ラッパーを使用し、Android15候補1.0.15(16)→Android14/16/17公開1.0.14(15)を比較した。Android14/15の上下をtc/IFBで128kbit/sに制限し、初回Room参加も制限内で行った。LOW12kbpsとHIGH48kbpsはそれぞれ2回、3受信先すべてで既知音声を検出。STANDARD24kbpsは最初の1回が全受信先で検出失敗し、送信側入力はRMS -97.86dBFS、peak -73.65dBFSだった。POWER操作なしの再試験では3受信先すべてで検出した。全ラッパーのcleanupFailuresは空。これを各コーデックの一般的な128kbps回線対応の合格とはしない。
+
+[Issue #59](https://github.com/dennomusooffice/koeon-client/issues/59)として測定基盤の問題を分離した。KOEONを停止した独立AudioRecordアプリでも、同じ合成入力が通常RMS約-23dBFSに対して-87〜-104dBFSになる回を確認。録音開始の試験ID、端末時計差、注入区間を照合済み。エミュレータ本体のinjectAudio内でEXC_BAD_ACCESS/SIGSEGVも発生した。録音前から継続入力する比較でも同じスタックのクラッシュが起きたため、その方式の反復を停止。既存AVDデータを保持して再起動し、boot_completedとKOEON起動を確認した。生ログ・クラッシュ原本は非公開保存し、人の音声は録音していない。
+
+測定スクリプトは注入前後のPTTジェスチャー生存と残り時間を確認し、期限切れの操作を拒否する。端末異常時にも途中結果を残し、他の端末のマイク設定復元を継続する。全受信先の結果と復元成功を合格条件に含める。既知信号検出の校正4件は成功。ただし、この安全策で仮想マイク自体の障害が解消したとは扱わない。Android15の受信停止(#57)、iOS長時間ロック後初回無音(#54)は引き続き未解決。
+
+## 車載・Bluetooth追加試験の範囲
+
+利用者から、音声試験後のBluetoothヘッドセット、CarPlay、Android Auto試験が依頼された。CarPlayは利用者の不具合報告あり、[Issue #58](https://github.com/dennomusooffice/koeon-client/issues/58)で追跡。車種・接続方式・症状の詳細・発生ビルドは未確定。Android Autoは未再現で、障害があるとは断定しない。
+
+- Apple公式の[CarPlay Simulator](https://developer.apple.com/carplay/)はAdditional Tools for Xcodeに含まれる。このMacの確認対象ディレクトリには単体アプリがなく、公式ダウンロードはAppleアカウント認証へ遷移した。利用者の認証操作を要求せず、準備可能な範囲を調査する。
+- Google公式の[Desktop Head Unit](https://developer.android.com/training/cars/testing/dhu)はmacOSからAndroid Autoヘッドユニットを模擬できる。SDKパッケージの入手を進める。Android Automotive OSのAVDとは別の試験である。
+- Mac内の音声ループバックを、実Bluetooth HFP/A2DPのペアリング・ルート切替試験の代用として合格扱いしない。同等の仮想ヘッドセット環境を確認できなければ、指示どおり実ヘッドセット到着まで保留する。
+- 接続前後の音声ルート、双方向PTT、切断・再接続、割込み復旧を優先する。疑似環境での成功は、実車の音響・無線・全車種での動作保証ではない。
