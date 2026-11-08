@@ -158,3 +158,13 @@ Android 14送信・Android 15/16/17受信、Android 14と15の両端末を上下
 Android SDKの`extras/google/auto`、DHU 2.0-mac（build 2022-03-30-438482292）をインストールし起動確認。moto g64 5GのAndroid Auto 18.0.664264-releaseとUSB accessory modeで接続し、protocol 1.7、TLS1.2のネゴシエーション成功を記録した。OPPOのpovo回線設定は変更していない。
 
 その後、端末は「Android Autoへようこそ」の初回設定画面となり、連絡先・SMS・位置情報等へのアクセス同意を要求した。この同意は代行せず、DHUを終了してKOEONへ戻した。したがって確認済みなのは公式ツール導入とUSB通信開始までであり、車載音声ルート・送受信・再接続の合格ではない。利用者の初回設定後に続行する。CarPlayは公式ツール取得のApple認証待ち、Bluetoothの同等仮想環境は未確立のため実ヘッドセット試験を保留。通常音声と通信復旧の調査は続行する。
+
+## 2026-11-09 通信断復旧と古いBUSY表示
+
+`fc54a49d5c75fa6510cb2dc809190fdc235be7b1`時点の試験器でAndroid14/16/17公開1.0.14(15)、Android15候補1.0.15(16)を検証。各AVDをREADYから機内モード＋Wi-Fi停止にして12秒待ち、OFFLINE/RECONNECTINGを確認。設定復元から12秒待った採取ですべてCONNECTED/READYに復帰した。Android16の初回はクラッシュ復旧後POWER OFFだったため試験開始前に拒否され、POWER ON後の別試行だけを結果に含める。音声・復旧後PTTの合格とは分離する。
+
+続けてAndroid15候補から12秒の有限PTT（音声注入なし）。Android14/16の画面はREADY→BUSY REMOTE→READY、Android17は途中画面でBUSYを捕捉できなかったが、後採取した診断では同じ試験のSTART受信・RX_READY送信成功・受信終了を確認できた。途中のUIスナップショットだけで制御未到達とは判断しない。
+
+OPPOとmotoの公開1.0.14(15)は、試験前・途中・終了後に以前の話者のBUSY REMOTEを表示したまま。POWER操作なしで両実機の新鮮な診断とlogcatを保存。CONNECTED / PTT IDLE / RX_IDLEにもかかわらず、PTTはREMOTE_BUSYで禁止される。両機とも今回のSTART受信・RX_READY送信成功・終了時のremoteClearAt更新を確認し、アプリ全体の停止ではない。独立の[Issue #60](https://github.com/dennomusooffice/koeon-client/issues/60)で追跡する。
+
+コード調査では、Androidが既存currentSpeakerをLiveKit snapshot更新時に保持し、Floor status失敗を捨てていることを確認。本番サーバーの読み取り調査ではJoinセッションのTTLは作成から2時間、期限超過は401/SESSION_INVALID、参照時の延長なし。サービス起動は2026-11-08 19:49:59 JST。LiveKit接続が生存する一方でFloorセッションだけ失効する可能性があり、長時間起動の実機と再参加したAVDの差と整合する。ただし実機の当該HTTP応答を直接取得していないため、観測症状の原因確定とは区別する。次は失効応答の再現・登録を保持した再参加・POWER OFF優先・多重復旧防止を検証する。未修正、未配信。
