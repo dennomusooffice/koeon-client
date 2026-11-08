@@ -308,3 +308,12 @@ Validation: Android222 unit tests passed, zero failures/errors/skips; Lint, debu
 Signed private1.0.16(17), source6711527709a88710c063538f99c8d84b62feaf85, APK SHA256 d5e2cd62cf4a98a7c8c72c111c088135acceab7091a7da2904febf9343b97d2d, was installed over the existing API34 app without clearing data. Only this emulator was placed into airplane mode with Wi-Fi disabled, then the actual app was stopped and relaunched. Startup showed the retry action and no enrollment screen. Restoring the previous airplane/Wi-Fi settings and tapping Retry restored the existing user's POWER ON screen without an invite. POWER ON then reached READY. Final connectivity settings matched their original values.
 
 This verifies an actual offline-startup and manual-retry UI path on Android14, not simulated keystore failure or the exact earlier initiating cause. Physical OPPO/moto settings and sessions were untouched. Other Android devices retain their previously recorded candidate hashes. Public Android release remains unchanged; #62 is still open for remaining conditions. Raw UI/result files stay private (startup-avd-result.json and associated XML).
+
+
+### Physical iPhone0901 diagnostic export and foreground receive (2026-11-09 03:26 JST)
+
+Updated the physical iPhone through TestFlight to1.0(2026110901), verified independently by devicectl bundleVersion and diagnostic build. Enrollment and powered-on READY state survived without invite entry or manual POWER cycle. Explicit Copy generated fresh field JSON in the app cache; devicectl appDataContainer retrieval succeeded at18:25:10Z and18:26:20Z. This closes the previously unverified physical file-export path, not the general locked-reception issue.
+
+API34 (signed6711527 candidate17) sent known6.88s synthetic speech to the mixed room. API35/36/37 each detected the signal (3/3; correlation0.436/0.439/0.439; ordered segments passed); sender returnedREADY and cleanupErrors empty. Physical iPhone0901 recorded firstPCM generation1 in active lifecycle. This is decoded-PCM evidence, not speaker audibility or human intelligibility. Other builds remain as previously recorded; no physical OPPO/moto reset.
+
+The iPhone diagnostic's20 divergence-event slots contained repeated rx_divergence_recovered after this single receive. The PCM handler returns recovered repeatedly while timeout/recovery flags persist; follow-up#50 will distinguish the first recovery transition from subsequent PCM callbacks. A confirmed device lock starts a separate first-reception-after-five-minutes trial; no result claimed yet.
