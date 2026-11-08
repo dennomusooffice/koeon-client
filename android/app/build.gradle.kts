@@ -55,8 +55,8 @@ android {
         applicationId = "com.dennomuso.koeon"
         minSdk = 29
         targetSdk = 36
-        versionCode = 16
-        versionName = "1.0.15"
+        versionCode = 17
+        versionName = "1.0.16"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

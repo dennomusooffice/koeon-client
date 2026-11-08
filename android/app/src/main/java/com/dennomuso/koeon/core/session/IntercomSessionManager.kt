@@ -304,6 +304,7 @@ class IntercomSessionManager(
     private var pttStoppedForAudioInterruption = false
     private var previousPttState = PttState.IDLE
     private var switchGeneration = 0L
+    private val joinSessionRecovery = JoinSessionRecovery()
     private var headsetPttEnabled = devicePreferences.getBoolean("headset_ptt_enabled", false)
     private var headsetPttMode = runCatching {
         HeadsetPttMode.valueOf(
@@ -767,123 +768,131 @@ class IntercomSessionManager(
     }
 
     fun join(userId: String, channelId: String) {
+        joinSessionRecovery.invalidate()
         scope.launch { joinChannel(userId, channelId) }
     }
 
     private suspend fun joinChannel(userId: String, channelId: String): Boolean =
-        operationMutex.withLock {
-                if (_state.value.joined || _state.value.loading) return@withLock false
-                val user = _state.value.fixture?.users?.firstOrNull { it.id == userId }
-                val wantsToPublish = user?.role != Role.LISTENER
-                _state.update {
-                    it.copy(
-                        loading = true,
-                        connectionState = IntercomConnectionState.CONNECTING,
-                        operationalState = OperationalState.CONNECTING,
-                        error = null,
-                    )
-                }
-                var joined: JoinResponse? = null
-                try {
-                    val channelName = _state.value.fixture?.channels?.firstOrNull { it.id == channelId }?.name ?: channelId
-                    IntercomForegroundService.start(appContext, channelName, wantsToPublish, headsetPttEnabled)
-                    joined = api.join(userId, channelId, wantsToPublish)
-                    audioRouteMonitor.start()
-                    networkMonitor.start()
-                    room.connect(
-                        joined.livekitUrl,
-                        joined.token,
-                        joined.roomName,
-                        joined.canPublish,
-                        joined.channel.id,
-                        joined.user.id,
-                        joined.sessionId,
-                        joined.deviceId,
-                        audioBitratePreset,
-                    )
-                    configurePtt(joined)
-                    sessionStartedAt = android.os.SystemClock.elapsedRealtime()
-                    startSessionPolling(joined)
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            joined = true,
-                            join = joined,
-                            diagnostics = it.diagnostics.copy(foregroundService = "Active"),
-                            error = null,
-                            operationalState = OperationalState.ACTIVE,
-                        )
-                    }
-                    IntercomForegroundService.update(
-                        joined.channel.name, joined.canPublish, "接続中", headsetPttEnabled,
-                    )
-                    true
-                } catch (error: Throwable) {
-                    room.disconnect()
-                    audioRouteMonitor.stop()
-                    networkMonitor.stop()
-                    IntercomForegroundService.stop(appContext)
-                    joined?.let { runCatching { api.leave(it.sessionId) } }
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            joined = false,
-                            join = null,
-                            connectionState = IntercomConnectionState.DISCONNECTED,
-                            error = error.message ?: "Channel join failed",
-                            operationalState = OperationalState.ERROR,
-                        )
-                    }
-                    false
-                }
+        operationMutex.withLock { joinChannelLocked(userId, channelId) }
+
+    private suspend fun joinChannelLocked(userId: String, channelId: String): Boolean {
+        if (_state.value.joined || _state.value.loading) return false
+        val user = _state.value.fixture?.users?.firstOrNull { it.id == userId }
+        val wantsToPublish = user?.role != Role.LISTENER
+        _state.update {
+            it.copy(
+                loading = true,
+                connectionState = IntercomConnectionState.CONNECTING,
+                operationalState = OperationalState.CONNECTING,
+                error = null,
+            )
         }
+        var joined: JoinResponse? = null
+        return try {
+            val channelName = _state.value.fixture?.channels?.firstOrNull { it.id == channelId }?.name ?: channelId
+            IntercomForegroundService.start(appContext, channelName, wantsToPublish, headsetPttEnabled)
+            joined = api.join(userId, channelId, wantsToPublish)
+            audioRouteMonitor.start()
+            networkMonitor.start()
+            room.connect(
+                joined.livekitUrl,
+                joined.token,
+                joined.roomName,
+                joined.canPublish,
+                joined.channel.id,
+                joined.user.id,
+                joined.sessionId,
+                joined.deviceId,
+                audioBitratePreset,
+            )
+            configurePtt(joined)
+            sessionStartedAt = android.os.SystemClock.elapsedRealtime()
+            startSessionPolling(joined)
+            _state.update {
+                it.copy(
+                    loading = false,
+                    joined = true,
+                    join = joined,
+                    diagnostics = it.diagnostics.copy(foregroundService = "Active"),
+                    error = null,
+                    operationalState = OperationalState.ACTIVE,
+                )
+            }
+            IntercomForegroundService.update(
+                joined.channel.name, joined.canPublish, "接続中", headsetPttEnabled,
+            )
+            true
+        } catch (error: Throwable) {
+            room.disconnect()
+            audioRouteMonitor.stop()
+            networkMonitor.stop()
+            IntercomForegroundService.stop(appContext)
+            joined?.let { runCatching { api.leave(it.sessionId) } }
+            _state.update {
+                it.copy(
+                    loading = false,
+                    joined = false,
+                    join = null,
+                    connectionState = IntercomConnectionState.DISCONNECTED,
+                    error = error.message ?: "Channel join failed",
+                    operationalState = OperationalState.ERROR,
+                )
+            }
+            false
+        }
+    }
 
     fun leaveAsync() {
+        joinSessionRecovery.invalidate()
+        ++switchGeneration
         scope.launch { leave(powerOff = true) }
     }
 
     suspend fun leave(powerOff: Boolean = true) {
-        operationMutex.withLock {
-            appTouchPttGate.cancel()
-            hardwareVolumePttGate.clear()
-            val join = _state.value.join
-            statusJob?.cancel()
-            uptimeJob?.cancel()
-            audioRecoveryJob?.cancel()
-            runCatching { pttController?.stopForSafety("Session left") }
-            com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.record("APP", "SESSION_LEAVE")
-            batv1Receiver?.shutdown()
-            batv1Receiver = null
-            batv1Transmitter = null
-            room.disconnect()
-            audioRouteMonitor.stop()
-            networkMonitor.stop()
-            if (join != null) runCatching { api.leave(join.sessionId) }
-            IntercomForegroundService.stop(appContext)
-            pttController = null
-            previousConnectionState = IntercomConnectionState.DISCONNECTED
-            connectionLostElapsed = null
-            previousNetwork = "Unavailable"
-            previousAudioRoute = "Unavailable"
-            audioInterruption.reset()
-            pttStoppedForAudioInterruption = false
-            _state.value = IntercomUiState(
-                fixture = _state.value.fixture,
-                identity = _state.value.identity,
-                enrollmentRequired = false,
-                operationalState = if (powerOff) OperationalState.ENROLLED_POWERED_OFF else OperationalState.SWITCHING_CHANNEL,
-                diagnostics = SessionDiagnostics(
-                    lastBufferedReceive = _state.value.diagnostics.lastBufferedReceive,
-                    headsetPttEnabled = headsetPttEnabled,
-                    headsetPttMode = headsetPttMode,
-                    hardwareVolumePttMode = hardwareVolumePttMode,
-                    inputGain = gainProcessor.snapshot(),
-                    audioCaptureProfile = audioCaptureProfile,
-                    audioBitratePreset = audioBitratePreset,
-                    requestedAudioBitrateKbps = audioBitratePreset.kilobitsPerSecond,
-                ),
-            )
-        }
+        if (powerOff) { joinSessionRecovery.invalidate(); ++switchGeneration }
+        operationMutex.withLock { leaveLocked(powerOff) }
+    }
+
+    private suspend fun leaveLocked(powerOff: Boolean) {
+        appTouchPttGate.cancel()
+        hardwareVolumePttGate.clear()
+        val join = _state.value.join
+        statusJob?.cancel()
+        uptimeJob?.cancel()
+        audioRecoveryJob?.cancel()
+        runCatching { pttController?.stopForSafety("Session left") }
+        com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.record("APP", "SESSION_LEAVE")
+        batv1Receiver?.shutdown()
+        batv1Receiver = null
+        batv1Transmitter = null
+        room.disconnect()
+        audioRouteMonitor.stop()
+        networkMonitor.stop()
+        if (join != null) runCatching { api.leave(join.sessionId) }
+        IntercomForegroundService.stop(appContext)
+        pttController = null
+        previousConnectionState = IntercomConnectionState.DISCONNECTED
+        connectionLostElapsed = null
+        previousNetwork = "Unavailable"
+        previousAudioRoute = "Unavailable"
+        audioInterruption.reset()
+        pttStoppedForAudioInterruption = false
+        _state.value = IntercomUiState(
+            fixture = _state.value.fixture,
+            identity = _state.value.identity,
+            enrollmentRequired = false,
+            operationalState = if (powerOff) OperationalState.ENROLLED_POWERED_OFF else OperationalState.SWITCHING_CHANNEL,
+            diagnostics = SessionDiagnostics(
+                lastBufferedReceive = _state.value.diagnostics.lastBufferedReceive,
+                headsetPttEnabled = headsetPttEnabled,
+                headsetPttMode = headsetPttMode,
+                hardwareVolumePttMode = hardwareVolumePttMode,
+                inputGain = gainProcessor.snapshot(),
+                audioCaptureProfile = audioCaptureProfile,
+                audioBitratePreset = audioBitratePreset,
+                requestedAudioBitrateKbps = audioBitratePreset.kilobitsPerSecond,
+            ),
+        )
     }
 
     fun switchChannel(targetChannelId: String) {
@@ -898,6 +907,7 @@ class IntercomSessionManager(
             _state.update { it.copy(error = "Channel is not assigned to this User") }
             return
         }
+        joinSessionRecovery.invalidate()
         val generation = ++switchGeneration
         _state.update { it.copy(operationalState = OperationalState.SWITCHING_CHANNEL, loading = true, error = null) }
         scope.launch {
@@ -1099,11 +1109,34 @@ class IntercomSessionManager(
         }
     }
 
+    private fun recoverInvalidJoin(expired: JoinResponse) {
+        if (_state.value.join?.sessionId != expired.sessionId) return
+        val ticket = joinSessionRecovery.request(expired.sessionId) ?: return
+        // This must not be a child of statusJob: teardown cancels that poller.
+        scope.launch {
+            operationMutex.withLock {
+                joinSessionRecovery.run(
+                    ticket = ticket,
+                    currentSessionId = { _state.value.join?.sessionId },
+                    stopRuntime = { leaveLocked(powerOff = false) },
+                    rejoin = { joinChannelLocked(expired.user.id, expired.channel.id) },
+                )
+            }
+        }
+    }
+
     private fun startSessionPolling(join: JoinResponse) {
         statusJob?.cancel()
         statusJob = scope.launch {
             while (true) {
-                val floor = runCatching { api.floorStatus(join.sessionId) }.getOrNull()
+                val result = runCatching { api.floorStatus(join.sessionId) }
+                val error = result.exceptionOrNull()
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                if (error != null && requiresJoinRenewal(error)) {
+                    recoverInvalidJoin(join)
+                    return@launch
+                }
+                val floor = result.getOrNull()
                 if (floor != null) {
                     room.reconcileRxFloor(floor)
                     _state.update {

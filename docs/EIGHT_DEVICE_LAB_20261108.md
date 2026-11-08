@@ -168,3 +168,9 @@ Android SDKの`extras/google/auto`、DHU 2.0-mac（build 2022-03-30-438482292）
 OPPOとmotoの公開1.0.14(15)は、試験前・途中・終了後に以前の話者のBUSY REMOTEを表示したまま。POWER操作なしで両実機の新鮮な診断とlogcatを保存。CONNECTED / PTT IDLE / RX_IDLEにもかかわらず、PTTはREMOTE_BUSYで禁止される。両機とも今回のSTART受信・RX_READY送信成功・終了時のremoteClearAt更新を確認し、アプリ全体の停止ではない。独立の[Issue #60](https://github.com/dennomusooffice/koeon-client/issues/60)で追跡する。
 
 コード調査では、Androidが既存currentSpeakerをLiveKit snapshot更新時に保持し、Floor status失敗を捨てていることを確認。本番サーバーの読み取り調査ではJoinセッションのTTLは作成から2時間、期限超過は401/SESSION_INVALID、参照時の延長なし。サービス起動は2026-11-08 19:49:59 JST。LiveKit接続が生存する一方でFloorセッションだけ失効する可能性があり、長時間起動の実機と再参加したAVDの差と整合する。ただし実機の当該HTTP応答を直接取得していないため、観測症状の原因確定とは区別する。次は失効応答の再現・登録を保持した再参加・POWER OFF優先・多重復旧防止を検証する。未修正、未配信。
+
+### Join失効へのAndroid修正（候補1.0.16 / 17）
+
+Floor statusのHTTP401かつSESSION_INVALIDを検出して、古いPTT・Room・ポーリングを停止し、既存の登録を使って同じチャンネルへ再参加する。端末登録credentialは消去しない。復旧処理を停止対象のpollerの子にせず、通常の参加・退出と同じmutexで直列化。世代付きチケットで重複、古いセッション、POWER OFF、チャンネル変更を照合し、停止中に操作意図が変わった場合は再参加しない。キャンセル例外をポーリングが握り潰さない。
+
+MockWebServerの実401応答からの判定、停止→再参加の順序、停止中のPOWER OFFによる再参加抑止、旧セッション・重複・チャンネル変更、端末資格失効/通信エラーとの区別を追加。Android全210テスト・Lint・assembleDebug・parity成功。新しい署名候補番号を1.0.16(17)としたが、この記録時点で候補生成・端末導入・実セッション再参加の確認は未完了。一般公開・mainマージは未実施。現在の自動再参加は1回であり、再参加自体が通信エラーになるケースの復旧継続は追加検証事項。Issue #60を閉じない。
