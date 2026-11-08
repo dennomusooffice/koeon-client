@@ -20,6 +20,7 @@ Criteria: five successful transmissions each direction; preparation target <=2s,
 | Three 3-second OPPO presses after LTE restoration | Each returned READY | Next-transmission/release state checks passed; receiver audibility not assessed |
 | Re-enrolled iPhone to OPPO, 10-second PTT, 12kbps | iPhone PTT-down to TALKING 687ms, Floor 58ms, RX_READY 500ms, PTT-up to READY 360ms. Floor renew 9/9, terminal cleanup PASS. Android received START and published RX_READY. Owner heard no OPPO output | Control and TX state passed; audibility failed. Manual speech calibration requested to separate microphone pickup of Mac TTS from product-path failure |
 | Live subscription during a further 20-second iPhone TX | OPPO showed one remote audio track in all four observations, with Speakerphone route | Subscription exists during transmission. This does not prove nonzero received audio, hardware playout or intelligibility |
+| Human voice calibration, iPhone to OPPO | Owner spoke directly into iPhone after the cue and confirmed hearing their voice from OPPO | Human-voice delivery succeeded. Earlier Mac-TTS inaudibility cannot be treated as proof of a product audio-path failure; acoustic test injection was not validated |
 
 ## Test-harness error and blocker
 
@@ -33,4 +34,6 @@ OPPO system audio inspection showed unmuted voice-call output, speaker volume 9/
 
 ## Remaining acceptance
 
-Both-direction repetition, locked-screen audio, Bluetooth, calibrated latency, acoustic intelligibility and multiple simultaneous receivers remain unverified. Overall intercom acceptance has **not** passed. Raw JSON/logs remain private; only sanitized evidence is published. Latest progress and restoration status are recorded in Issue #54.
+Both-direction repetition, locked-screen audio, Bluetooth, calibrated latency, detailed intelligibility and multiple simultaneous receivers remain unverified. Overall intercom acceptance has **not** passed, but the Mac-TTS cases do not establish a product defect: the human-voice calibration above succeeded. Raw JSON/logs remain private; only sanitized evidence is published. Latest progress and restoration status are recorded in Issue #54.
+
+At the first collection stop, iPhone auto-lock was verified restored to 30 seconds. Android remained at 30 seconds, stay-on 0, Wi-Fi OFF, mobile data ON. The diagnostic helper installed for this task was removed and the UI test session was closed. Further human-voice/lock acceptance continues under the owner's authorization with no specified end time.
