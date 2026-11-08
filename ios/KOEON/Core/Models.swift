@@ -2,6 +2,21 @@ import Foundation
 
 let fieldDiagnosticSchema = "koeon.field-diagnostic.v2"
 
+/// Explicit diagnostic export only. One replaceable cache file; no audio or history.
+enum FieldDiagnosticSnapshotFile {
+    static func write(_ data: Data, cachesDirectory: URL? = nil) throws -> URL {
+        let manager = FileManager.default
+        let base = try cachesDirectory ?? manager.url(
+            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        )
+        let directory = base.appendingPathComponent("KOEONDiagnostics", isDirectory: true)
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("field-diagnostic-latest.json")
+        try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        return file
+    }
+}
+
 enum KOEONRole: String, Codable, Sendable {
     case admin = "ADMIN"
     case staff = "STAFF"
@@ -428,8 +443,13 @@ struct RemoteParticipantSetResult: Equatable, Sendable {
 
 struct RemoteAudioSubscriptionGenerationGate: Sendable {
     private var activeBySession: [String: Int] = [:]
+    private var latestBySession: [String: Int] = [:]
 
     mutating func activate(sessionId: String, generation: Int) {
+        // Subscription requests suspend in the SDK and may complete out of
+        // order. Keep the fence even after the newer generation is drained.
+        guard generation >= (latestBySession[sessionId] ?? generation) else { return }
+        latestBySession[sessionId] = generation
         activeBySession[sessionId] = generation
     }
 
@@ -447,7 +467,10 @@ struct RemoteAudioSubscriptionGenerationGate: Sendable {
         activeBySession[sessionId] == generation
     }
 
-    mutating func reset() { activeBySession.removeAll() }
+    mutating func reset() {
+        activeBySession.removeAll()
+        latestBySession.removeAll()
+    }
 }
 
 struct RemoteReceiveActivationSnapshot: Equatable, Sendable {
@@ -507,6 +530,10 @@ struct RxConsistencySnapshot: Equatable, Sendable {
 }
 
 struct RxDivergenceDiagnostic: Equatable, Sendable {
+    let observedAt: Date
+    let runtimeGeneration: Int
+    let receiveGeneration: Int
+    let appLifecycleState: String
     let event: String
     let elapsedMs: Int
     let roomConnectionState: String

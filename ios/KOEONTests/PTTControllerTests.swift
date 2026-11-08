@@ -1,6 +1,121 @@
 import AVFoundation
 import XCTest
+import LiveKit
 @testable import KOEON
+
+// Opt-in SFU interoperability probe. Apple PushToTalk is NOT exercised here.
+private final class RtpLabAudioProbe: NSObject, AudioCustomProcessingDelegate, AudioRenderer, RoomDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var phase = 0.0
+    private var rate = 48000.0
+    private var nonzero = 0
+    private var subscribed = 0
+    var counts: (Int, Int) { lock.withLock { (nonzero, subscribed) } }
+    func audioProcessingInitialize(sampleRate: Int, channels: Int) { lock.withLock { rate = Double(sampleRate) } }
+    func audioProcessingRelease() {}
+    func audioProcessingProcess(audioBuffer: LKAudioBuffer) {
+        lock.withLock {
+            for frame in 0..<audioBuffer.frames {
+                let sample = Float(sin(phase) * 6000)
+                phase += 2 * .pi * 660 / rate
+                for channel in 0..<audioBuffer.channels { audioBuffer.rawBuffer(forChannel: channel)[frame] = sample }
+            }
+        }
+    }
+    func render(pcmBuffer: AVAudioPCMBuffer) {
+        lock.withLock {
+            if let data = pcmBuffer.floatChannelData {
+                for i in 0..<Int(pcmBuffer.frameLength) where abs(data[0][i]) > 0.01 { nonzero += 1 }
+            } else if let data = pcmBuffer.int16ChannelData {
+                for i in 0..<Int(pcmBuffer.frameLength) where abs(Int(data[0][i])) > 300 { nonzero += 1 }
+            }
+        }
+    }
+    func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) {
+        guard let track = publication.track as? RemoteAudioTrack else { return }
+        track.add(audioRenderer: self)
+        lock.withLock { subscribed += 1 }
+        Task { try? await room.localParticipant.publish(data: Data("ready".utf8), options: DataPublishOptions(topic: "rtp-lab", reliable: true)) }
+    }
+}
+
+@MainActor
+private final class RtpLabGateway: MicrophoneControlling, PttControlPublishing {
+    let room: Room
+    init(room: Room) { self.room = room }
+    func setMicrophoneEnabled(_ enabled: Bool) async throws { _ = try await room.localParticipant.setMicrophone(enabled: enabled) }
+    func publishStart(leaseId: String) async throws -> PttStartPublishDiagnostics {
+        try await room.localParticipant.publish(data: Data("start".utf8), options: DataPublishOptions(topic: "rtp-lab-control", reliable: true))
+        return .init()
+    }
+    func publishEnd(leaseId: String) async throws {
+        try await room.localParticipant.publish(data: Data("end".utf8), options: DataPublishOptions(topic: "rtp-lab-control", reliable: true))
+    }
+}
+
+@MainActor
+final class LiveKitRtpLabTests: XCTestCase {
+    func testNativeOpusInteroperability() async throws {
+        guard ProcessInfo.processInfo.environment["KOEON_RTP_LAB"] == "1" else {
+            throw XCTSkip("Opt-in local SFU probe")
+        }
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("This test must not run on a physical device")
+        #endif
+        let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18766/token/ios27")!)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+        let token = try XCTUnwrap(object["token"])
+        let probe = RtpLabAudioProbe()
+        let manager = AudioManager.shared
+        let oldProcessor = manager.capturePostProcessingDelegate
+        let oldAutomatic = manager.audioSession.isAutomaticConfigurationEnabled
+        let oldAvailability = manager.engineAvailability
+        manager.audioSession.isAutomaticConfigurationEnabled = true
+        try manager.setEngineAvailability(.default)
+        manager.capturePostProcessingDelegate = probe
+        let room = Room(delegate: probe, roomOptions: RoomOptions(
+            defaultAudioPublishOptions: AudioPublishOptions(encoding: AudioEncoding(maxBitrate: 12000), dtx: false, red: true)))
+        do {
+            try await room.connect(url: "ws://127.0.0.1:19080", token: token)
+            let gateway = RtpLabGateway(room: room)
+            let events = EventLog()
+            let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+                microphone: gateway, cuePlayer: CueMock(events: events), control: gateway,
+                rtpReleaseHangoverMilliseconds: 180, onUpdate: { _ in })
+            await controller.pttDown()
+            let started = await controller.currentSnapshot()
+            XCTAssertEqual(started.state, .transmitting)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(90))
+            while probe.counts.0 < 16000, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            XCTAssertGreaterThan(probe.counts.0, 16000)
+            XCTAssertGreaterThan(probe.counts.1, 0)
+            // Keep transmitting while the peer disconnects, rejoins and sends again.
+            try await Task.sleep(for: .seconds(12))
+            await controller.pttUp()
+            let ended = await controller.currentSnapshot()
+            XCTAssertEqual(ended.state, .idle)
+            let result: [String: Any] = ["role": "ios27", "nonzeroSamples": probe.counts.0,
+                "subscribedTracks": probe.counts.1, "codecTargetBps": 12000]
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:18766/result")!)
+            request.httpMethod = "POST"
+            request.httpBody = try JSONSerialization.data(withJSONObject: result)
+            _ = try await URLSession.shared.data(for: request)
+            try await Task.sleep(for: .seconds(5))
+        } catch {
+            await room.disconnect()
+            manager.capturePostProcessingDelegate = oldProcessor
+            manager.audioSession.isAutomaticConfigurationEnabled = oldAutomatic
+            try? manager.setEngineAvailability(oldAvailability)
+            throw error
+        }
+        await room.disconnect()
+        manager.capturePostProcessingDelegate = oldProcessor
+        manager.audioSession.isAutomaticConfigurationEnabled = oldAutomatic
+        try? manager.setEngineAvailability(oldAvailability)
+    }
+}
 
 @MainActor
 final class PttInitializationGateTests: XCTestCase {
@@ -75,6 +190,40 @@ final class PttInitializationGateTests: XCTestCase {
 
 @MainActor
 final class PTTControllerTests: XCTestCase {
+    func testRtpTailKeepsMicUntilBoundedReleaseAndSafetyCanInterrupt() async throws {
+        for interrupt in [false, true] {
+            let events = EventLog()
+            let clock = RtpTailGateClock()
+            let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+                microphone: MicrophoneMock(events: events), cuePlayer: CueMock(events: events),
+                control: ControlMock(events: events), rtpReleaseHangoverMilliseconds: 180,
+                clock: clock, onUpdate: { _ in })
+            await controller.pttDown()
+            let release = Task { await controller.pttUp() }
+            for _ in 0..<100 where !clock.started { try await Task.sleep(for: .milliseconds(1)) }
+            XCTAssertTrue(clock.started)
+            let before = await events.values()
+            XCTAssertFalse(before.contains("mic:off"))
+            if interrupt { await controller.stopForSafety(reason: "interruption during RTP tail") }
+            clock.allow()
+            await release.value
+            let after = await events.values()
+            XCTAssertTrue(after.contains("mic:off"))
+            XCTAssertEqual(after.filter { $0 == "release" }.count, 1)
+        }
+    }
+
+    func testCarAudioClassificationAndDisconnectSafety() {
+        let route = AudioSessionController.mapPortType(.carAudio)
+        XCTAssertEqual(route, .car)
+        XCTAssertTrue(AudioSessionController.lostExternalInputRoute(previous: route, reason: .oldDeviceUnavailable))
+        XCTAssertFalse(AudioSessionController.lostExternalInputRoute(previous: route, reason: .categoryChange))
+        XCTAssertFalse(AudioSessionController.lostExternalInputRoute(previous: .speaker, reason: .oldDeviceUnavailable))
+        for external: AudioRouteKind in [.bluetooth, .wired, .usb] {
+            XCTAssertTrue(AudioSessionController.lostExternalInputRoute(previous: external, reason: .oldDeviceUnavailable))
+        }
+    }
+
     func testC1C2C8SpeakerBluetoothSpeakerPolicySurvivesFiftySwitches() {
         for _ in 0 ..< 50 {
             XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: .speaker))
@@ -143,7 +292,7 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertEqual(machine.snapshot.lastRecoveryError, "route unavailable")
     }
 
-    func testGrantPlaysStartCueBeforeEnablingMicrophoneAndReleaseOrdersEndCue() async throws {
+    func testGrantEnablesRtpBeforeSpeakCueAndReleaseOrdersEndCue() async throws {
         let events = EventLog()
         let floor = FloorMock(events: events)
         let microphone = MicrophoneMock(events: events)
@@ -162,7 +311,7 @@ final class PTTControllerTests: XCTestCase {
         await controller.pttDown()
         let startedEvents = await events.values()
         let transmitting = await controller.currentSnapshot()
-        XCTAssertEqual(Array(startedEvents.prefix(4)), ["acquire", "control:start", "cue:start", "mic:on"])
+        XCTAssertEqual(Array(startedEvents.prefix(4)), ["acquire", "control:start", "mic:on", "cue:start"])
         XCTAssertEqual(transmitting.state, .transmitting)
 
         await controller.pttUp()
@@ -202,7 +351,7 @@ final class PTTControllerTests: XCTestCase {
 
         await controller.activatePrearmedTransmission()
         values = await events.values()
-        XCTAssertEqual(values, ["acquire", "control:start", "mic:on"])
+        XCTAssertEqual(values, ["acquire", "control:start", "mic:on", "cue:start"])
         let transmittingSnapshot = await controller.currentSnapshot()
         XCTAssertEqual(transmittingSnapshot.state, .transmitting)
         XCTAssertGreaterThan(transmittingSnapshot.attemptGeneration, 0)
@@ -1036,6 +1185,121 @@ final class PTTControllerTests: XCTestCase {
 }
 
 final class InputGainProcessorTests: XCTestCase {
+    func testManualHeadsetGainSupports24DbAndPersistsSeparatelyFromAuto() {
+        let suite = "gain-persistence-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let gain = InputGainProcessor(defaults: defaults)
+        XCTAssertEqual(gain.snapshot().mode, .auto)
+        gain.setRoute("Bluetooth")
+        gain.setMode(.manual)
+        gain.setManualGainDb(24)
+        gain.beginTransmission()
+        var samples: [Float] = [100, -100]
+        samples.withUnsafeMutableBufferPointer { buffer in
+            gain.processFloatS16(channels: 1, frames: buffer.count) { _ in buffer.baseAddress! }
+        }
+        XCTAssertEqual(gain.snapshot().effectiveGainDb, 24)
+        XCTAssertEqual(samples[0], 100 * powf(10, 24 / 20) * 32_767 / 32_768, accuracy: 0.1)
+        XCTAssertEqual(samples[0], -samples[1], accuracy: 0.1)
+        gain.endTransmission()
+        let restored = InputGainProcessor(defaults: defaults)
+        restored.setRoute("Bluetooth")
+        XCTAssertEqual(restored.snapshot().mode, .manual)
+        XCTAssertEqual(restored.snapshot().effectiveGainDb, 24)
+        restored.setRoute("Built-in")
+        XCTAssertEqual(restored.snapshot().manualGainDb, 0)
+        restored.setMode(.auto)
+        XCTAssertEqual(restored.snapshot().effectiveGainDb, 0)
+        XCTAssertEqual(InputGainProcessor.recommendedGain(speechRmsDbfs: -50), 12)
+        restored.setMode(.off)
+        XCTAssertEqual(InputGainProcessor(defaults: defaults).snapshot().mode, .off)
+    }
+
+    func testManual24DbStillLimitsPeaksAndDoesNotExpandAutoRange() {
+        withCapture { gain, _ in
+            gain.setMode(.manual)
+            gain.setManualGainDb(30)
+            gain.beginTransmission()
+            var samples: [Float] = [32_000, -32_000]
+            samples.withUnsafeMutableBufferPointer { buffer in
+                gain.processFloatS16(channels: 1, frames: buffer.count) { _ in buffer.baseAddress! }
+            }
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 24)
+            XCTAssertLessThan(abs(samples[0]), 0.9 * 32_768)
+            XCTAssertEqual(samples[0], -samples[1], accuracy: 0.1)
+            XCTAssertEqual(gain.snapshot().limiterHits, 2)
+            gain.endTransmission()
+            gain.setMode(.auto)
+            for _ in 0..<30 {
+                gain.beginTransmission()
+                feed(gain, value: 100, count: 9_600)
+                gain.endTransmission()
+            }
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 12)
+        }
+    }
+
+    func testLimiterDominatedCompletedUtteranceReducesAutoGain() {
+        withCapture { gain, _ in
+            gain.setRoute("Bluetooth")
+            gain.setMode(.auto)
+            gain.beginTransmission()
+            feed(gain, value: 32_000, count: 9_600)
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 0)
+            XCTAssertEqual(gain.snapshot().limiterHits, 9_600)
+            gain.endTransmission()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, -1)
+            gain.endTransmission()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, -1)
+            gain.setRoute("Built-in")
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            gain.setRoute("Bluetooth")
+            XCTAssertEqual(gain.snapshot().autoTrimDb, -1)
+        }
+    }
+
+    func testSparseClippedPeakDoesNotRaiseAutoDespiteQuietAverage() {
+        withCapture { gain, _ in
+            gain.setMode(.auto)
+            gain.beginTransmission()
+            feed(gain, value: 1_000, count: 9_599)
+            feed(gain, value: 32_000, count: 1)
+            XCTAssertLessThan(gain.snapshot().rmsDbfs!, -24)
+            gain.endTransmission()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, -1)
+        }
+    }
+
+    func testCancelledOverloadedUtteranceDoesNotTrainAuto() {
+        withCapture { gain, _ in
+            gain.setMode(.auto)
+            gain.beginTransmission()
+            feed(gain, value: 32_000, count: 9_600)
+            gain.endTransmission(learn: false)
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            XCTAssertEqual(gain.snapshot().lastLearningDecision, "CANCELLED")
+        }
+    }
+
+    func testInitialMicrophoneSelectionBeforeFirstSampleCanLearnItsOwnProfile() {
+        withCapture { gain, _ in
+            gain.setRoute("ios|Bluetooth|unavailable")
+            gain.setMode(.auto)
+            gain.beginTransmission()
+            // Apple PTT activation can reveal the actual input only after DOWN.
+            gain.setRoute("ios|BluetoothHFP|Test headset")
+            feed(gain, value: 2_000, count: 9_600)
+            gain.endTransmission()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 1)
+            XCTAssertEqual(gain.snapshot().lastLearningDecision, "INCREASED")
+            XCTAssertEqual(gain.snapshot().lastCompletedSampleCount, 9_600)
+            gain.setRoute("ios|Bluetooth|unavailable")
+            XCTAssertEqual(gain.snapshot().lastLearningDecision, "INCREASED")
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+        }
+    }
+
     func testRouteChangeCancelsCalibrationAndUsesNewMicrophoneGain() {
         withCapture { gain, capture in
             gain.setMode(.manual)
@@ -1062,6 +1326,7 @@ final class InputGainProcessorTests: XCTestCase {
             feed(gain, value: 2_000, count: 9_600)
             capture.discard(learnFromCapture: true)
             XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            XCTAssertEqual(gain.snapshot().lastLearningDecision, "ROUTE_CHANGED")
             gain.setRoute("Built-in")
             XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
         }
@@ -3043,6 +3308,21 @@ private actor CueMock: PttCuePlaying {
     func playEnd() async throws {
         await events.append("cue:end")
         if failEnd { throw MockError.expected }
+    }
+}
+
+private final class RtpTailGateClock: PTTClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var entered = false
+    private var permitted = false
+    var started: Bool { lock.withLock { entered } }
+    var now: Date { Date() }
+    func allow() { lock.withLock { permitted = true } }
+    func sleep(milliseconds: Int) async throws {
+        if milliseconds == 180 {
+            lock.withLock { entered = true }
+            while !lock.withLock({ permitted }) { try await Task.sleep(for: .milliseconds(1)) }
+        } else { try await Task.sleep(for: .seconds(3600)) }
     }
 }
 

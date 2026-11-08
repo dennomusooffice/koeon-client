@@ -4,6 +4,56 @@ import PushToTalk
 
 @MainActor
 final class RxAudioControllerTests: XCTestCase {
+    func testRoomMixedPcmCannotCompleteUnsubscribedReceiveOrSuppressRecovery() throws {
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            clock: SuspendingClock(), onUpdate: { _ in })
+        controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        let started = try XCTUnwrap(controller.currentSnapshot().rxStartedAt)
+        XCTAssertFalse(controller.handleLiveKitRemotePcm(at: started, subscriptionActive: false))
+        XCTAssertNil(controller.currentSnapshot().rxFirstPcmAt,
+            "Unbound room-mix callbacks must not trip the no-PCM recovery early exit")
+        var consistency = RxConsistencyGuard()
+        consistency.updateValidatedRx(active: true, sessionId: "session-a",
+            generation: controller.currentSnapshot().generation, participantResolved: true,
+            trackSubscribed: false, at: started)
+        XCTAssertEqual(consistency.evaluate(at: started.addingTimeInterval(0.25)).recoveryLevel, 1)
+        XCTAssertTrue(controller.handleLiveKitRemotePcm(at: started.addingTimeInterval(0.3), subscriptionActive: true))
+        XCTAssertNotNil(controller.currentSnapshot().rxFirstPcmAt)
+    }
+
+    func testQueuedPcmFromPreviousReceiveCannotCompleteNewGeneration() throws {
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            clock: SuspendingClock(), onUpdate: { _ in })
+        controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        let started = try XCTUnwrap(controller.currentSnapshot().rxStartedAt)
+        XCTAssertFalse(controller.handleLiveKitRemotePcm(at: started.addingTimeInterval(-0.01), subscriptionActive: true))
+        XCTAssertNil(controller.currentSnapshot().rxFirstPcmAt)
+        controller.reset()
+        XCTAssertFalse(controller.handleLiveKitRemotePcm(at: started.addingTimeInterval(1), subscriptionActive: true))
+    }
+
+    #if DEBUG && targetEnvironment(simulator)
+    func testOptInForegroundSimulatorInitializesWithoutApplePttOrPushToken() async throws {
+        let defaults = UserDefaults(suiteName: "koeon.simulator-init-test")!
+        defer { defaults.removePersistentDomain(forName: "koeon.simulator-init-test") }
+        let controller = ApplePushToTalkController(defaults: defaults, foregroundSimulatorRequested: true)
+        var tokens = 0
+        controller.onEphemeralToken = { _ in tokens += 1; return true }
+        var begins = 0
+        controller.onBeginTransmitting = { _ in begins += 1 }
+        try await controller.initialize()
+        XCTAssertEqual(controller.state, .ready)
+        XCTAssertEqual(controller.tokenRegistrationState, "SIMULATOR_FOREGROUND_NO_APNS")
+        XCTAssertNil(controller.channelUUID)
+        controller.requestBeginTransmitting()
+        XCTAssertEqual(begins, 0, "A lab adapter must not allow transmit before channel authorization")
+        XCTAssertEqual(tokens, 0)
+        XCTAssertFalse(controller.requestRuntimeRestoreForIncomingPush())
+        let production = ApplePushToTalkController(defaults: defaults, foregroundSimulatorRequested: false)
+        XCTAssertFalse(production.isForegroundSimulatorSession)
+    }
+    #endif
+
     func testBufferedSpeechKeepsAppleParticipantUntilActualPlayoutDrains() async throws {
         let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(), onUpdate: { _ in })
         var start = event(type: "start", sequence: 1)
@@ -622,6 +672,76 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertEqual(guardState.snapshot.recoveryAttempts, 5)
     }
 
+    func testColdRtpRebindDoesNotWaitForLegacyDiscoveryButTeardownDoes() {
+        for level in 1...5 {
+            XCTAssertEqual(shouldDeferRxRecovery(runtimeRestoring: false, incomingWakePending: false,
+                legacyDiscoveryPending: true, nextRecoveryLevel: level), level >= 3)
+            XCTAssertFalse(shouldDeferRxRecovery(runtimeRestoring: false, incomingWakePending: false,
+                legacyDiscoveryPending: false, nextRecoveryLevel: level))
+            XCTAssertTrue(shouldDeferRxRecovery(runtimeRestoring: true, incomingWakePending: false,
+                legacyDiscoveryPending: false, nextRecoveryLevel: level))
+            XCTAssertTrue(shouldDeferRxRecovery(runtimeRestoring: false, incomingWakePending: true,
+                legacyDiscoveryPending: false, nextRecoveryLevel: level))
+        }
+    }
+
+    func testDelayedColdWakeDoesNotExhaustRecoveryLadderIn38Milliseconds() throws {
+        let started = Date(timeIntervalSince1970: 1_000)
+        var guardState = RxConsistencyGuard()
+        guardState.updateValidatedRx(active: true, sessionId: "session-a", generation: 9,
+            participantResolved: true, trackSubscribed: true, at: started)
+        // Field trace: discovery/restore defers the first watchdog until 4324ms.
+        XCTAssertEqual(guardState.evaluate(at: started.addingTimeInterval(4.324)).recoveryLevel, 1)
+        for elapsed in [4.339, 4.348, 4.356, 4.362] {
+            XCTAssertNil(guardState.evaluate(at: started.addingTimeInterval(elapsed)).recoverySessionId)
+        }
+        XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(guardState.nextDeadline()), started.addingTimeInterval(4.824))
+        XCTAssertEqual(guardState.handleRemotePcm(sessionId: "session-a", generation: 9,
+            at: started.addingTimeInterval(4.5)), .recovered)
+        XCTAssertNil(guardState.evaluate(at: started.addingTimeInterval(8)).recoverySessionId)
+    }
+
+    func testRecoveryCompletionGraceRejectsStaleGenerationAndStaysBounded() {
+        let started = Date(timeIntervalSince1970: 1_000)
+        var guardState = RxConsistencyGuard()
+        guardState.updateValidatedRx(active: true, sessionId: "session-a", generation: 9,
+            participantResolved: true, trackSubscribed: true, at: started)
+        XCTAssertEqual(guardState.evaluate(at: started.addingTimeInterval(0.25)).recoveryLevel, 1)
+        guardState.recoveryDidComplete(sessionId: "session-a", generation: 9, at: started.addingTimeInterval(2))
+        // A long async subscription operation must still get its full grace.
+        XCTAssertNil(guardState.evaluate(at: started.addingTimeInterval(2.49)).recoverySessionId)
+        guardState.recoveryDidComplete(sessionId: "session-a", generation: 8, at: started.addingTimeInterval(100))
+        guardState.recoveryDidComplete(sessionId: "other", generation: 9, at: started.addingTimeInterval(100))
+        for (time, level) in [(2.5, 2), (3.25, 3), (4.25, 4), (5.75, 5)] {
+            guardState.updateValidatedRx(active: true, sessionId: "session-a", generation: 9,
+                participantResolved: true, trackSubscribed: true, at: started.addingTimeInterval(time))
+            XCTAssertEqual(guardState.evaluate(at: started.addingTimeInterval(time)).recoveryLevel, level)
+        }
+        XCTAssertNil(guardState.nextDeadline())
+        guardState.updateValidatedRx(active: true, sessionId: "session-a", generation: 10,
+            participantResolved: true, trackSubscribed: true, at: started.addingTimeInterval(6))
+        XCTAssertEqual(guardState.evaluate(at: started.addingTimeInterval(6.25)).recoveryLevel, 1)
+    }
+
+    func testVerifiedRtpStartMatchesIncomingWithoutLegacyDescriptor() throws {
+        let incoming = PttIncomingEvent(channelId: "stage", speakerUserId: "staff-a", speakerSessionId: "session-a",
+            speakerDisplayName: "Staff A", leaseId: "lease-a", acquiredAt: Date())
+        let start = event(type: "start", sequence: 1)
+        XCTAssertTrue(incomingMatchesStart(incoming, start))
+        XCTAssertFalse(incomingMatchesBufferedStart(incoming, start), "RTP must not masquerade as legacy buffered audio")
+        XCTAssertFalse(incomingMatchesStart(incoming, nil))
+        XCTAssertFalse(incomingMatchesStart(incoming, event(type: "end", sequence: 2)))
+        XCTAssertFalse(incomingMatchesStart(incoming, event(type: "start", lease: "old-lease", sequence: 1)))
+        for key in ["channelId", "speakerUserId", "sessionId"] {
+            let data = try JSONEncoder().encode(start)
+            var value = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            value[key] = "other"
+            let wrong = try JSONDecoder().decode(PttControlEvent.self, from: JSONSerialization.data(withJSONObject: value))
+            XCTAssertFalse(incomingMatchesStart(incoming, wrong))
+        }
+    }
+
     func testB8ControlStartWithoutParticipantIsReconcilingButNotFalselyValidated() {
         let started = Date(timeIntervalSince1970: 2_000)
         var guardState = RxConsistencyGuard()
@@ -651,6 +771,27 @@ final class RxAudioControllerTests: XCTestCase {
             )
             XCTAssertTrue(guardState.snapshot.validatedRemoteRxActive)
             XCTAssertFalse(guardState.snapshot.rxPathReconciliationActive)
+        }
+    }
+
+    func testRecoveryIsReportedOnlyForFirstPcmOfEachGeneration() {
+        var guardState = RxConsistencyGuard()
+        let started = Date(timeIntervalSince1970: 1_000)
+        for generation in [1, 2] {
+            let at = started.addingTimeInterval(Double(generation * 10))
+            guardState.updateValidatedRx(active: true, sessionId: "session-a", generation: generation,
+                participantResolved: true, trackSubscribed: true, at: at)
+            XCTAssertEqual(guardState.evaluate(at: at.addingTimeInterval(0.3)).signals.map(\.event),
+                ["rx_pcm_timeout"])
+            XCTAssertEqual(guardState.handleRemotePcm(sessionId: "old", generation: generation - 1, at: at),
+                .rejected)
+            for frame in 0..<100 {
+                XCTAssertEqual(guardState.handleRemotePcm(sessionId: "session-a", generation: generation,
+                    at: at.addingTimeInterval(0.4 + Double(frame) * 0.02)),
+                    frame == 0 ? .recovered : .observed)
+            }
+            XCTAssertEqual(guardState.snapshot.recoveryAttempts, 1)
+            XCTAssertTrue(guardState.evaluate(at: at.addingTimeInterval(5)).signals.isEmpty)
         }
     }
 
@@ -981,6 +1122,23 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertTrue(gate.acceptsDiscard(sessionId: "session-a", generation: 2))
         XCTAssertTrue(gate.completeDiscard(sessionId: "session-a", generation: 2))
         XCTAssertFalse(gate.acceptsDiscard(sessionId: "session-a", generation: 2))
+    }
+
+    func testLateSubscribeCompletionCannotReplaceNewerReceiveGeneration() {
+        var gate = RemoteAudioSubscriptionGenerationGate()
+        gate.activate(sessionId: "session-a", generation: 2)
+        gate.activate(sessionId: "session-a", generation: 1)
+        XCTAssertTrue(gate.isActive(sessionId: "session-a", generation: 2))
+        XCTAssertFalse(gate.isActive(sessionId: "session-a", generation: 1))
+        XCTAssertTrue(gate.completeDiscard(sessionId: "session-a", generation: 2))
+        gate.activate(sessionId: "session-a", generation: 1)
+        XCTAssertFalse(gate.isActive(sessionId: "session-a", generation: 1))
+        // Explicit same-generation recovery remains legal after a decoder flush.
+        gate.activate(sessionId: "session-a", generation: 2)
+        XCTAssertTrue(gate.isActive(sessionId: "session-a", generation: 2))
+        gate.reset()
+        gate.activate(sessionId: "session-a", generation: 1)
+        XCTAssertTrue(gate.isActive(sessionId: "session-a", generation: 1))
     }
 
     func testActiveSpeakerWithoutValidatedStartIsIgnored() {

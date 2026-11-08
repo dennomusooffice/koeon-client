@@ -59,8 +59,29 @@ enum IncomingPushRuntimeAction: String, Sendable {
     case resumeImmediately = "RESUME_IMMEDIATELY"
 }
 
+func isConfirmedDeviceCredentialFailure(_ error: Error) -> Bool {
+    guard case let APIClientError.http(status, body) = error, status == 401,
+          let data = body.data(using: .utf8),
+          let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let detail = envelope["error"] as? [String: Any],
+          let code = detail["code"] as? String else { return false }
+    return ["DEVICE_CREDENTIAL_INVALID", "DEVICE_CREDENTIAL_EXPIRED"].contains(code)
+}
+
+func shouldRestoreExpiredBackendSession(
+    _ error: Error, requestedSessionId: String, currentSessionId: String?, poweredOn: Bool
+) -> Bool {
+    guard poweredOn, requestedSessionId == currentSessionId,
+          case let APIClientError.http(status, body) = error, status == 401,
+          let data = body.data(using: .utf8),
+          let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let detail = envelope["error"] as? [String: Any] else { return false }
+    return detail["code"] as? String == "SESSION_INVALID"
+}
+
 enum RuntimeRestoreReason: String, Sendable {
     case rxSelfHeal = "RX_SELF_HEAL"
+    case backendSessionExpired = "BACKEND_SESSION_EXPIRED"
     case incomingPushColdWake = "INCOMING_PUSH_COLD_WAKE"
     case foregroundRecovery = "FOREGROUND_RECOVERY"
     case systemChannelRestoration = "SYSTEM_CHANNEL_RESTORATION"
@@ -93,7 +114,7 @@ func runtimeRestoreEntryDecision(
 ) -> RuntimeRestoreEntryDecision {
     // Once the Apple incoming-Push path has classified this runtime as a cold
     // wake, a stale SDK `.connected` snapshot must not cancel the fresh resume.
-    if runtimeDirty || reason == .incomingPushColdWake || reason == .rxSelfHeal { return .performFreshResume }
+    if runtimeDirty || reason == .incomingPushColdWake || reason == .rxSelfHeal || reason == .backendSessionExpired { return .performFreshResume }
     return hasJoinedRuntime && connectionState == .connected
         ? .useConnectedRuntime
         : .performFreshResume
@@ -151,9 +172,24 @@ func incomingPushRuntimeAction(
 
 }
 
+// Legacy discovery is transport detection, not ownership of the RTP path.
+// Rebinding/subscribing is safe while it runs; teardown must wait for it.
+func shouldDeferRxRecovery(
+    runtimeRestoring: Bool,
+    incomingWakePending: Bool,
+    legacyDiscoveryPending: Bool,
+    nextRecoveryLevel: Int
+) -> Bool {
+    runtimeRestoring || incomingWakePending || (legacyDiscoveryPending && nextRecoveryLevel >= 3)
+}
+
 func incomingMatchesBufferedStart(_ incoming: PttIncomingEvent, _ event: PttControlEvent?) -> Bool {
+    event?.bufferedGenerationId != nil && incomingMatchesStart(incoming, event)
+}
+
+func incomingMatchesStart(_ incoming: PttIncomingEvent, _ event: PttControlEvent?) -> Bool {
     guard let event else { return false }
-    return event.type == "start" && event.bufferedGenerationId != nil &&
+    return event.type == "start" &&
         event.channelId == incoming.channelId && event.sessionId == incoming.speakerSessionId &&
         event.speakerUserId == incoming.speakerUserId && event.leaseId == incoming.leaseId
 }
@@ -541,12 +577,13 @@ final class IntercomSessionController: ObservableObject {
     private var releaseGeneration = 0
     private var releaseFloorCompleted = false
     private var releaseAppleCompleted = false
+    private var pendingAppAppleStop = false
     private var releaseCleanupTask: Task<Void, Never>?
     private var incomingWakeRecoveryTask: Task<Void, Never>?
     private var bufferedResolveTask: Task<Void, Never>?
     private var bufferedResolveAttemptGeneration = 0
     private var completedBufferedLeases: [String] = []
-    private var receivedBufferedStart: (event: PttControlEvent, runtime: Int)?
+    private var receivedControlStart: (event: PttControlEvent, runtime: Int)?
     private var bufferedResolveResult = "NOT_STARTED"
     private var bufferedResolveAttempts = 0
 
@@ -649,9 +686,19 @@ final class IntercomSessionController: ObservableObject {
             if event.type == "start" { self?.rxReadyStartReceivedAt = Date() }
             if event.type == "end" { self?.bufferedReceiver?.noteControlEnd() }
             self?.rx?.handleControl(event, senderSessionId: senderSessionId)
-            if let self, event.type == "start", event.bufferedGenerationId != nil,
-               event.sessionId == senderSessionId, self.rx?.currentSnapshot().leaseId == event.leaseId {
-                self.receivedBufferedStart = (event, self.runtimeLiveness.generation)
+            if event.type == "start", event.bufferedGenerationId == nil,
+               event.sessionId == senderSessionId, let self,
+               self.rx?.currentSnapshot().leaseId == event.leaseId,
+               self.rx?.currentSnapshot().sessionId == event.sessionId {
+                // Validated RTP START ends legacy HTTP discovery immediately.
+                self.bufferedResolveResult = "LIVEKIT_RTP"
+                self.bufferedResolveTask?.cancel()
+            }
+
+            if let self, event.type == "start",
+               event.sessionId == senderSessionId, self.rx?.currentSnapshot().leaseId == event.leaseId,
+               self.rx?.currentSnapshot().sessionId == event.sessionId {
+                self.receivedControlStart = (event, self.runtimeLiveness.generation)
             }
             if self?.audio.pushToTalkAudioSessionActive == true {
                 self?.rxReadyAppleAudioReadyAt = Date()
@@ -662,8 +709,11 @@ final class IntercomSessionController: ObservableObject {
             self?.handleRemoteMediaActivity(sessionId: senderSessionId, active: active)
         }
         room.onRemotePcm = { [weak self] timestamp in
-            guard let self, self.rxRecoveryEvent?.bufferedGenerationId == nil else { return }
-            self.rx?.handleRemotePcm(at: timestamp)
+            guard let self, self.rxRecoveryEvent?.bufferedGenerationId == nil,
+                  let rx = self.rx, let sessionId = rx.currentSnapshot().sessionId else { return }
+            guard rx.handleLiveKitRemotePcm(at: timestamp, subscriptionActive:
+                self.room.isRemoteAudioSubscriptionActive(sessionId: sessionId,
+                    generation: rx.currentSnapshot().generation)) else { return }
             self.remoteReceive?.handleRemotePcm()
             let currentRx = self.rx?.currentSnapshot() ?? RxSnapshot()
             self.applyRxSnapshot(currentRx)
@@ -713,8 +763,8 @@ final class IntercomSessionController: ObservableObject {
                    ) {
                     self.resetPttRequestGate()
                     self.pushToTalk.stopTransmitting()
-                    await self.ptt?.stopForSafety(reason: "Headset route lost; TX stopped before microphone fallback.")
-                    self.lastError = "Headset disconnected during TX. Press PTT again to use the new route."
+                    await self.ptt?.stopForSafety(reason: "External audio route lost; TX stopped before microphone fallback.")
+                    self.lastError = "External audio device disconnected during TX. Press PTT again to use the new route."
                 }
             }
         }
@@ -745,7 +795,7 @@ final class IntercomSessionController: ObservableObject {
             self.roomConnectionStateAtIncomingPush = self.room.connectionState.rawValue
             self.rxWakeSource = runtimeAction.rawValue
             self.rxPath = runtimeAction == .useWarmRuntime ? "warm" : "cold_resume"
-            self.rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
+            self.rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: false)
             self.incomingPushRxGeneration = self.rx?.currentSnapshot().generation
             self.scheduleIncomingPushRuntimeRecovery(runtimeAction, generation: wakeGeneration)
             self.resolveIncomingBufferedAudio(incoming)
@@ -832,6 +882,7 @@ final class IntercomSessionController: ObservableObject {
         }
         pushToTalk.onEndTransmitting = { [weak self] source in
             guard let self else { return }
+            self.pendingAppAppleStop = false
             self.appleLastEndAt = Date()
             self.appleLastEndSource = source
             let actions = self.pttRequestGate.didEnd()
@@ -966,17 +1017,33 @@ final class IntercomSessionController: ObservableObject {
     }
 
     func loadFixture() async {
-        if restoreTask != nil { return }
-        guard fixture == nil else { return }
+        guard restoreTask == nil, fixture == nil, !isLoading else { return }
+        guard let credential = credentialStore.read() else {
+            enrollmentRequired = true
+            operationalState = .unenrolled
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         do {
-            applyIdentity(try await api.me())
-        } catch {
-            try? credentialStore.clear()
-            enrollmentRequired = true
-            operationalState = .unenrolled
+            let identity = try await api.me()
+            guard !Task.isCancelled, credentialStore.read() == credential else { return }
+            applyIdentity(identity)
             lastError = nil
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError),
+                  credentialStore.read() == credential else { return }
+            if isConfirmedDeviceCredentialFailure(error) {
+                try? credentialStore.clear()
+                enrollmentRequired = true
+                operationalState = .unenrolled
+                lastError = nil
+            } else {
+                // Connectivity and service failures must not revoke local enrollment.
+                enrollmentRequired = false
+                operationalState = .error
+                lastError = "接続できませんでした。通信状態を確認して再試行してください。"
+            }
         }
     }
 
@@ -1144,7 +1211,7 @@ final class IntercomSessionController: ObservableObject {
             appliedAudioPublishProfile = connectionAudioPublishProfile
             if let incoming = pushToTalk.currentIncomingEvent(channelId: response.channel.id),
                !completedBufferedLeases.contains(incoming.leaseId) {
-                rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
+                rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: false)
             }
             await audio.prepareForIntercom(canPublish: response.canPublish)
             try await audio.beginPushToTalkManagedSession()
@@ -1169,27 +1236,16 @@ final class IntercomSessionController: ObservableObject {
             guard let deviceId = response.deviceId, !deviceId.isEmpty else {
                 throw APIClientError.invalidResponse
             }
-            let bufferedTransmitter = BufferedAudioTransmitter(
-                api: api,
-                capture: bufferedCapture,
-                channelId: response.channel.id,
-                sessionId: response.sessionId,
-                deviceId: deviceId,
-                onFailure: { [weak self] code in
-                    Task { @MainActor in
-                        await self?.ptt?.stopForSafety(reason: "Buffered TX failed safely: \(code)")
-                        self?.lastError = "Buffered TX failed safely: \(code)"
-                    }
-                }
-            )
-            self.bufferedTransmitter = bufferedTransmitter
+            // Standard TX uses LiveKit Opus; HTTP receiver remains for older peers.
+            self.bufferedTransmitter = nil
             let controller = PTTController(
                 role: response.user.role,
                 floor: FloorClient(sessionId: response.sessionId, api: api),
                 microphone: room,
                 cuePlayer: cuePlayer,
                 control: room,
-                bufferedAudio: bufferedTransmitter
+                bufferedAudio: nil,
+                rtpReleaseHangoverMilliseconds: 180
             ) { [weak self] snapshot in
                 Task { @MainActor in
                     guard let self, self.runtimeLiveness.generation == runtimeGeneration else { return }
@@ -1582,10 +1638,10 @@ final class IntercomSessionController: ObservableObject {
                 }
                 if let incoming = self.pushToTalk.currentIncomingEvent(channelId: self.joinedSession?.channel.id ?? ""),
                    self.room.connectionState == .connected,
-                   ((self.receivedBufferedStart?.runtime == self.runtimeLiveness.generation &&
-                     incomingMatchesBufferedStart(incoming, self.receivedBufferedStart?.event)) ||
+                   ((self.receivedControlStart?.runtime == self.runtimeLiveness.generation &&
+                     incomingMatchesStart(incoming, self.receivedControlStart?.event)) ||
                     (self.rx?.currentSnapshot().rxFirstPcmAt != nil &&
-                     incomingMatchesBufferedStart(incoming, self.rxRecoveryEvent))) {
+                     incomingMatchesStart(incoming, self.rxRecoveryEvent))) {
                     // A matching authenticated START received by this runtime is
                     // fresh transport evidence; a cached .connected flag is not.
                     self.validateCurrentRuntime()
@@ -1961,7 +2017,7 @@ final class IntercomSessionController: ObservableObject {
             completeReconnectAttempt(result: "connected", completedAt: resumeLiveKitConnectedAt ?? Date())
             if let incoming = pushToTalk.currentIncomingEvent(channelId: response.channel.id),
                !completedBufferedLeases.contains(incoming.leaseId) {
-                rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
+                rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: false)
             }
             restoreStage = "AUDIO_PREPARE"
             await audio.prepareForIntercom(canPublish: response.canPublish)
@@ -1985,25 +2041,14 @@ final class IntercomSessionController: ObservableObject {
             guard let deviceId = response.deviceId, !deviceId.isEmpty else {
                 throw APIClientError.invalidResponse
             }
-            let bufferedTransmitter = BufferedAudioTransmitter(
-                api: api,
-                capture: bufferedCapture,
-                channelId: response.channel.id,
-                sessionId: response.sessionId,
-                deviceId: deviceId,
-                onFailure: { [weak self] code in
-                    Task { @MainActor in
-                        await self?.ptt?.stopForSafety(reason: "Buffered TX failed safely: \(code)")
-                        self?.lastError = "Buffered TX failed safely: \(code)"
-                    }
-                }
-            )
-            self.bufferedTransmitter = bufferedTransmitter
+            // Standard TX uses LiveKit Opus; HTTP receiver remains for older peers.
+            self.bufferedTransmitter = nil
             let controller = PTTController(
                 role: response.user.role,
                 floor: FloorClient(sessionId: response.sessionId, api: api),
                 microphone: room, cuePlayer: cuePlayer, control: room,
-                bufferedAudio: bufferedTransmitter
+                bufferedAudio: nil,
+                rtpReleaseHangoverMilliseconds: 180
             ) { [weak self] snapshot in Task { @MainActor in
                     guard let self, self.runtimeLiveness.generation == runtimeGeneration else { return }
                     self.applyPttSnapshot(snapshot)
@@ -2105,11 +2150,24 @@ final class IntercomSessionController: ObservableObject {
                 guard let self else { return }
                 self.pushToTalk.setServiceConnection(self.room.connectionState)
                 if let session = self.joinedSession {
-                    _ = try? await withCurrentFloorStatus(
-                        context: { self.floorStatusContext },
-                        request: { try await self.api.floorStatus(sessionId: session.sessionId) },
-                        apply: { await self.applyAuthoritativeFloor($0) }
-                    )
+                    do {
+                        _ = try await withCurrentFloorStatus(
+                            context: { self.floorStatusContext },
+                            request: { try await self.api.floorStatus(sessionId: session.sessionId) },
+                            apply: { await self.applyAuthoritativeFloor($0) }
+                        )
+                    } catch {
+                        guard !Task.isCancelled else { return }
+                        if shouldRestoreExpiredBackendSession(error,
+                            requestedSessionId: session.sessionId,
+                            currentSessionId: self.joinedSession?.sessionId,
+                            poweredOn: self.isPoweredOn),
+                           let descriptor = PttRestoreDescriptor.load(from: .standard) ?? self.recoveryIntent.descriptor,
+                           descriptor.channelId == session.channel.id {
+                            self.runtimeLiveness.invalidate()
+                            self.requestRuntimeRestore(descriptor, reason: .backendSessionExpired)
+                        }
+                    }
                 }
                 try? await Task.sleep(for: .seconds(1))
             }
@@ -2144,6 +2202,17 @@ final class IntercomSessionController: ObservableObject {
     private func applyPttSnapshot(_ snapshot: PTTSnapshot) {
         let previous = pttSnapshot.state
         pttSnapshot = snapshot
+        if bufferedTransmitter == nil {
+            if snapshot.state == .requestingFloor && previous != .requestingFloor { inputGain.beginTransmission() }
+            if ![.requestingFloor, .transmitting, .releasing].contains(snapshot.state) {
+                inputGain.endTransmission(learn: snapshot.lastError == nil)
+            }
+        }
+        if pendingAppAppleStop, snapshot.microphoneMutedAt != nil {
+            pendingAppAppleStop = false
+            appleStopRequestedAt = Date()
+            pushToTalk.stopTransmitting()
+        }
         if snapshot.floorReleaseCompletedAt != nil { lastReleaseSnapshot = snapshot }
         if snapshot.state == .busy, previous != .busy { playStatusCue(.busy) }
         if snapshot.state == .error, previous != .error { playStatusCue(.error) }
@@ -2162,8 +2231,15 @@ final class IntercomSessionController: ObservableObject {
                 appleBeginRequestedAt = Date()
                 pushToTalk.requestBeginTransmitting()
             case .stopSystemTransmission:
-                appleStopRequestedAt = Date()
-                pushToTalk.stopTransmitting()
+                if source == "userRequest", bufferedTransmitter == nil,
+                   pttSnapshot.state == .transmitting || pttSnapshot.state == .releasing {
+                    // App touch UP keeps Apple's session for the bounded RTP tail only.
+                    pendingAppAppleStop = true
+                    startFloorCleanup(source: "developerRequest")
+                } else {
+                    appleStopRequestedAt = Date()
+                    pushToTalk.stopTransmitting()
+                }
             case .beginFloor:
                 Task {
                     await ptt?.pttDown(
@@ -2238,6 +2314,11 @@ final class IntercomSessionController: ObservableObject {
                   generation == self.releaseGeneration else { return }
             self.releaseCleanupTask = nil
             self.releaseFloorCompleted = confirmed
+            if self.pendingAppAppleStop {
+                self.pendingAppAppleStop = false
+                self.appleStopRequestedAt = Date()
+                self.pushToTalk.stopTransmitting()
+            }
             self.tryFinishPttRelease(generation: generation)
         }
     }
@@ -2308,6 +2389,7 @@ final class IntercomSessionController: ObservableObject {
         // Cancellation is cooperative: a pending Floor/API operation can still return.
         // Fence its completion before resetting the UI gate for a new runtime/press.
         txAttemptGeneration += 1
+        pendingAppAppleStop = false
         releaseGeneration += 1
         activationWatchdogTask?.cancel()
         activationWatchdogTask = nil
@@ -2409,7 +2491,7 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func scheduleRxDivergenceWatchdogIfNeeded() {
-        guard rxDivergenceWatchdogTask == nil else { return }
+        guard !isStoppingRuntime, rxDivergenceWatchdogTask == nil, rxRecoveryTask == nil else { return }
         guard let deadline = rxConsistencyGuard.nextDeadline() else { return }
         let wait = max(1, Int(deadline.timeIntervalSince(rxMonotonicDate) * 1_000))
         rxDivergenceWatchdogTask = Task { [weak self] in
@@ -2422,9 +2504,15 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func evaluateRxDivergenceWatchdog() {
-        // The bounded wake/restore path owns recovery until it has finished.
-        // A competing no-PCM watchdog must not tear down the same receiver.
-        guard incomingWakeRecoveryTask == nil, bufferedResolveTask == nil, !isRestoringRuntime else { return }
+        // Network-runtime replacement owns recovery exclusively. Legacy HTTP
+        // discovery only defers destructive recovery: a cold RTP receiver may
+        // have missed START and must be allowed to rebind before lookup expires.
+        guard rxRecoveryTask == nil, !shouldDeferRxRecovery(
+            runtimeRestoring: isRestoringRuntime,
+            incomingWakePending: incomingWakeRecoveryTask != nil,
+            legacyDiscoveryPending: bufferedResolveTask != nil,
+            nextRecoveryLevel: rxConsistencyGuard.snapshot.recoveryLevel + 1
+        ) else { return }
         let mediaSessionId = rxConsistencyGuard.snapshot.remoteMediaSpeakerSessionId
         let currentSpeaking = mediaSessionId.flatMap {
             room.remoteParticipantIsSpeaking(sessionId: $0)
@@ -2459,6 +2547,10 @@ final class IntercomSessionController: ObservableObject {
             room.connectionState == .connected && audio.interruption.state == .ready
         let sessionId = state.validatedRxSessionId ?? state.remoteMediaSpeakerSessionId
         let diagnostic = RxDivergenceDiagnostic(
+            observedAt: Date(),
+            runtimeGeneration: runtimeLiveness.generation,
+            receiveGeneration: state.validatedRxGeneration,
+            appLifecycleState: appLifecycleState,
             event: event,
             elapsedMs: elapsedMilliseconds,
             roomConnectionState: room.connectionState.rawValue,
@@ -2546,6 +2638,14 @@ final class IntercomSessionController: ObservableObject {
         bufferedResolveTask = nil
         bufferedResolveAttemptGeneration += 1
         let lookup = bufferedResolveAttemptGeneration
+        // A real, authenticated RTP START may arrive before this discovery task
+        // is installed. Do not begin a four-second legacy lookup in that race.
+        if let received = receivedControlStart, received.runtime == runtimeLiveness.generation,
+           received.event.bufferedGenerationId == nil, incomingMatchesStart(incoming, received.event) {
+            bufferedResolveResult = "LIVEKIT_RTP"
+            scheduleRxDivergenceWatchdogIfNeeded()
+            return
+        }
         guard let joined = joinedSession, joined.channel.id == incoming.channelId else {
             bufferedResolveResult = "WAITING_RUNTIME"
             return
@@ -2636,11 +2736,19 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func performRxRecovery(level: Int, sessionId: String, generation: Int) {
-        let previous = rxRecoveryTask
+        guard rxRecoveryTask == nil else { return }
         let runtime = runtimeLiveness.generation
         rxRecoveryTask = Task { [weak self] in
-            await previous?.value
-            guard let self, !Task.isCancelled, self.runtimeLiveness.generation == runtime,
+            guard let self else { return }
+            defer {
+                if self.runtimeLiveness.generation == runtime {
+                    self.rxConsistencyGuard.recoveryDidComplete(
+                        sessionId: sessionId, generation: generation, at: self.rxMonotonicDate)
+                }
+                self.rxRecoveryTask = nil
+                self.scheduleRxDivergenceWatchdogIfNeeded()
+            }
+            guard !Task.isCancelled, self.runtimeLiveness.generation == runtime,
                   self.rxSnapshot.sessionId == sessionId, self.rxSnapshot.generation == generation,
                   self.rxSnapshot.rxFirstPcmAt == nil else { return }
             self.remoteReceive?.markNoPcmRecoveryAttempt()
@@ -2771,6 +2879,7 @@ final class IntercomSessionController: ObservableObject {
     private func resetCurrentTxDiagnostics() {
         activationWatchdogTask?.cancel()
         pttSnapshot = .initial(role: joinedSession?.user.role ?? .staff)
+        pendingAppAppleStop = false
         releaseGeneration += 1
         releaseFloorCompleted = false
         releaseAppleCompleted = false
@@ -2810,7 +2919,7 @@ final class IntercomSessionController: ObservableObject {
         switch rxReadyPolicy {
         case .off: 0
         case .fast250: 250
-        case .adaptive: nil
+        case .adaptive: 500
         }
     }
 
@@ -2879,6 +2988,10 @@ final class IntercomSessionController: ObservableObject {
         }
         let divergenceEvents: [[String: Any]] = rxDivergenceDiagnostics.map { event in
             [
+                "observedAt": timestamp(event.observedAt),
+                "runtimeGeneration": event.runtimeGeneration,
+                "receiveGeneration": event.receiveGeneration,
+                "appLifecycleState": event.appLifecycleState,
                 "event": event.event,
                 "elapsedMs": event.elapsedMs,
                 "roomConnectionState": event.roomConnectionState,
@@ -2925,6 +3038,7 @@ final class IntercomSessionController: ObservableObject {
             "schema": fieldDiagnosticSchema,
             "capturedAt": ISO8601DateFormatter().string(from: Date()),
             "platform": "ios",
+            "standardAudioTransport": "LIVEKIT_OPUS_RTP",
             "settings": [
                 "appTxPath": appTxPath.rawValue,
                 "rxReadyPolicy": rxReadyPolicy.rawValue,
@@ -3203,6 +3317,8 @@ final class IntercomSessionController: ObservableObject {
                 "rmsDbfs": decimal(gain.rmsDbfs),
                 "peakDbfs": decimal(gain.peakDbfs),
                 "limiterHits": gain.limiterHits,
+                "lastLearningDecision": gain.lastLearningDecision,
+                "lastCompletedSampleCount": gain.lastCompletedSampleCount,
             ],
             "bufferedAudio": [
                 "protocolVersion": batv1ProtocolVersion,
@@ -3296,7 +3412,13 @@ final class IntercomSessionController: ObservableObject {
             return
         }
         UIPasteboard.general.string = string
-        fieldDiagnosticCopyResult = "Copied"
+        do {
+            _ = try FieldDiagnosticSnapshotFile.write(data)
+            fieldDiagnosticCopyResult = "Copied · diagnostic file saved"
+        } catch {
+            // Preserve the clipboard result even if local export is unavailable.
+            fieldDiagnosticCopyResult = "Copied · diagnostic file unavailable"
+        }
     }
 
     private func persistFieldLab() {

@@ -568,7 +568,17 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     private let defaults: UserDefaults
     nonisolated private let incomingState = PttIncomingReplayProtector()
 
-    init(defaults: UserDefaults = .standard) {
+    // Opt-in lab transport only. Device and Release builds cannot enable this.
+    let isForegroundSimulatorSession: Bool
+    private var simulatorTransmissionGeneration = 0
+
+    init(defaults: UserDefaults = .standard, foregroundSimulatorRequested: Bool? = nil) {
+        #if DEBUG && targetEnvironment(simulator)
+        isForegroundSimulatorSession = foregroundSimulatorRequested
+            ?? (ProcessInfo.processInfo.environment["KOEON_SIMULATOR_FOREGROUND"] == "1")
+        #else
+        isForegroundSimulatorSession = false
+        #endif
         self.defaults = defaults
         headsetPttEnabled = defaults.bool(forKey: "ptt.headset.enabled")
         super.init()
@@ -582,6 +592,13 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
 
     private func initializeManager() async throws {
         state = .initializing
+        #if DEBUG && targetEnvironment(simulator)
+        if isForegroundSimulatorSession {
+            state = .ready
+            tokenRegistrationState = "SIMULATOR_FOREGROUND_NO_APNS"
+            return
+        }
+        #endif
         do {
             if manager == nil {
                 manager = try await PTChannelManager.channelManager(delegate: self, restorationDelegate: self)
@@ -618,6 +635,28 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     func join(channelId: String, channelName: String, canPublish: Bool, knownUsers: [String: String]) async throws {
         _ = knownUsers // v2 incoming push no longer depends on a local User cache.
         try await initialize()
+        #if DEBUG && targetEnvironment(simulator)
+        if isForegroundSimulatorSession {
+            simulatorTransmissionGeneration += 1
+            let uuid = PushToTalkChannelUUID.make(channelId: channelId)
+            self.channelId = channelId
+            self.channelName = channelName
+            channelUUID = uuid
+            self.canPublish = canPublish
+            PttRestoreDescriptor(channelId: channelId, channelName: channelName,
+                channelUUID: uuid, canPublish: canPublish, lastBackendSessionId: backendSessionId)
+                .persist(to: defaults)
+            // Simulator has no Apple PTT activation. Keep a foreground-only
+            // AVAudioSession open; Floor and microphone publication remain real.
+            let audio = AVAudioSession.sharedInstance()
+            try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
+            try audio.setActive(true)
+            state = .joined
+            audioSessionIsActive = true
+            await onAudioSessionActivated?(audio)
+            return
+        }
+        #endif
         guard let manager else { throw PushToTalkControllerError.notInitialized }
         let uuid = PushToTalkChannelUUID.make(channelId: channelId)
         tokenLifecycle.beginJoin(channelId: channelId, channelUUID: uuid)
@@ -656,6 +695,17 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     }
 
     func leave() async {
+        #if DEBUG && targetEnvironment(simulator)
+        if isForegroundSimulatorSession {
+            simulatorTransmissionGeneration += 1
+            await onAudioSessionDeactivated?(AVAudioSession.sharedInstance())
+            try? AVAudioSession.sharedInstance().setActive(false)
+            resetChannelState()
+            state = .ready
+            tokenRegistrationState = "SIMULATOR_FOREGROUND_NO_APNS"
+            return
+        }
+        #endif
         if let manager, let uuid = channelUUID {
             try? await manager.setAccessoryButtonEventsEnabled(false, channelUUID: uuid)
             accessoryButtonEventsEnabled = false
@@ -673,11 +723,39 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     }
 
     func requestBeginTransmitting() {
+        #if DEBUG && targetEnvironment(simulator)
+        if isForegroundSimulatorSession {
+            guard canPublish, state == .joined, audioSessionIsActive else { return }
+            simulatorTransmissionGeneration += 1
+            let generation = simulatorTransmissionGeneration
+            Task { @MainActor [weak self] in
+                guard let self, self.state == .joined, self.canPublish,
+                      self.audioSessionIsActive,
+                      self.simulatorTransmissionGeneration == generation else { return }
+                self.incomingState.setLocalTransmitting(true)
+                self.onTransmitRequestDidBegin?("developerRequest")
+                self.onBeginTransmitting?("developerRequest")
+                guard self.simulatorTransmissionGeneration == generation else { return }
+                await self.onAudioSessionActivated?(AVAudioSession.sharedInstance())
+            }
+            return
+        }
+        #endif
         guard canPublish, state == .joined, let manager, let channelUUID else { return }
         manager.requestBeginTransmitting(channelUUID: channelUUID)
     }
 
     func stopTransmitting() {
+        #if DEBUG && targetEnvironment(simulator)
+        if isForegroundSimulatorSession {
+            guard state == .joined else { return }
+            simulatorTransmissionGeneration += 1
+            incomingState.setLocalTransmitting(false)
+            onEndTransmitting?("developerRequest")
+            // Foreground RX remains available after local transmission ends.
+            return
+        }
+        #endif
         guard let manager, let channelUUID else { return }
         manager.stopTransmitting(channelUUID: channelUUID)
     }
@@ -687,6 +765,22 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
         name: String?,
         context: RemoteParticipantRequestContext
     ) -> Int? {
+        #if DEBUG && targetEnvironment(simulator)
+        if isForegroundSimulatorSession {
+            guard state == .joined, let uuid = channelUUID else { return nil }
+            remoteParticipantRequestSequence += 1
+            let requestId = remoteParticipantRequestSequence
+            Task { @MainActor [weak self] in
+                guard let self, self.state == .joined, self.channelUUID == uuid else { return }
+                self.onRemoteParticipantSetResult?(RemoteParticipantSetResult(
+                    requestId: requestId, context: context, errorCode: nil))
+                if !context.clearing, self.audioSessionIsActive {
+                    await self.onAudioSessionActivated?(AVAudioSession.sharedInstance())
+                }
+            }
+            return requestId
+        }
+        #endif
         guard state == .joined, let manager, let channelUUID else { return nil }
         remoteParticipantRequestSequence += 1
         let requestId = remoteParticipantRequestSequence

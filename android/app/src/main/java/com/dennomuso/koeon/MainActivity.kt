@@ -247,6 +247,10 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
                     },
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                 ) { Text("QRコードを読み取る") }
+            } else if (state.fixture == null) {
+                Text(if (state.loading) "登録情報を確認中…" else "登録情報の確認が必要です")
+                Button(onClick = { manager.loadFixture() }, enabled = !state.loading,
+                    modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("再試行") }
             } else {
             ExposedDropdownMenuBox(expanded = userMenuOpen, onExpandedChange = { userMenuOpen = it }) {
                 OutlinedTextField(
@@ -360,9 +364,11 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     val pttSemantic = pttSemanticState(
         canPublish = joined.canPublish,
         connected = state.connectionState == IntercomConnectionState.CONNECTED,
-        recovering = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING,
+        recovering = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING ||
+            state.operationalState == OperationalState.RECOVERING_SESSION,
         remoteTalking = remoteTalking,
         pttState = state.ptt.state,
+        audioAvailability = state.diagnostics.audioAvailabilityState,
     )
     // Preserve the current gesture until UP, but only READY can start a new one.
     val interactionEnabled = canTransmit && (inputPressed || pttSemantic == PttSemanticState.READY)
@@ -373,7 +379,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         PttSemanticState.TALKING -> Color(0xFF16E05D)
         PttSemanticState.BUSY_REMOTE, PttSemanticState.PREPARING -> Color(0xFFFFB020)
         PttSemanticState.ERROR -> Color(0xFFE53935)
-        PttSemanticState.RECOVERING, PttSemanticState.OFFLINE, PttSemanticState.RX_ONLY -> Color(0xFF626B67)
+        PttSemanticState.INTERRUPTED, PttSemanticState.RECOVERING, PttSemanticState.OFFLINE, PttSemanticState.RX_ONLY -> Color(0xFF626B67)
     }
     Card(colors = CardDefaults.cardColors(containerColor = KoeonLcd), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -394,12 +400,12 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                     if (state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING) {
                         "AUDIO INTERRUPTED · 音声を復旧しています…"
                     } else {
-                        "AUDIO INTERRUPTED · 通話中はPTTを利用できません"
+                        "AUDIO INTERRUPTED · 他の音声が終了したら音声を再接続してください"
                     },
                     color = Color(0xFFFFB020),
                     fontWeight = FontWeight.Bold,
                 )
-                if (state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERY_FAILED) {
+                if (state.diagnostics.audioAvailabilityState in setOf(AudioAvailabilityState.INTERRUPTED, AudioAvailabilityState.RECOVERY_FAILED)) {
                     Button(onClick = manager::retryAudioRecovery, modifier = Modifier.fillMaxWidth()) {
                         Text("音声を再接続")
                     }
@@ -484,7 +490,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             textAlign = TextAlign.Center,
         )
     }
-    Button(onClick = manager::leaveAsync, enabled = !inputPressed && state.operationalState == OperationalState.ACTIVE, modifier = Modifier.fillMaxWidth()) { Text("POWER OFF", color = KoeonRed) }
+    Button(onClick = manager::leaveAsync, enabled = !inputPressed && state.operationalState in setOf(OperationalState.ACTIVE, OperationalState.RECOVERING_SESSION), modifier = Modifier.fillMaxWidth()) { Text("POWER OFF", color = KoeonRed) }
     HeadsetPttSettings(state, manager)
     AudioBitrateSettings(state, manager)
     HardwareAndGainSettings(state, manager)
@@ -523,7 +529,7 @@ private fun HeadsetPttSettings(state: IntercomUiState, manager: IntercomSessionM
 @Composable
 private fun AudioBitrateSettings(state: IntercomUiState, manager: IntercomSessionManager) {
     val diagnostics = state.diagnostics
-    Text("音声品質（従来方式）", fontWeight = FontWeight.Bold)
+    Text("音声品質", fontWeight = FontWeight.Bold)
     AudioBitratePreset.entries.forEach { preset ->
         val label = when (preset) {
             AudioBitratePreset.LOW -> "低帯域 12 kbps"
@@ -539,12 +545,12 @@ private fun AudioBitrateSettings(state: IntercomUiState, manager: IntercomSessio
         }
     }
     Text(
-        "この設定は従来の送信方式にのみ適用されます。現在の標準送信では、音質・通信量は変わりません。",
+        "LiveKitの送信音質と通信量を変更します。速度制限中は低音質（12kbps）を選んでください。",
         color = Color(0xFF82909A),
         fontSize = 10.sp,
     )
     Text(
-        "選択値は保存され、従来方式の次回接続時に適用されます。",
+        "選択値は保存され、次回接続時に適用されます。",
         color = Color(0xFF82909A),
         fontSize = 10.sp,
     )

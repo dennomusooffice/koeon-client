@@ -1,7 +1,9 @@
 package com.dennomuso.koeon.core.ptt
 
+import com.dennomuso.koeon.core.audio.AudioAvailabilityState
+
 enum class PttSemanticState {
-    READY, TALKING, BUSY_REMOTE, PREPARING, ERROR, RECOVERING, OFFLINE, RX_ONLY
+    READY, INTERRUPTED, TALKING, BUSY_REMOTE, PREPARING, ERROR, RECOVERING, OFFLINE, RX_ONLY
 }
 
 fun localPttEligible(
@@ -18,11 +20,14 @@ fun pttSemanticState(
     recovering: Boolean,
     remoteTalking: Boolean,
     pttState: PttState,
+    audioAvailability: AudioAvailabilityState = AudioAvailabilityState.READY,
 ): PttSemanticState = when {
     !canPublish -> PttSemanticState.RX_ONLY
     pttState == PttState.ERROR -> PttSemanticState.ERROR
     !connected -> PttSemanticState.OFFLINE
-    recovering -> PttSemanticState.RECOVERING
+    recovering || audioAvailability == AudioAvailabilityState.RECOVERING -> PttSemanticState.RECOVERING
+    audioAvailability == AudioAvailabilityState.INTERRUPTED -> PttSemanticState.INTERRUPTED
+    audioAvailability == AudioAvailabilityState.RECOVERY_FAILED -> PttSemanticState.ERROR
     pttState == PttState.TRANSMITTING -> PttSemanticState.TALKING
     pttState == PttState.REQUESTING_FLOOR || pttState == PttState.RELEASING -> PttSemanticState.PREPARING
     remoteTalking || pttState == PttState.BUSY -> PttSemanticState.BUSY_REMOTE

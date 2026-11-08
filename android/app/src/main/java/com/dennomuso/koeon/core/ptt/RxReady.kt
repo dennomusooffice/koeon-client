@@ -102,6 +102,7 @@ class RxReadyBarrier(
     private val leaseId: String,
     private val elapsedRealtimeMs: () -> Long = SystemClock::elapsedRealtime,
     private val wallClockMs: () -> Long = System::currentTimeMillis,
+    maximumWaitMs: Long? = null,
 ) {
     private data class PendingReady(val event: PttRxReadyEvent, val receivedAtElapsedRealtimeMs: Long)
 
@@ -111,11 +112,11 @@ class RxReadyBarrier(
     private val received = mutableSetOf<String>()
     private val signal = Channel<Unit>(Channel.CONFLATED)
     private val startedAt = elapsedRealtimeMs()
-    private val deadlineAt = startedAt + if (effectiveExpected.size <= 1) {
+    private val deadlineAt = startedAt + (maximumWaitMs?.coerceAtLeast(0) ?: if (effectiveExpected.size <= 1) {
         RX_READY_SINGLE_MAX_WAIT_MS
     } else {
         RX_READY_MULTI_ABSOLUTE_MAX_MS
-    }
+    })
     private var cancelled = false
     private var completedAtMicOn: Int? = null
     private var firstReadyAt: Long? = null

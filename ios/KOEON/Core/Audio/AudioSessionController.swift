@@ -22,6 +22,8 @@ struct InputGainSnapshot: Sendable {
     var limiterHits = 0
     var calibrationState = "IDLE"
     var recommendationDb: Float?
+    var lastLearningDecision = "NOT_RUN"
+    var lastCompletedSampleCount = 0
 }
 
 /// In-place, no-lookahead capture trim. It never owns AVAudioSession or queues audio.
@@ -32,6 +34,7 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     private var transmitting = false
     private var measurementsPaused = false
     private var learningAllowed = true
+    private var learningBlockReason: String?
     private var fixedGainDb: Float = 0
     private var sumSquares: Double = 0
     private var sampleCount = 0
@@ -42,7 +45,11 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     private var channelCount = 0
     private var postProcessedPcmConsumer: (@Sendable ([Int16], Int, Int) -> Void)?
 
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        // Preserve the legacy iOS default for users without an explicit choice.
+        value.mode = defaults.string(forKey: "audio.gain.mode").flatMap(InputGainMode.init(rawValue:)) ?? .auto
+    }
     var audioProcessingName: String { "koeon_input_gain_v1" }
     func audioProcessingInitialize(sampleRate: Int, channels: Int) {
         lock.withLock {
@@ -60,27 +67,33 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         lock.withLock {
             guard value.route != route else { return }
             value.route = route
-            value.manualGainDb = defaults.float(forKey: key("manual", route))
-            value.autoTrimDb = defaults.float(forKey: key("auto", route))
+            value.manualGainDb = clamp(defaults.float(forKey: key("manual", route)), maximum: 24)
+            value.autoTrimDb = clamp(defaults.float(forKey: key("auto", route)))
             calibrationUntil = nil
             calibrationRms = []
             value.calibrationState = "IDLE"
             value.recommendationDb = nil
             if transmitting {
                 fixedGainDb = effectiveGain()
-                learningAllowed = false
+                // Apple PTT may reveal the real microphone after DOWN but
+                // before capture starts. No old microphone samples exist yet.
+                if sampleCount > 0 {
+                    learningAllowed = false
+                    learningBlockReason = "ROUTE_CHANGED"
+                }
             }
             resetMeasurements()
         }
     }
     func setMode(_ mode: InputGainMode) {
         lock.withLock {
-            if transmitting, value.mode != mode { learningAllowed = false }
+            if transmitting, value.mode != mode { learningAllowed = false; learningBlockReason = "MODE_CHANGED" }
             value.mode = mode
+            defaults.set(mode.rawValue, forKey: "audio.gain.mode")
         }
     }
-    func setManualGainDb(_ gain: Float) { lock.withLock { value.manualGainDb = clamp(gain); defaults.set(value.manualGainDb, forKey: key("manual", value.route)) } }
-    func beginTransmission() { lock.withLock { transmitting = true; measurementsPaused = false; learningAllowed = true; fixedGainDb = effectiveGain(); resetMeasurements() } }
+    func setManualGainDb(_ gain: Float) { lock.withLock { value.manualGainDb = clamp(gain, maximum: 24); defaults.set(value.manualGainDb, forKey: key("manual", value.route)) } }
+    func beginTransmission() { lock.withLock { transmitting = true; measurementsPaused = false; learningAllowed = true; learningBlockReason = nil; fixedGainDb = effectiveGain(); resetMeasurements() } }
     func markCaptureBoundary() { lock.withLock { resetMeasurements() } }
     func pauseCaptureMeasurements() { lock.withLock { measurementsPaused = true } }
     func endTransmission(learn: Bool = true) {
@@ -88,10 +101,21 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
             guard transmitting else { return }
             transmitting = false
             measurementsPaused = true
-            if learn, learningAllowed, value.mode == .auto, sampleCount >= 4_800, value.limiterHits < sampleCount / 20, let rms = rmsDbfs() {
-                value.autoTrimDb = Self.nextAutoTrim(current: value.autoTrimDb, speechRmsDbfs: rms)
-                defaults.set(value.autoTrimDb, forKey: key("auto", value.route))
-            }
+            value.lastCompletedSampleCount = sampleCount
+            guard learn else { value.lastLearningDecision = "CANCELLED"; return }
+            guard learningAllowed else { value.lastLearningDecision = learningBlockReason ?? "DISALLOWED"; return }
+            guard value.mode == .auto else { value.lastLearningDecision = "MODE_" + value.mode.rawValue; return }
+            guard sampleCount >= 4_800, let rms = rmsDbfs() else { value.lastLearningDecision = "INSUFFICIENT_SAMPLES"; return }
+            let previous = value.autoTrimDb
+            value.autoTrimDb = Self.nextAutoTrim(
+                current: previous,
+                speechRmsDbfs: rms,
+                inputPeakDbfs: dbfs(peak),
+                limiterRatio: Double(value.limiterHits) / Double(sampleCount)
+            )
+            value.lastLearningDecision = value.autoTrimDb > previous ? "INCREASED" :
+                value.autoTrimDb < previous ? "DECREASED" : rms <= -60 ? "SILENCE_IGNORED" : "TARGET_REACHED"
+            defaults.set(value.autoTrimDb, forKey: key("auto", value.route))
         }
     }
     func startCalibration(now: Date = Date()) { lock.withLock { calibrationRms = []; calibrationUntil = now.addingTimeInterval(3); value.calibrationState = "MEASURING"; value.recommendationDb = nil } }
@@ -154,8 +178,17 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         let targetGain = recommendedGain(speechRmsDbfs: speechRmsDbfs)
         return boundedCurrent + min(1, max(-1, targetGain - boundedCurrent))
     }
+    static func nextAutoTrim(current: Float, speechRmsDbfs: Float, inputPeakDbfs: Float, limiterRatio: Double) -> Float {
+        // Match Android: a quiet average must not increase gain when peaks
+        // already clip. Apply the change only to the next completed utterance.
+        if inputPeakDbfs >= -0.5 || limiterRatio >= 0.01 {
+            let boundedCurrent = current.isFinite ? min(12, max(-6, current)) : 0
+            return max(-6, boundedCurrent - 1)
+        }
+        return nextAutoTrim(current: current, speechRmsDbfs: speechRmsDbfs)
+    }
     static func processSample(_ sample: Float, gainDb: Float) -> (sample: Float, limited: Bool) {
-        let amplified = sample * powf(10, min(12, max(-6, gainDb)) / 20)
+        let amplified = sample * powf(10, min(24, max(-6, gainDb)) / 20)
         return softLimitSample(amplified)
     }
     private static func softLimitSample(_ amplified: Float) -> (sample: Float, limited: Bool) {
@@ -174,11 +207,17 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         value.autoTrimDb = value.recommendationDb!
         defaults.set(value.autoTrimDb, forKey: key("auto", value.route))
     }
-    private func effectiveGain() -> Float { clamp(value.mode == .off ? 0 : value.mode == .manual ? value.manualGainDb : value.autoTrimDb) }
+    private func effectiveGain() -> Float {
+        switch value.mode {
+        case .off: return 0
+        case .manual: return clamp(value.manualGainDb, maximum: 24)
+        case .auto: return clamp(value.autoTrimDb)
+        }
+    }
     private func resetMeasurements() { sumSquares = 0; sampleCount = 0; peak = 0; value.limiterHits = 0 }
     private func rmsDbfs() -> Float? { sampleCount == 0 ? nil : dbfs(sqrtf(Float(sumSquares / Double(sampleCount)))) }
     private func dbfs(_ v: Float) -> Float { v <= 0 ? -120 : max(-120, 20 * log10f(v)) }
-    private func clamp(_ v: Float) -> Float { min(12, max(-6, v)) }
+    private func clamp(_ v: Float, maximum: Float = 12) -> Float { v.isFinite ? min(maximum, max(-6, v)) : 0 }
     private func key(_ field: String, _ route: String) -> String { "audio.gain.\(route.lowercased().replacingOccurrences(of: " ", with: "_").prefix(80)).\(field)" }
 }
 
@@ -189,6 +228,7 @@ enum AudioRouteKind: String, Sendable {
     case bluetooth = "Bluetooth"
     case wired = "Wired"
     case usb = "USB"
+    case car = "CarPlay"
     case unknown = "Unknown"
 }
 
@@ -542,13 +582,18 @@ final class AudioSessionController: ObservableObject {
         updateRoute()
         applyLiveKitOutputPreference()
         routeChangeReason = Self.routeReasonLabel(reason)
-        let lostExternal = reason == .oldDeviceUnavailable && (oldRoute == .bluetooth || oldRoute == .wired || oldRoute == .usb)
+        let lostExternal = Self.lostExternalInputRoute(previous: oldRoute, reason: reason)
         onRouteChanged?(AudioRouteChangeSnapshot(
             previous: oldRoute,
             current: route,
             reason: routeChangeReason,
             lostExternalInputRoute: lostExternal
         ))
+    }
+
+    static func lostExternalInputRoute(previous: AudioRouteKind, reason: AVAudioSession.RouteChangeReason?) -> Bool {
+        reason == .oldDeviceUnavailable &&
+            (previous == .bluetooth || previous == .wired || previous == .usb || previous == .car)
     }
 
     static func routeReasonLabel(_ reason: AVAudioSession.RouteChangeReason?) -> String {
@@ -582,13 +627,18 @@ final class AudioSessionController: ObservableObject {
     }
 
     private static func mapRoute(_ port: AVAudioSessionPortDescription) -> AudioRouteKind {
-        switch port.portType {
+        mapPortType(port.portType)
+    }
+
+    static func mapPortType(_ type: AVAudioSession.Port) -> AudioRouteKind {
+        switch type {
         case .builtInSpeaker: .speaker
         case .builtInReceiver: .receiver
         case .builtInMic: .builtIn
         case .bluetoothA2DP, .bluetoothHFP, .bluetoothLE: .bluetooth
         case .headphones, .headsetMic, .lineOut: .wired
         case .usbAudio: .usb
+        case .carAudio: .car
         default: .unknown
         }
     }

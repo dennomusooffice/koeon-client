@@ -273,11 +273,13 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     /// subscribed while Apple owns audible playout.
     @discardableResult
     func activateRemoteAudioSubscription(sessionId: String, generation: Int) async throws -> Bool {
-        let subscribed = try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: true)
+        guard let sourceRoom = room else { return false }
+        let subscribed = try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: true, in: sourceRoom)
+        guard room === sourceRoom else { return false }
         if subscribed {
             remoteAudioSubscriptionGate.activate(sessionId: sessionId, generation: generation)
         }
-        return subscribed
+        return subscribed && remoteAudioSubscriptionGate.isActive(sessionId: sessionId, generation: generation)
     }
 
     /// Flushes a completed generation only after Apple confirms that the active
@@ -285,16 +287,18 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     /// decoder media, then leaves the publication warm for the next RX. Returns
     /// false when a newer generation replaces this operation while suspended.
     func discardRemoteAudioSubscription(sessionId: String, generation: Int) async throws -> Bool {
-        guard remoteAudioSubscriptionGate.acceptsDiscard(sessionId: sessionId, generation: generation) else {
+        guard let sourceRoom = room,
+              remoteAudioSubscriptionGate.acceptsDiscard(sessionId: sessionId, generation: generation) else {
             return false
         }
-        try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: false)
+        try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: false, in: sourceRoom)
+        guard room === sourceRoom else { return false }
         guard remoteAudioSubscriptionGate.completeDiscard(sessionId: sessionId, generation: generation) else {
-            try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: true)
+            try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: true, in: sourceRoom)
             return false
         }
-        try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: true)
-        return true
+        try await setRemoteAudioSubscribed(sessionId: sessionId, subscribed: true, in: sourceRoom)
+        return room === sourceRoom
     }
 
     func isRemoteAudioSubscriptionActive(sessionId: String, generation: Int) -> Bool {
@@ -319,8 +323,9 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     }
 
     @discardableResult
-    private func setRemoteAudioSubscribed(sessionId: String, subscribed: Bool) async throws -> Bool {
-        guard let participant = room?.remoteParticipants.values.first(where: {
+    private func setRemoteAudioSubscribed(sessionId: String, subscribed: Bool, in sourceRoom: Room) async throws -> Bool {
+        guard room === sourceRoom,
+              let participant = sourceRoom.remoteParticipants.values.first(where: {
             $0.identity?.stringValue == sessionId
         }) else { return false }
         let publications = participant.audioTracks.compactMap { $0 as? RemoteTrackPublication }

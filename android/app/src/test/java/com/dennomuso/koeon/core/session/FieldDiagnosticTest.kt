@@ -3,6 +3,7 @@ package com.dennomuso.koeon.core.session
 import com.dennomuso.koeon.core.livekit.IntercomConnectionState
 import com.dennomuso.koeon.core.livekit.AudioCaptureProfile
 import com.dennomuso.koeon.core.audio.InputGainMode
+import com.dennomuso.koeon.core.audio.AudioAvailabilityState
 import com.dennomuso.koeon.core.audio.AudioBitratePreset
 import com.dennomuso.koeon.core.model.JoinResponse
 import com.dennomuso.koeon.core.model.JoinChannel
@@ -16,6 +17,53 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FieldDiagnosticTest {
+    @Test fun audioAvailabilityMatchesPttEligibility() {
+        for ((availability, semantic, reason) in listOf(
+            Triple(AudioAvailabilityState.READY, "READY", "null"),
+            Triple(AudioAvailabilityState.INTERRUPTED, "INTERRUPTED", "AUDIO_INTERRUPTED"),
+            Triple(AudioAvailabilityState.RECOVERING, "RECOVERING", "AUDIO_RECOVERING"),
+            Triple(AudioAvailabilityState.RECOVERY_FAILED, "ERROR", "AUDIO_RECOVERY_FAILED"),
+        )) {
+            val state = IntercomUiState(
+                operationalState = OperationalState.ACTIVE,
+                connectionState = IntercomConnectionState.CONNECTED,
+                join = JoinResponse("session", "wss://example.invalid", "redacted", "room", User("u", "w", "Staff", Role.STAFF), JoinChannel("c", "Stage"), true, 300),
+                diagnostics = SessionDiagnostics(audioAvailabilityState = availability, audioFocus = "Lost"),
+            )
+            val root = Json.parseToJsonElement(buildAndroidFieldDiagnostic(state)).jsonObject
+            val actual = root.getValue("state").jsonObject
+            assertEquals(availability.name, (availability == AudioAvailabilityState.READY).toString(), actual.getValue("pttEligible").jsonPrimitive.content)
+            assertEquals(semantic, actual.getValue("pttSemanticState").jsonPrimitive.content)
+            assertEquals(reason, actual.getValue("pttBlockReason").jsonPrimitive.content)
+            assertEquals(availability.name, root.getValue("audio").jsonObject.getValue("availability").jsonPrimitive.content)
+        }
+    }
+
+    @Test fun subscriptionMetadataDoesNotClaimDecodedOrAudibleAudio() {
+        val state = IntercomUiState(
+            connectionState = IntercomConnectionState.CONNECTED,
+            diagnostics = SessionDiagnostics(remoteAudioTracks = 3, remoteAudioState = "subscribed"),
+        )
+        val liveKit = Json.parseToJsonElement(buildAndroidFieldDiagnostic(state))
+            .jsonObject.getValue("liveKit").jsonObject
+        assertEquals("3", liveKit.getValue("remoteAudioTracks").jsonPrimitive.content)
+        assertEquals("subscribed", liveKit.getValue("remoteAudioState").jsonPrimitive.content)
+        assertEquals(kotlinx.serialization.json.JsonNull, liveKit.getValue("remoteDecodedPcmObserved"))
+        assertEquals(kotlinx.serialization.json.JsonNull, liveKit.getValue("remoteAudiblePlaybackConfirmed"))
+    }
+
+    @Test fun pcmCallbackEvidenceStillDoesNotClaimAudibility() {
+        val state = IntercomUiState(diagnostics = SessionDiagnostics(
+            remotePcm = com.dennomuso.koeon.core.livekit.RemotePcmSnapshot(1, 2, 960, 1000, 48000),
+        ))
+        val liveKit = Json.parseToJsonElement(buildAndroidFieldDiagnostic(state))
+            .jsonObject.getValue("liveKit").jsonObject
+        assertEquals("true", liveKit.getValue("remoteDecodedPcmObserved").jsonPrimitive.content)
+        assertEquals("960", liveKit.getValue("remotePcm").jsonObject.getValue("frames").jsonPrimitive.content)
+        assertEquals("1000", liveKit.getValue("remotePcm").jsonObject.getValue("lastCallbackEpochMs").jsonPrimitive.content)
+        assertEquals(kotlinx.serialization.json.JsonNull, liveKit.getValue("remoteAudiblePlaybackConfirmed"))
+    }
+
     @Test fun serverVersionIsReportedSeparatelyAndUnknownRemainsNull() {
         fun value(version: String?, connection: IntercomConnectionState = IntercomConnectionState.CONNECTED) = Json.parseToJsonElement(buildAndroidFieldDiagnostic(
             IntercomUiState(connectionState = connection, diagnostics = SessionDiagnostics(liveKitServerVersion = version)),

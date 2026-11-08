@@ -69,6 +69,100 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         XCTAssertNil(PttRestoreDescriptor.load(from: defaults))
     }
 
+    func testBackendJoinExpiryRequiresFreshResumeEvenWhileLiveKitConnected() {
+        let error = APIClientError.http(401, #"{"error":{"code":"SESSION_INVALID","message":"expired"}}"#)
+        XCTAssertTrue(shouldRestoreExpiredBackendSession(error, requestedSessionId: "old", currentSessionId: "old", poweredOn: true))
+        XCTAssertEqual(runtimeRestoreEntryDecision(reason: .backendSessionExpired,
+            hasJoinedRuntime: true, connectionState: .connected), .performFreshResume)
+    }
+
+    func testLateExpiryCannotResumeAfterPowerOffOrNewSession() {
+        let error = APIClientError.http(401, #"{"error":{"code":"SESSION_INVALID"}}"#)
+        XCTAssertFalse(shouldRestoreExpiredBackendSession(error, requestedSessionId: "old", currentSessionId: "new", poweredOn: true))
+        XCTAssertFalse(shouldRestoreExpiredBackendSession(error, requestedSessionId: "old", currentSessionId: "old", poweredOn: false))
+    }
+
+    func testOtherAuthenticationAndMalformedErrorsAreNotJoinExpiry() {
+        let errors: [Error] = [
+            APIClientError.http(401, #"{"error":{"code":"DEVICE_REVOKED"}}"#),
+            APIClientError.http(403, #"{"error":{"code":"SESSION_INVALID"}}"#),
+            APIClientError.http(401, "SESSION_INVALID"),
+            APIClientError.invalidResponse,
+        ]
+        for error in errors {
+            XCTAssertFalse(shouldRestoreExpiredBackendSession(error, requestedSessionId: "old", currentSessionId: "old", poweredOn: true))
+        }
+    }
+
+    func testStartupTransportFailurePreservesCredentialAndCanRetry() async {
+        let api = ResumeCleanupAPIStub()
+        let store = StartupCredentialStub()
+        let controller = IntercomSessionController(api: api, credentialStore: store,
+            pushToTalk: ApplePushToTalkController(defaults: UserDefaults(suiteName: UUID().uuidString)!))
+        for error: Error in [URLError(.notConnectedToInternet), APIClientError.http(503, "unavailable"),
+                             APIClientError.http(401, "proxy unauthorized")] {
+            api.meError = error
+            await controller.loadFixture()
+            XCTAssertEqual(store.clearCount, 0)
+            XCTAssertNotNil(store.read())
+            XCTAssertFalse(controller.enrollmentRequired)
+            XCTAssertNotNil(controller.lastError)
+        }
+        api.meError = nil
+        api.meResponse = MeResponse(user: IdentityUser(id: "user", displayName: "Test", role: .staff),
+            workspace: IdentityWorkspace(id: "workspace", name: "Workspace"),
+            device: IdentityDevice(id: "device", name: nil, platform: "ios"),
+            channels: [IdentityChannel(id: "stage", name: "Stage", type: "INTERCOM")])
+        await controller.loadFixture()
+        XCTAssertNotNil(controller.fixture)
+        XCTAssertNil(controller.lastError)
+        XCTAssertFalse(controller.enrollmentRequired)
+        XCTAssertEqual(store.clearCount, 0)
+    }
+
+    func testStartupCancellationDoesNotEraseCredential() async {
+        let api = ResumeCleanupAPIStub(); api.meError = CancellationError()
+        let store = StartupCredentialStub()
+        let controller = IntercomSessionController(api: api, credentialStore: store,
+            pushToTalk: ApplePushToTalkController(defaults: UserDefaults(suiteName: UUID().uuidString)!))
+        await controller.loadFixture()
+        XCTAssertEqual(store.clearCount, 0)
+        XCTAssertNotNil(store.read())
+        XCTAssertFalse(controller.enrollmentRequired)
+    }
+
+    func testStartupExplicitCredentialExpiryRequiresEnrollment() async {
+        for code in ["DEVICE_CREDENTIAL_INVALID", "DEVICE_CREDENTIAL_EXPIRED"] {
+            let api = ResumeCleanupAPIStub()
+            api.meError = APIClientError.http(401, "{\"error\":{\"code\":\"\(code)\"}}")
+            let store = StartupCredentialStub()
+            let controller = IntercomSessionController(api: api, credentialStore: store,
+                pushToTalk: ApplePushToTalkController(defaults: UserDefaults(suiteName: UUID().uuidString)!))
+            await controller.loadFixture()
+            XCTAssertEqual(store.clearCount, 1)
+            XCTAssertNil(store.read())
+            XCTAssertTrue(controller.enrollmentRequired)
+        }
+    }
+
+    func testStartupLateUnauthorizedResponseCannotEraseReplacedCredential() async throws {
+        let api = ResumeCleanupAPIStub()
+        api.meError = APIClientError.http(401, #"{"error":{"code":"DEVICE_CREDENTIAL_INVALID"}}"#)
+        let gate = StartupMeGate()
+        api.beforeMe = { await gate.wait() }
+        let store = StartupCredentialStub()
+        let controller = IntercomSessionController(api: api, credentialStore: store,
+            pushToTalk: ApplePushToTalkController(defaults: UserDefaults(suiteName: UUID().uuidString)!))
+        let task = Task { await controller.loadFixture() }
+        while !(await gate.started) { await Task.yield() }
+        try store.write("replacement-device-credential-1234567890")
+        await gate.release()
+        await task.value
+        XCTAssertEqual(store.read(), "replacement-device-credential-1234567890")
+        XCTAssertEqual(store.clearCount, 0)
+        XCTAssertFalse(controller.enrollmentRequired)
+    }
+
     private func isolatedResumeController(api: ResumeCleanupAPIStub) -> IntercomSessionController {
         IntercomSessionController(api: api,
             pushToTalk: ApplePushToTalkController(defaults: UserDefaults(suiteName: UUID().uuidString)!))
@@ -663,7 +757,15 @@ private final class ResumeCleanupAPIStub: KOEONAPIClientProtocol, @unchecked Sen
     }
     func fixture() async throws -> FixtureResponse { throw APIClientError.invalidResponse }
     func enroll(_ request: EnrollmentRequest) async throws -> EnrollmentResponse { throw APIClientError.invalidResponse }
-    func me() async throws -> MeResponse { throw APIClientError.invalidResponse }
+    var meError: Error? = APIClientError.invalidResponse
+    var meResponse: MeResponse?
+    var beforeMe: (@Sendable () async -> Void)?
+    func me() async throws -> MeResponse {
+        await beforeMe?()
+        if let meError { throw meError }
+        guard let meResponse else { throw APIClientError.invalidResponse }
+        return meResponse
+    }
     func join(_ request: JoinRequest) async throws -> JoinResponse { throw APIClientError.invalidResponse }
     func resume(_ request: ResumeRequest) async throws -> JoinResponse { throw APIClientError.invalidResponse }
     func acquireFloor(sessionId: String) async throws -> FloorResponse { throw APIClientError.invalidResponse }
@@ -674,4 +776,24 @@ private final class ResumeCleanupAPIStub: KOEONAPIClientProtocol, @unchecked Sen
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse { throw APIClientError.invalidResponse }
     func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse { throw APIClientError.invalidResponse }
     func logout() async throws { throw APIClientError.invalidResponse }
+}
+
+private final class StartupCredentialStub: DeviceCredentialStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String? = "test-existing-device-credential-1234567890"
+    private var clears = 0
+    var clearCount: Int { lock.withLock { clears } }
+    func read() -> String? { lock.withLock { value } }
+    func write(_ credential: String) throws { lock.withLock { value = credential } }
+    func clear() throws { lock.withLock { clears += 1; value = nil } }
+}
+
+private actor StartupMeGate {
+    private(set) var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        started = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() { continuation?.resume(); continuation = nil }
 }

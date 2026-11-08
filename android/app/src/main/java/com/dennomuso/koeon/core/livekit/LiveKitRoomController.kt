@@ -31,6 +31,7 @@ import com.dennomuso.koeon.core.model.FloorResponse
 import io.livekit.android.LiveKit
 import io.livekit.android.LiveKitOverrides
 import io.livekit.android.audio.AudioSwitchHandler
+import com.dennomuso.koeon.core.audio.RecoverableAudioHandler
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
 import io.livekit.android.room.Room
@@ -87,6 +88,7 @@ data class LiveKitSnapshot(
     val audioFocusState: String = "Inactive",
     val audioRoute: String = "Unavailable",
     val remoteAudioTracks: Int = 0,
+    val remotePcm: RemotePcmSnapshot = RemotePcmSnapshot(),
     val microphoneTrackState: String = "not_published",
     val remoteAudioState: String = "no_tracks",
     val rxReadyExpectedCount: Int = 0,
@@ -233,7 +235,7 @@ class LiveKitRoomController(
 ) : MicrophoneGateway, PttControlGateway {
     private var audioCaptureProfile = productionAudioCaptureProfile
     private val appContext = context.applicationContext
-    private val audioHandler = AudioSwitchHandler(appContext).also { handler ->
+    private val routingHandler = AudioSwitchHandler(appContext).also { handler ->
         // Some Android vendors do not apply the communication route unless the
         // SDK is explicitly allowed to manage it. KOEON is always a voice-chat
         // session, so keep the SDK on its documented communication mode.
@@ -244,24 +246,47 @@ class LiveKitRoomController(
                 audioRoute = selected?.toString() ?: "Unavailable",
             )
         }
-        handler.registerOnAudioFocusChangeListener { change ->
-            when (change) {
-                AudioManager.AUDIOFOCUS_GAIN -> {
-                    _snapshot.value = _snapshot.value.copy(audioFocusState = "Granted")
-                    onAudioFocusEvent(AudioFocusEvent.Gained)
-                }
-                AudioManager.AUDIOFOCUS_LOSS,
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK,
-                -> {
-                    _snapshot.value = _snapshot.value.copy(audioFocusState = "Lost")
-                    onAudioFocusEvent(AudioFocusEvent.Lost("Android audio focus change $change"))
-                }
-            }
-        }
     }
+    private val audioHandler = RecoverableAudioHandler(appContext, routingHandler,
+        onGranted = {
+            _snapshot.value = _snapshot.value.copy(audioFocusState = "Granted")
+            onAudioFocusEvent(AudioFocusEvent.Gained)
+        },
+        onLost = { reason ->
+            _snapshot.value = _snapshot.value.copy(audioFocusState = "Lost")
+            onAudioFocusEvent(AudioFocusEvent.Lost(reason))
+        },
+    )
     private var room: Room? = null
     private var eventJob: Job? = null
+    private var remotePcmJob: Job? = null
+    private val remotePcmDiagnostics = RemotePcmDiagnostics()
+    private val remotePcmSinks = mutableMapOf<RemoteAudioTrack, Pair<Long, AudioTrackSink>>()
+
+    private fun observeRemotePcm(track: RemoteAudioTrack) {
+        if (track in remotePcmSinks) return
+        val token = remotePcmDiagnostics.attach()
+        val sink = object : AudioTrackSink {
+            override fun onData(audioData: ByteBuffer, bitsPerSample: Int, sampleRate: Int,
+                numberOfChannels: Int, numberOfFrames: Int, absoluteCaptureTimestampMs: Long) {
+                // Never copy or inspect the user's audio; do not update UI on the audio thread.
+                remotePcmDiagnostics.record(token, numberOfFrames, sampleRate, System.currentTimeMillis())
+            }
+        }
+        try {
+            track.addSink(sink)
+            remotePcmSinks[track] = token to sink
+        } catch (_: Exception) {
+            remotePcmDiagnostics.detach(token)
+        }
+    }
+
+    private fun stopObservingRemotePcm(track: RemoteAudioTrack) {
+        val entry = remotePcmSinks.remove(track) ?: return
+        remotePcmDiagnostics.detach(entry.first)
+        runCatching { track.removeSink(entry.second) }
+    }
+
     private var prewarmedTrack: io.livekit.android.room.track.LocalAudioTrack? = null
     private val batv1TrackSink = object : AudioTrackSink {
         override fun onData(
@@ -361,6 +386,12 @@ class LiveKitRoomController(
             effectiveAudioBitrateKbps =
                 nextRoom.localParticipant.audioTrackPublishDefaults.audioBitrate?.div(1_000),
         )
+        remotePcmJob = scope.launch {
+            while (isActive && room === nextRoom) {
+                _snapshot.value = _snapshot.value.copy(remotePcm = remotePcmDiagnostics.snapshot())
+                delay(1_000)
+            }
+        }
         eventJob = scope.launch {
             nextRoom.events.collect { event -> handleEvent(event) }
         }
@@ -470,6 +501,7 @@ class LiveKitRoomController(
             channelId = currentChannel,
             speakerSessionId = currentSession,
             leaseId = leaseId,
+            maximumWaitMs = 500, // Real-time intercom: late peers must not stall everyone.
         )
         _snapshot.value = _snapshot.value.copy(
             rxReadyExpectedCount = rxReadyBarrier?.expectedCount() ?: 0,
@@ -501,7 +533,16 @@ class LiveKitRoomController(
         rxReadyLeaseId = null
     }
 
+    fun requestAudioFocusRecovery(): Result<Unit> {
+        if (room == null || _snapshot.value.connectionState != IntercomConnectionState.CONNECTED) {
+            return Result.failure(IllegalStateException("LiveKit Room is not connected"))
+        }
+        return if (audioHandler.resumeFocus()) Result.success(Unit)
+        else Result.failure(IllegalStateException("Audio focus request denied; another audio session may have priority"))
+    }
+
     fun validateAudioRecovery(): Result<Unit> {
+        if (!audioHandler.hasFocus) return Result.failure(IllegalStateException("Android audio focus is not granted"))
         val current = room ?: return Result.failure(IllegalStateException("LiveKit Room is unavailable"))
         if (_snapshot.value.connectionState != IntercomConnectionState.CONNECTED) {
             return Result.failure(IllegalStateException("LiveKit Room is not connected"))
@@ -549,6 +590,10 @@ class LiveKitRoomController(
     }
 
     fun disconnect() {
+        remotePcmJob?.cancel()
+        remotePcmJob = null
+        remotePcmSinks.keys.toList().forEach(::stopObservingRemotePcm)
+        remotePcmDiagnostics.reset()
         cancelReceiverReadyPublication()
         runCatching { prewarmedTrack?.removeSink(batv1TrackSink) }
         runCatching { prewarmedTrack?.stopPrewarm() }
@@ -698,7 +743,9 @@ class LiveKitRoomController(
                 }
             }
             is RoomEvent.TrackSubscribed -> {
-                if (event.track is RemoteAudioTrack) {
+                val track = event.track
+                if (track is RemoteAudioTrack && event.room === room) {
+                    observeRemotePcm(track)
                     _snapshot.value = _snapshot.value.copy(
                         remoteAudioTracks = _snapshot.value.remoteAudioTracks + 1,
                         remoteAudioState = "subscribed",
@@ -706,7 +753,9 @@ class LiveKitRoomController(
                 }
             }
             is RoomEvent.TrackUnsubscribed -> {
-                if (event.track is RemoteAudioTrack) {
+                val track = event.track
+                if (track is RemoteAudioTrack && event.room === room) {
+                    stopObservingRemotePcm(track)
                     _snapshot.value = _snapshot.value.copy(
                         remoteAudioTracks = (_snapshot.value.remoteAudioTracks - 1).coerceAtLeast(0),
                         remoteAudioState = if (_snapshot.value.remoteAudioTracks <= 1) "no_tracks" else "subscribed",

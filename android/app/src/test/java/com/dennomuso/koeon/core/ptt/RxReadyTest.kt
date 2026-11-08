@@ -12,6 +12,19 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RxReadyTest {
+    @Test fun `real time budget proceeds at 500ms despite missing receiver`() = runTest {
+        val barrier = RxReadyBarrier(listOf("receiver-a", "receiver-b"),
+            channelId = "stage", speakerSessionId = "speaker", leaseId = "lease-a",
+            elapsedRealtimeMs = { testScheduler.currentTime }, maximumWaitMs = 500)
+        val result = async { barrier.waitForReady() }
+        runCurrent()
+        advanceTimeBy(499); runCurrent()
+        assertFalse(result.isCompleted)
+        advanceTimeBy(1); runCurrent()
+        assertTrue(result.await().timedOut)
+        assertEquals(500L, result.await().waitMs)
+    }
+
     @Test fun `session mismatch audit separates missing SDK identity from contradictory claims`() = runTest {
         val barrier = barrier(listOf("receiver-a")) { testScheduler.currentTime }
         val valid = event("lease-a", "receiver-a")
