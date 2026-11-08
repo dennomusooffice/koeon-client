@@ -4,9 +4,11 @@ Tracking: [Issue #54](https://github.com/dennomusooffice/koeon-client/issues/54)
 
 ## Scope and acceptance criteria
 
-The owner authorized autonomous physical tests with no fixed end time. Devices: OPPO A303OP and iPhone 17 Pro Max. Source of distributed binaries: `44b6eb3cb68b508577c14fc2ff34c11ff945ed6f`. iOS installed build is 1.0 (2026110803). OPPO initially had 1.0.13 (14); it was updated in place to 1.0.14 (15).
+The owner authorized autonomous physical tests with no fixed end time. Devices: OPPO A303OP (Android 14 / API 34) and iPhone 17 Pro Max (iOS 26.6.2), USB powered. Source of distributed binaries: `44b6eb3cb68b508577c14fc2ff34c11ff945ed6f`. iOS installed build is 1.0 (2026110803). OPPO initially had 1.0.13 (14); it was updated in place to 1.0.14 (15).
 
 OPPO default transport was CELLULAR, radio reported LTE, Wi-Fi was off. Carrier speed restriction is owner-reported; actual available bandwidth was not measured or independently shaped. Android effective Opus setting was 12kbps. iPhone initially used 24kbps; selecting 12kbps requires reconnect before it becomes effective.
+
+After re-enrollment, iPhone diagnostics verified applied `TELEPHONE_12K`, 12000bps, DTX and RED enabled. Native ICE candidate protocol/packet loss/jitter are not exposed by this field JSON, so the device trial does not independently prove UDP selection or actual wire bitrate. Do not substitute the emulator UDP result for a device measurement.
 
 Criteria: five successful transmissions each direction; preparation target <=2s, failure >5s; release recovery <=3s; no stuck transmission after short/rapid presses; receive after 1/5-minute screen lock; network recovery <=30s or explicit recoverable error. Sound intelligibility, clipping and real acoustic latency require listening; UI READY and PCM callbacks alone are insufficient.
 
@@ -21,6 +23,9 @@ Criteria: five successful transmissions each direction; preparation target <=2s,
 | Re-enrolled iPhone to OPPO, 10-second PTT, 12kbps | iPhone PTT-down to TALKING 687ms, Floor 58ms, RX_READY 500ms, PTT-up to READY 360ms. Floor renew 9/9, terminal cleanup PASS. Android received START and published RX_READY. Owner heard no OPPO output | Control and TX state passed; audibility failed. Manual speech calibration requested to separate microphone pickup of Mac TTS from product-path failure |
 | Live subscription during a further 20-second iPhone TX | OPPO showed one remote audio track in all four observations, with Speakerphone route | Subscription exists during transmission. This does not prove nonzero received audio, hardware playout or intelligibility |
 | Human voice calibration, iPhone to OPPO | Owner spoke directly into iPhone after the cue and confirmed hearing their voice from OPPO | Human-voice delivery succeeded. Earlier Mac-TTS inaudibility cannot be treated as proof of a product audio-path failure; acoustic test injection was not validated |
+| Human voice calibration, OPPO to iPhone | Owner confirmed clear iPhone output with no clipping | Human-voice delivery succeeded in the reverse direction |
+| OPPO screen off for at least one minute, iPhone human-voice TX | OPPO sleep was initiated and `Dozing` confirmed; owner then reported clear output with no clipping, without operating OPPO | Limited background reception passed on LTE at 12kbps; not a long-duration or battery-only acceptance result |
+| iPhone locked for more than five minutes, five OPPO human-voice transmissions | CoreDevice lock confirmed before wait and again after 327 seconds. Owner reported 4/5 received, with only the first inaudible | Background first-reception criterion failed. Unlike the Mac-TTS cases, this is a human-voice failure requiring investigation; initial sender TALKING was not independently captured |
 
 ## Test-harness error and blocker
 
@@ -34,6 +39,12 @@ OPPO system audio inspection showed unmuted voice-call output, speaker volume 9/
 
 ## Remaining acceptance
 
-Both-direction repetition, locked-screen audio, Bluetooth, calibrated latency, detailed intelligibility and multiple simultaneous receivers remain unverified. Overall intercom acceptance has **not** passed, but the Mac-TTS cases do not establish a product defect: the human-voice calibration above succeeded. Raw JSON/logs remain private; only sanitized evidence is published. Latest progress and restoration status are recorded in Issue #54.
+Both-direction repetition, Bluetooth, calibrated latency, detailed intelligibility and multiple simultaneous receivers remain incomplete. Overall intercom acceptance has **not** passed: the first human-voice reception after the long iPhone lock failed. The earlier Mac-TTS cases alone do not establish a product defect. Raw JSON/logs remain private; only sanitized evidence is published. Latest progress and restoration status are recorded in Issue #54.
 
 At the first collection stop, iPhone auto-lock was verified restored to 30 seconds. Android remained at 30 seconds, stay-on 0, Wi-Fi OFF, mobile data ON. The diagnostic helper installed for this task was removed and the UI test session was closed. Further human-voice/lock acceptance continues under the owner's authorization with no specified end time.
+
+## Long-lock failure evidence
+
+The user's copied iPhone diagnostic at 21:00:16 JST was saved without replacing the clipboard. Breadcrumbs still contained `RUNTIME_CONNECT_FAILED` and `RUNTIME_FAILED_LIVEKIT_CONNECT` at 20:50:15 JST, with listening retained. These timestamps precede the five-transmission sequence and are **not** evidence that the same failure caused its first miss. The last successful receive and foreground recovery had replaced several current diagnostic fields.
+
+A second long-lock trial therefore uses exactly one transmission, explicit sender TALKING confirmation, read-only Android UI observation and per-process log capture, followed immediately by copying the receiver diagnostic. No POWER operation is used between the failure and collection.
