@@ -151,9 +151,24 @@ func incomingPushRuntimeAction(
 
 }
 
+// Legacy discovery is transport detection, not ownership of the RTP path.
+// Rebinding/subscribing is safe while it runs; teardown must wait for it.
+func shouldDeferRxRecovery(
+    runtimeRestoring: Bool,
+    incomingWakePending: Bool,
+    legacyDiscoveryPending: Bool,
+    nextRecoveryLevel: Int
+) -> Bool {
+    runtimeRestoring || incomingWakePending || (legacyDiscoveryPending && nextRecoveryLevel >= 3)
+}
+
 func incomingMatchesBufferedStart(_ incoming: PttIncomingEvent, _ event: PttControlEvent?) -> Bool {
+    event?.bufferedGenerationId != nil && incomingMatchesStart(incoming, event)
+}
+
+func incomingMatchesStart(_ incoming: PttIncomingEvent, _ event: PttControlEvent?) -> Bool {
     guard let event else { return false }
-    return event.type == "start" && event.bufferedGenerationId != nil &&
+    return event.type == "start" &&
         event.channelId == incoming.channelId && event.sessionId == incoming.speakerSessionId &&
         event.speakerUserId == incoming.speakerUserId && event.leaseId == incoming.leaseId
 }
@@ -547,7 +562,7 @@ final class IntercomSessionController: ObservableObject {
     private var bufferedResolveTask: Task<Void, Never>?
     private var bufferedResolveAttemptGeneration = 0
     private var completedBufferedLeases: [String] = []
-    private var receivedBufferedStart: (event: PttControlEvent, runtime: Int)?
+    private var receivedControlStart: (event: PttControlEvent, runtime: Int)?
     private var bufferedResolveResult = "NOT_STARTED"
     private var bufferedResolveAttempts = 0
 
@@ -659,9 +674,10 @@ final class IntercomSessionController: ObservableObject {
                 self.bufferedResolveTask?.cancel()
             }
 
-            if let self, event.type == "start", event.bufferedGenerationId != nil,
-               event.sessionId == senderSessionId, self.rx?.currentSnapshot().leaseId == event.leaseId {
-                self.receivedBufferedStart = (event, self.runtimeLiveness.generation)
+            if let self, event.type == "start",
+               event.sessionId == senderSessionId, self.rx?.currentSnapshot().leaseId == event.leaseId,
+               self.rx?.currentSnapshot().sessionId == event.sessionId {
+                self.receivedControlStart = (event, self.runtimeLiveness.generation)
             }
             if self?.audio.pushToTalkAudioSessionActive == true {
                 self?.rxReadyAppleAudioReadyAt = Date()
@@ -1582,10 +1598,10 @@ final class IntercomSessionController: ObservableObject {
                 }
                 if let incoming = self.pushToTalk.currentIncomingEvent(channelId: self.joinedSession?.channel.id ?? ""),
                    self.room.connectionState == .connected,
-                   ((self.receivedBufferedStart?.runtime == self.runtimeLiveness.generation &&
-                     incomingMatchesBufferedStart(incoming, self.receivedBufferedStart?.event)) ||
+                   ((self.receivedControlStart?.runtime == self.runtimeLiveness.generation &&
+                     incomingMatchesStart(incoming, self.receivedControlStart?.event)) ||
                     (self.rx?.currentSnapshot().rxFirstPcmAt != nil &&
-                     incomingMatchesBufferedStart(incoming, self.rxRecoveryEvent))) {
+                     incomingMatchesStart(incoming, self.rxRecoveryEvent))) {
                     // A matching authenticated START received by this runtime is
                     // fresh transport evidence; a cached .connected flag is not.
                     self.validateCurrentRuntime()
@@ -2422,7 +2438,7 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func scheduleRxDivergenceWatchdogIfNeeded() {
-        guard rxDivergenceWatchdogTask == nil else { return }
+        guard !isStoppingRuntime, rxDivergenceWatchdogTask == nil, rxRecoveryTask == nil else { return }
         guard let deadline = rxConsistencyGuard.nextDeadline() else { return }
         let wait = max(1, Int(deadline.timeIntervalSince(rxMonotonicDate) * 1_000))
         rxDivergenceWatchdogTask = Task { [weak self] in
@@ -2435,9 +2451,15 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func evaluateRxDivergenceWatchdog() {
-        // The bounded wake/restore path owns recovery until it has finished.
-        // A competing no-PCM watchdog must not tear down the same receiver.
-        guard incomingWakeRecoveryTask == nil, bufferedResolveTask == nil, !isRestoringRuntime else { return }
+        // Network-runtime replacement owns recovery exclusively. Legacy HTTP
+        // discovery only defers destructive recovery: a cold RTP receiver may
+        // have missed START and must be allowed to rebind before lookup expires.
+        guard rxRecoveryTask == nil, !shouldDeferRxRecovery(
+            runtimeRestoring: isRestoringRuntime,
+            incomingWakePending: incomingWakeRecoveryTask != nil,
+            legacyDiscoveryPending: bufferedResolveTask != nil,
+            nextRecoveryLevel: rxConsistencyGuard.snapshot.recoveryLevel + 1
+        ) else { return }
         let mediaSessionId = rxConsistencyGuard.snapshot.remoteMediaSpeakerSessionId
         let currentSpeaking = mediaSessionId.flatMap {
             room.remoteParticipantIsSpeaking(sessionId: $0)
@@ -2559,6 +2581,14 @@ final class IntercomSessionController: ObservableObject {
         bufferedResolveTask = nil
         bufferedResolveAttemptGeneration += 1
         let lookup = bufferedResolveAttemptGeneration
+        // A real, authenticated RTP START may arrive before this discovery task
+        // is installed. Do not begin a four-second legacy lookup in that race.
+        if let received = receivedControlStart, received.runtime == runtimeLiveness.generation,
+           received.event.bufferedGenerationId == nil, incomingMatchesStart(incoming, received.event) {
+            bufferedResolveResult = "LIVEKIT_RTP"
+            scheduleRxDivergenceWatchdogIfNeeded()
+            return
+        }
         guard let joined = joinedSession, joined.channel.id == incoming.channelId else {
             bufferedResolveResult = "WAITING_RUNTIME"
             return
@@ -2649,11 +2679,19 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func performRxRecovery(level: Int, sessionId: String, generation: Int) {
-        let previous = rxRecoveryTask
+        guard rxRecoveryTask == nil else { return }
         let runtime = runtimeLiveness.generation
         rxRecoveryTask = Task { [weak self] in
-            await previous?.value
-            guard let self, !Task.isCancelled, self.runtimeLiveness.generation == runtime,
+            guard let self else { return }
+            defer {
+                if self.runtimeLiveness.generation == runtime {
+                    self.rxConsistencyGuard.recoveryDidComplete(
+                        sessionId: sessionId, generation: generation, at: self.rxMonotonicDate)
+                }
+                self.rxRecoveryTask = nil
+                self.scheduleRxDivergenceWatchdogIfNeeded()
+            }
+            guard !Task.isCancelled, self.runtimeLiveness.generation == runtime,
                   self.rxSnapshot.sessionId == sessionId, self.rxSnapshot.generation == generation,
                   self.rxSnapshot.rxFirstPcmAt == nil else { return }
             self.remoteReceive?.markNoPcmRecoveryAttempt()

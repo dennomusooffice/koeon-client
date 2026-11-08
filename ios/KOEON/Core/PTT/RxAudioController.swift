@@ -104,8 +104,10 @@ struct RxConsistencyGuard: Sendable {
     private var mediaEvidenceAt: Date?
     private var validatedRxStartedAt: Date?
     private var pcmTimeoutEmitted = false
+    private var lastRecoveryAt: Date?
     private var mediaDivergenceEmitted = false
-    // Absolute episode deadlines; never restart the ladder on a reconcile callback.
+    // Keep the normal absolute schedule, but give each recovery a real grace
+    // interval when a cold wake delayed evaluation or an operation completed late.
     private let recoveryDeadlines = [250, 750, 1_500, 2_500, 4_000]
 
     mutating func handleMediaActivity(sessionId: String?, active: Bool, at: Date) {
@@ -147,6 +149,7 @@ struct RxConsistencyGuard: Sendable {
             snapshot.batv1TimelineActive = false
             snapshot.rxPathReconciliationActive = false
             validatedRxStartedAt = nil
+            lastRecoveryAt = nil
             pcmTimeoutEmitted = false
             snapshot.pathState = "IDLE"
             snapshot.recoveryLevel = 0
@@ -156,6 +159,7 @@ struct RxConsistencyGuard: Sendable {
         if snapshot.validatedRxGeneration != generation || snapshot.validatedRxSessionId != sessionId {
             snapshot.remotePcmObserved = false
             validatedRxStartedAt = at
+            lastRecoveryAt = nil
             pcmTimeoutEmitted = false
             snapshot.recoveryLevel = 0
             snapshot.recoveryAttempts = 0
@@ -199,8 +203,9 @@ struct RxConsistencyGuard: Sendable {
            let startedAt = validatedRxStartedAt {
             let elapsed = milliseconds(from: startedAt, to: at)
             let level = snapshot.recoveryLevel
-            if level < recoveryDeadlines.count, elapsed >= recoveryDeadlines[level] {
+            if let deadline = recoveryDeadline(), at >= deadline {
                 pcmTimeoutEmitted = true
+                lastRecoveryAt = at
                 snapshot.recoveryAttempts += 1
                 snapshot.recoveryLevel += 1
                 snapshot.pathState = ["RECOVERING_SOFT", "PATH_BINDING", "RECOVERING_RUNTIME",
@@ -254,19 +259,35 @@ struct RxConsistencyGuard: Sendable {
         if snapshot.remoteMediaSpeakerActive, let mediaEvidenceAt {
             deadlines.append(mediaEvidenceAt.addingTimeInterval(Double(thresholdMilliseconds) / 1_000))
         }
-        if (snapshot.validatedRemoteRxActive || snapshot.rxPathReconciliationActive),
-           !snapshot.remotePcmObserved,
-           snapshot.recoveryLevel < recoveryDeadlines.count,
-           let validatedRxStartedAt {
-            deadlines.append(validatedRxStartedAt.addingTimeInterval(Double(recoveryDeadlines[snapshot.recoveryLevel]) / 1_000))
-        }
+        if let deadline = recoveryDeadline() { deadlines.append(deadline) }
         return deadlines.min()
+    }
+
+    // Completion is generation-fenced; late work from a replaced runtime must
+    // not postpone the next generation. Snapshot refreshes never extend grace.
+    mutating func recoveryDidComplete(sessionId: String, generation: Int, at: Date) {
+        guard snapshot.validatedRxSessionId == sessionId,
+              snapshot.validatedRxGeneration == generation,
+              let completedAfter = lastRecoveryAt else { return }
+        lastRecoveryAt = max(completedAfter, at)
+    }
+
+    private func recoveryDeadline() -> Date? {
+        let level = snapshot.recoveryLevel
+        guard (snapshot.validatedRemoteRxActive || snapshot.rxPathReconciliationActive),
+              !snapshot.remotePcmObserved, level < recoveryDeadlines.count,
+              let startedAt = validatedRxStartedAt else { return nil }
+        let absolute = startedAt.addingTimeInterval(Double(recoveryDeadlines[level]) / 1_000)
+        guard level > 0, let lastRecoveryAt else { return absolute }
+        let grace = recoveryDeadlines[level] - recoveryDeadlines[level - 1]
+        return max(absolute, lastRecoveryAt.addingTimeInterval(Double(grace) / 1_000))
     }
 
     mutating func reset() {
         snapshot = RxConsistencySnapshot()
         mediaEvidenceAt = nil
         validatedRxStartedAt = nil
+        lastRecoveryAt = nil
         pcmTimeoutEmitted = false
         mediaDivergenceEmitted = false
     }
