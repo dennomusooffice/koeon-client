@@ -35,4 +35,26 @@ GRPC_VERBOSITY=ERROR .build/macos/emulator-audio-venv/bin/python \
 
 終了コード0は、その回に選択したAVDで既知信号の到達基準と送信側READY復帰が成立したという意味。全体の製品合格ではない。失敗は入力未到達・PTT操作不成立・検出器の限界も含むため診断で切り分ける。受信時刻の位置には操作準備時間が含まれ、通信遅延の測定値ではない。`DEADLINE_EXCEEDED`は有限時間の出力採取終了として期待する。
 
-128kbps試験は、元の`emu network status`を保存してから`emu network speed 128:128`を設定し、例外時も元の設定へ戻す。設定確認と実効帯域測定は別。LTEの損失・ジッター・ハンドオーバーを再現したとは言わない。
+128kbps試験で`emu network speed 128:128`の表示だけを合格証拠にしない。2026-11-09の独立転送試験では設定表示に反してホスト宛512KiBが0.12秒以内に到達した。Wi-Fiを無効にした比較でも制限を確認できなかった。既存の音声到達結果は保持するが、その方式だけの帯域制限合格判定は保留する。
+
+デバッグ可能なAVDだけで`adb -s emulator-NNNN root`を実行し、`emulator-bandwidth.py`を使って通常コマンドを包める。物理端末と非標準の既存qdiscは拒否する。egressはeth0/wlan0それぞれ128kbit/s、ingressはIFBに集約して128kbit/s、burst8KiB、queue latency1000ms。既存のAndroid clsact/BPFフィルタは削除せず、専用priority49152だけを追加・撤去する。
+
+```sh
+python3 scripts/mixed-lab/emulator-bandwidth.py \
+  --serial emulator-NNNN --evidence-dir PRIVATE_SHAPING_DIR --timeout 180 -- \
+  COMMAND ARGUMENTS
+```
+
+終了・タイムアウト時に追加設定を撤去し、result.jsonのcleanupFailuresが空であることを確認する。両端末を制限するには異なるserialのwrapperを入れ子にする。試験前には同じ経路の合成転送で上下の実効速度を測る。設定後のTCPペイロード速度はヘッダー・再送・待ち行列で128kbpsより低くなり得る。LTEの損失・ジッター・ハンドオーバーを再現したとは言わない。ADB rootも仮想端末の検証終了時にunrootする。
+
+
+制限の独立検証には合成256KiBの上下TCP転送を使える（ホスト宛、インターネット/UDP測定ではない）:
+
+```sh
+python3 scripts/mixed-lab/emulator-bandwidth.py \
+  --serial emulator-NNNN --evidence-dir PRIVATE_SHAPING_DIR --timeout 150 -- \
+  python3 scripts/mixed-lab/emulator-throughput.py \
+  --serial emulator-NNNN --output PRIVATE_RATE_RESULT.json
+```
+
+転送が全量完了し、両方向のペイロード速度が校正範囲70〜145kbpsに入らなければ失敗する。この範囲は帯域上限の実効性と極端な過剰制限を検出するためのもので、128kbpsぴったりのペイロード速度を意味しない。試験で用いるqueue/burstも結果に明記する。
