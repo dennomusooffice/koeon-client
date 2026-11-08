@@ -44,3 +44,7 @@ The candidate was installed in place onmoto, retaining registration. A finite fo
 Fresh22:18:42Z field JSON agrees: CONNECTED/READY/pttEligible=true, audioavailabilityREADY, focusGranted/RX validated, autoRecoveryResultsuccess. The retained latest interruption reason isDUCK; do not classify every DHU event as permanentLOSS. ExplicitPERMANENT behavior was verified separately with the helper. The test helper and diagnostic helper were removed frommoto afterward.
 
 This is limited focus/state verification, not proof of subsequent audible media, actual telephone-call rejection or all vehicle implementations. Denial/stale-callback cases are automated-unit coverage only. Follow-up eight-endpoint transmission and receivedPCM checks remain required. OPPO and fourAVDs are being updated to the same candidate before that retest; the povo network condition is preserved.
+
+## Active-transmission interruption on physical moto
+
+Signed1.0.17(18), source45176b, 2026-11-09 07:35JST: startREADY/enabled, holdPTT and observeTALKING, then a controlledhelper requests transientfocus for10s. KOEON showsINTERRUPTED/disabled whilefocusisheld, thenREADY/enabled afterfocusrelease, withoutPOWERcycling. HelperrequestresultGRANTED. A finite12s gesture andhelpercleanup preventstuckinput; helperuninstalledaftertrial. Evidence focus-ptt-result.json/privateXML. The helper opensanActivity, so this exercisescombinedUI/focusinterruption rather thanisolating audiofocus fromACTION_CANCEL. No speechinjected; no claimofpost-recoveryaudibility orAUTOlearningfromthistrial.
