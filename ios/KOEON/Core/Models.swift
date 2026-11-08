@@ -443,8 +443,13 @@ struct RemoteParticipantSetResult: Equatable, Sendable {
 
 struct RemoteAudioSubscriptionGenerationGate: Sendable {
     private var activeBySession: [String: Int] = [:]
+    private var latestBySession: [String: Int] = [:]
 
     mutating func activate(sessionId: String, generation: Int) {
+        // Subscription requests suspend in the SDK and may complete out of
+        // order. Keep the fence even after the newer generation is drained.
+        guard generation >= (latestBySession[sessionId] ?? generation) else { return }
+        latestBySession[sessionId] = generation
         activeBySession[sessionId] = generation
     }
 
@@ -462,7 +467,10 @@ struct RemoteAudioSubscriptionGenerationGate: Sendable {
         activeBySession[sessionId] == generation
     }
 
-    mutating func reset() { activeBySession.removeAll() }
+    mutating func reset() {
+        activeBySession.removeAll()
+        latestBySession.removeAll()
+    }
 }
 
 struct RemoteReceiveActivationSnapshot: Equatable, Sendable {

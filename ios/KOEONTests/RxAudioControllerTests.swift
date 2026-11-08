@@ -1124,6 +1124,23 @@ final class RxAudioControllerTests: XCTestCase {
         XCTAssertFalse(gate.acceptsDiscard(sessionId: "session-a", generation: 2))
     }
 
+    func testLateSubscribeCompletionCannotReplaceNewerReceiveGeneration() {
+        var gate = RemoteAudioSubscriptionGenerationGate()
+        gate.activate(sessionId: "session-a", generation: 2)
+        gate.activate(sessionId: "session-a", generation: 1)
+        XCTAssertTrue(gate.isActive(sessionId: "session-a", generation: 2))
+        XCTAssertFalse(gate.isActive(sessionId: "session-a", generation: 1))
+        XCTAssertTrue(gate.completeDiscard(sessionId: "session-a", generation: 2))
+        gate.activate(sessionId: "session-a", generation: 1)
+        XCTAssertFalse(gate.isActive(sessionId: "session-a", generation: 1))
+        // Explicit same-generation recovery remains legal after a decoder flush.
+        gate.activate(sessionId: "session-a", generation: 2)
+        XCTAssertTrue(gate.isActive(sessionId: "session-a", generation: 2))
+        gate.reset()
+        gate.activate(sessionId: "session-a", generation: 1)
+        XCTAssertTrue(gate.isActive(sessionId: "session-a", generation: 1))
+    }
+
     func testActiveSpeakerWithoutValidatedStartIsIgnored() {
         let clock = AdvancingClock()
         var applied: [TrustedRemoteSpeaker?] = []

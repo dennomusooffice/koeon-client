@@ -450,3 +450,34 @@ The iPhone's background receive generation remained unsubscribed with no accepte
 Code inspection found a concrete inconsistency: the room-level mixed-audio renderer unconditionally set `RxSnapshot.rxFirstPcmAt`, while the consistency guard rejected PCM for an unbound subscription. The recovery worker then exited on the non-nil snapshot timestamp. This allows unrelated/stale room callbacks to suppress recovery while diagnostics correctly report no viable media path. The patch requires the current receive generation's subscription to be active and the callback timestamp to be no earlier than RX start before notifying the RX controller, Apple coordinator or wake diagnostics. Legacy buffered audio keeps its independent callback path. Regression tests cover an unbound callback, recovery remaining eligible, a subsequent valid callback, a pre-start callback and idle RX. This addresses the contradictory evidence gate; it is not yet proof that every background failure has the same cause.
 
 The PCM evidence-gate change passed the full iOS regression: **326 executed, 324 passed, two dedicated lab tests skipped, zero failures**. Feature-parity contract and diff checks passed. At this point the change is implemented/automatically tested, not yet distributed or device-verified; the background issue remains open.
+
+## 0905 distribution and foreground baseline
+
+Source `0c5bb16497f7beedf7c6c0874af88ba79b636314`, tree `b16cec18fef9a1a3430282429a5f070148060b1b`, was signed and uploaded as iOS 1.0 (2026110905); IPA SHA256 `67dae2b507c7f0e4869a713ad5718890893085c2a1f834bb4d998f675c64c126`. Fresh Apple reads confirmed VALID, internal/external IN_BETA_TESTING and assignment to two internal groups/one external group. The physical iPhone was updated through TestFlight with enrollment preserved.
+
+All eight endpoints reached READY. A single Android14 known-speech trial produced ordered detections on Android16/17 (correlation 0.233/0.181). The physical iPhone recorded its matching first receive generation/PCM while active. This is transport evidence, not headset listening acceptance.
+
+Android15's QEMU process had terminated after main-loop/CPU-thread hangs during restoration; restarting that AVD preserved enrollment. Its subsequent speech capture remained invalid: 161,363 samples over about 32 seconds and no known speech. Independent 660Hz/10-second AudioTrack output wrote/played 480,000 frames without player error, but 16-second gRPC capture returned only 50,386 samples at 48kHz, near-zero values and no 660Hz. The same failure persisted at 44.1kHz and 16kHz, and with KOEON force-stopped before the independent test (44,981 samples at 48kHz). KOEON was then relaunched and all four AVDs restored to READY. This remains a test infrastructure limitation in #59, not a valid negative acoustic verdict for KOEON. Raw receiver audio was not saved.
+
+## 0905 background repetition and interpretation
+
+Two independent suspended-background waits were exercised with Bluetooth connected and the iPhone unlocked: **323 seconds** and **335 seconds**. Each used one finite Android14 known-speech transmission, no resend or POWER operation, and Android17 detected the known speech in both trials.
+
+| Trial | Incoming push (UTC) | Retained wake PCM completion | Foregrounding only after |
+| --- | --- | --- | --- |
+| 1 | 23:36:18 | 23:36:20 | 23:36:51 |
+| 2 | 23:44:08 | 23:44:09 | 23:44:38 |
+
+The completed wake ledger supports newly accepted PCM during background in both trials. In 0905 the LiveKit callback must pass the current-subscription/start-time check before setting this evidence. Current first-PCM fields were overwritten by later foreground runtime restoration (23:36:53 / 23:44:40). The first quick interpretation of trial 1 incorrectly used that overwritten current field to say background PCM was absent; the completed ledger corrected the interpretation, and the correction is recorded on #54/#50/#55. Do not repeat that mistake or interpret PCM callbacks as subjective Bluetooth listening acceptance. Completed per-receive/runtime/lifecycle evidence still needs clearer retention in #50.
+
+At 08:46 JST all eight endpoints were READY. USB stay-awake was restored to recorded originals: physical OPPO/moto 0, four AVDs 1. Temporary field/output/focus probe helpers were removed where installed. The iPhone's original Auto-Lock Never was preserved, as were enrollment, gains and OPPO's povo network. Four AVDs were then shut down without wiping data for the final simulator-only code regression; no further physical-device operations are planned in this window.
+
+## Final simulator-only subscription-order regression
+
+After physical-device release, code review found that `activateRemoteAudioSubscription` awaits the SDK before assigning the active generation. An older request can therefore complete after a newer one and replace the generation gate. A deterministic regression against 0905 source reproduced four failed assertions: generation 2 was replaced by generation 1, the newer discard failed, and the old generation could reactivate after completion.
+
+The fix keeps the latest generation fence after drain, rejects older activation completions, preserves explicit same-generation recovery after a decoder flush, and resets the fence only on runtime reset. SDK completions also verify their original Room identity before modifying the current gate or continuing a discard against a replacement Room. This is a separately reproduced ordering defect; it is not established as the initiating cause of the physical background symptom. Full automated validation and any distribution are recorded separately from the 0905 device trials.
+
+The first fixed run passed 327 tests (325 passed, two dedicated lab skips). A final strengthening explicitly binds the SDK operation itself to the captured source Room, in addition to fencing completion. The final-source rerun is required before publishing that addition. The ordering regression covers newer active state, newer drained state, explicit same-generation recovery, and reset for a new runtime; a live SDK completion race has not been reproduced on hardware.
+
+Final source also passed **327 executed / 325 passed / two dedicated lab skips / zero failures**, with parity and diff checks successful. The subscription-order fix is automatically tested; its additional Room-identity fencing has not been exercised in a physical completion race. No physical-device test was restarted after restoration.
