@@ -482,14 +482,24 @@ class IntercomSessionManager(
     }
 
     fun loadFixture() {
+        if (_state.value.loading || _state.value.fixture != null) return
+        _state.update { it.copy(loading = true, error = null) }
         scope.launch {
-            _state.update { it.copy(loading = true, error = null) }
-            runCatching { api.me() }
-                .onSuccess { identity -> applyIdentity(identity) }
-                .onFailure { error ->
-                    if (error is KoeonApiException && error.statusCode == 401) credentialStore.clear()
-                    _state.update { it.copy(loading = false, fixture = null, identity = null, enrollmentRequired = true, error = null) }
+            try {
+                when (val result = loadStartupIdentity(credentialStore) { api.me() }) {
+                    is StartupIdentityResult.Loaded -> applyIdentity(result.identity)
+                    StartupIdentityResult.EnrollmentRequired -> _state.update {
+                        it.copy(fixture = null, identity = null, enrollmentRequired = true, error = null)
+                    }
+                    StartupIdentityResult.Retry -> _state.update {
+                        it.copy(enrollmentRequired = false,
+                            error = "登録情報を確認できません。通信状態を確認して再試行してください。")
+                    }
+                    StartupIdentityResult.Superseded -> Unit
                 }
+            } finally {
+                _state.update { it.copy(loading = false) }
+            }
         }
     }
 

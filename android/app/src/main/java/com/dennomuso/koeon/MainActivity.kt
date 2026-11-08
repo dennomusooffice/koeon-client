@@ -247,6 +247,10 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
                     },
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                 ) { Text("QRコードを読み取る") }
+            } else if (state.fixture == null) {
+                Text(if (state.loading) "登録情報を確認中…" else "登録情報の確認が必要です")
+                Button(onClick = { manager.loadFixture() }, enabled = !state.loading,
+                    modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("再試行") }
             } else {
             ExposedDropdownMenuBox(expanded = userMenuOpen, onExpandedChange = { userMenuOpen = it }) {
                 OutlinedTextField(

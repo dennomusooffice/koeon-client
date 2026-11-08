@@ -21,13 +21,13 @@ class AndroidKeystoreDeviceCredentialStore(context: Context) : DeviceCredentialS
     private val preferences = context.getSharedPreferences("koeon_encrypted_device_identity", Context.MODE_PRIVATE)
     private val alias = "koeon_device_credential_v1"
 
-    override fun read(): String? = runCatching {
+    override fun read(): String? {
         val encrypted = preferences.getString("ciphertext", null) ?: return null
-        val iv = preferences.getString("iv", null) ?: return null
+        val iv = preferences.getString("iv", null) ?: throw java.io.IOException("Credential IV unavailable")
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
-        String(cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)), Charsets.UTF_8)
-    }.getOrNull()
+        cipher.init(Cipher.DECRYPT_MODE, key(createIfMissing = false), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
+        return String(cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)), Charsets.UTF_8)
+    }
 
     override fun write(credential: String) {
         require(credential.length >= 32)
@@ -44,9 +44,10 @@ class AndroidKeystoreDeviceCredentialStore(context: Context) : DeviceCredentialS
         preferences.edit().clear().apply()
     }
 
-    private fun key(): SecretKey {
+    private fun key(createIfMissing: Boolean = true): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }
+        if (!createIfMissing) throw java.io.IOException("Credential key unavailable")
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
             init(
                 KeyGenParameterSpec.Builder(
