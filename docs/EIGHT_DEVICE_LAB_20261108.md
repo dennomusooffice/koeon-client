@@ -356,3 +356,15 @@ The synthetic source lasted6.88s; actual injection completed in7.201s and began3
 Added observedAt, runtimeGeneration, receiveGeneration and appLifecycleState to each bounded rxDivergence diagnostic entry. Values are captured when the event is appended, rather than obtained from current state when exporting later; a foreground runtime replacement can therefore be distinguished from the original background recovery. Existing event count cap20, no audio/credentials/participant identifiers added. This improves future evidence and cannot recover missing metadata from0901.
 
 Validation: iOS317total/315passed/2skipped, parityPASS, diffcheckPASS. Existing recovery logic and deadlines are unchanged. Combined with82ffb7d's first-PCM-only recovery diagnostic, this is implemented/automatically tested but not distributed or physically verified. It does not claim the locked-first-receive defect is fixed. The fourAndroidAVDs were normally stopped with data retained for the regression run; physical devices were untouched.
+
+
+## Paused at user usage threshold (2026-11-09 03:55 JST)
+
+Codex weekly10080-minute window reports96%used/4%remaining, below the user's5%stop threshold. New development/testing stopped; the objective is not complete and must not auto-resume. No release claim beyond observed Apple state.
+
+- Latest code9eacc803fbe9a794f09d452163fb55b8a4a475e3 includes receive-event context and82ffb7d dedup; iOS317total/315passed/2skipped, parityPASS.
+- iOS1.0(2026110902) was signed/exported/uploaded successfully from that exact commit, tree86391d536ed1025784788abb6f81393ce9a97f66. IPA SHA256 fff7fe4dab8bc81a62d72101d7d48ee9e49abb4730cf18be60ca91bc0ce78483. Last App Store Connect lookup was NOT_INDEXED. Processing, beta review/group assignment and distribution remain unverified/unperformed. Do not re-upload merely because indexing has not been observed.
+- Physical iPhone remains0901; newest export18:37:17Z was collected after the user unlocked. Locked-first-RX defect remains open. OPPO/moto retain candidate17/e7cf936, natural2h recovery and subsequentPTT control verified as documented; normal/public Android release unchanged.
+- Stopped helper runs and allfourAndroidAVDs with userdata retained. iOS labSimulator stopped. Existing UI sessions returned404 on cleanup (already absent). No test replay remains scheduled by this work.
+- Restored OPPO andmoto USB stay-awake to their original0 and verified reads; OPPO used the observed developer-settings toggle. iPhone auto-lock was not changed. Removed the twoAndroid diagnostic helper apps. Network/povo configuration unchanged.
+- Next authorized resumption: first check0902 Apple processing and existing-group access; inspect devices/build hashes before testing. Capture per-runtime/time-scoped recovery diagnostics and completedRTP evidence before foreground resets. Continue low-bandwidth/locked-first-RX/8-device audibility/recovery acceptance; emulatorAPI36 audio/SystemUI instability must be separated from product failures. CarPlay/AndroidAuto/Bluetooth blockers remain in the earlier section. PR#55 stays unmerged and partially resolvedIssues stay open.
