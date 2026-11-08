@@ -29,6 +29,18 @@ class FieldDiagnosticTest {
         assertEquals(kotlinx.serialization.json.JsonNull, liveKit.getValue("remoteAudiblePlaybackConfirmed"))
     }
 
+    @Test fun pcmCallbackEvidenceStillDoesNotClaimAudibility() {
+        val state = IntercomUiState(diagnostics = SessionDiagnostics(
+            remotePcm = com.dennomuso.koeon.core.livekit.RemotePcmSnapshot(1, 2, 960, 1000, 48000),
+        ))
+        val liveKit = Json.parseToJsonElement(buildAndroidFieldDiagnostic(state))
+            .jsonObject.getValue("liveKit").jsonObject
+        assertEquals("true", liveKit.getValue("remoteDecodedPcmObserved").jsonPrimitive.content)
+        assertEquals("960", liveKit.getValue("remotePcm").jsonObject.getValue("frames").jsonPrimitive.content)
+        assertEquals("1000", liveKit.getValue("remotePcm").jsonObject.getValue("lastCallbackEpochMs").jsonPrimitive.content)
+        assertEquals(kotlinx.serialization.json.JsonNull, liveKit.getValue("remoteAudiblePlaybackConfirmed"))
+    }
+
     @Test fun serverVersionIsReportedSeparatelyAndUnknownRemainsNull() {
         fun value(version: String?, connection: IntercomConnectionState = IntercomConnectionState.CONNECTED) = Json.parseToJsonElement(buildAndroidFieldDiagnostic(
             IntercomUiState(connectionState = connection, diagnostics = SessionDiagnostics(liveKitServerVersion = version)),

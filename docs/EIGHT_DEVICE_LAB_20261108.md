@@ -99,3 +99,9 @@ Android 15 AVDで継続する受信停止を [#57](https://github.com/dennomusoo
 Android診断JSONのliveKit節に既存のremoteAudioTracks/remoteAudioStateを追加した。これまではUIに表示されても保存JSONから欠落していた。購読情報は音声のデコード・聴取成功を示さないため、未計測のremoteDecodedPcmObserved/remoteAudiblePlaybackConfirmedはnullで出力する。診断契約のテストを追加した。これは診断改善であり、受信停止そのものの修正ではない。公開Android 1.0.14(15)には未配信。
 
 ADBではOPPOと4台のAVDを確認したが、moto g64 5Gは未接続になっていた。再接続を依頼済み。8台の受入れ範囲から除外せず、実機確認を保留する。
+
+### Android 1.0.15(16) 診断候補
+
+LiveKit 2.28.0のRemoteAudioTrackにメタデータ専用sinkを付け、現在のRoom全体のコールバック数・フレーム数・最終時刻・サンプルレートを計測する。音声内容や参加者識別子は保持しない。UIへの反映は1秒間隔とし、音声スレッドから直接更新しない。購読解除・Room破棄時はsinkを外し、古いtokenのコールバックを無視する。
+
+remoteDecodedPcmObservedは現在Roomのコールバック観測を意味する。無音やPLCを含み得るためネットワークパケット受信や実聴取の証明ではない。observer未接続かつ観測ゼロならnull、接続済みで観測ゼロならfalse、観測ありならtrue。remoteAudiblePlaybackConfirmedは引き続きnull。古いRoomの遅延通知、unsubscribe後の保持、複数トラックの並行集計、JSONの解釈をテストし、Android単体205件成功・0失敗、Lint/Debugビルド成功。受信停止本体の修正・配信・実機確認ではなく、原因特定用の候補である。

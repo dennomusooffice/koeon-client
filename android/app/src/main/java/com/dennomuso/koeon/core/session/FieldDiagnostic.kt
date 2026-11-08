@@ -71,7 +71,15 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             // Subscription metadata is not proof of decoded or audible audio.
             put("remoteAudioTracks", JsonPrimitive(d.remoteAudioTracks))
             put("remoteAudioState", JsonPrimitive(d.remoteAudioState))
-            put("remoteDecodedPcmObserved", JsonNull)
+            put("remotePcm", buildJsonObject {
+                put("scope", JsonPrimitive("CURRENT_ROOM_AGGREGATE"))
+                put("observedTracks", JsonPrimitive(d.remotePcm.observedTracks))
+                put("callbacks", JsonPrimitive(d.remotePcm.callbacks))
+                put("frames", JsonPrimitive(d.remotePcm.frames))
+                put("lastCallbackEpochMs", nullable(d.remotePcm.lastCallbackEpochMs))
+                put("lastSampleRate", nullable(d.remotePcm.lastSampleRate?.toLong()))
+            })
+            put("remoteDecodedPcmObserved", if (d.remotePcm.observedTracks == 0 && d.remotePcm.callbacks == 0L) JsonNull else JsonPrimitive(d.remotePcm.callbacks > 0))
             put("remoteAudiblePlaybackConfirmed", JsonNull)
         })
         put("txSafety", buildJsonObject { put("renewFailures", JsonNull); put("lastError", nullable(state.ptt.lastError)) })
