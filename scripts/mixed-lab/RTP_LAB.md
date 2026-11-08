@@ -4,9 +4,11 @@ Tracking: [Issue #54](https://github.com/dennomusooffice/koeon-client/issues/54)
 
 ## Status
 
-This is an opt-in transport feasibility test, **not a product transport cutover**.
-The released app and current session constructors still use BATv1 HTTP PCM.
-No build/version was released by this investigation. Base source: `e786f0de06645f457bc13cfb9f8580ba33a24e66`.
+The user subsequently prioritized real-time communication and explicitly allowed some leading/trailing clipping. The current product session constructors now select LiveKit Opus TX; old BATv1 RX compatibility remains. Readiness is capped at 500ms, the app cue follows track enablement, and app touch release has a 180ms tail. System/headset/OS shutdown remains authoritative. No buffered speech is replayed after release/reconnect.
+
+No build/version has been released by this work. Prototype base: `e786f0de06645f457bc13cfb9f8580ba33a24e66`; first transport probes: `0ff52527fe52985df83ad0d7f97a48ecd3896073`.
+
+The historical FIFO probe below established feasibility but is not used by the new production TX path. The current native probes call the product PTT controllers with synthetic audio and local Floor/control adapters. These adapters do not test the production backend, complete receiver state machine, or Apple PushToTalk activation.
 
 User acceptance requirements remain: restore standard LiveKit audio, preserve leading/trailing speech and background recovery, verify constrained transport and reconnection, and record changes on GitHub.
 
@@ -74,7 +76,7 @@ Run the instrumentation class `com.dennomuso.koeon.LiveKitRtpLabTest` concurrent
 
 For iOS, build-for-testing `KOEONTests/LiveKitRtpLabTests`, set `KOEON_RTP_LAB=1` in the copied xctestrun's `KOEONTests.EnvironmentVariables`, set `OnlyTestIdentifiers` to `LiveKitRtpLabTests`, and keep the file beside the original so `__TESTROOT__` resolves. Grant microphone to `org.example.koeon` on the dedicated Simulator. Start it alongside **only one** Android instrumentation. Physical devices are excluded. Inspect `/status` at loopback port 18766 for numeric results; `/token` contains ephemeral lab tokens and must not be published.
 
-## Product integration work still required
+## Superseded strict-preservation investigation (historical)
 
 1. Wire the bounded FIFO to both production capture pipelines and make standard START advertise RTP, while retaining old BATv1 receive compatibility during migration.
 2. Preserve floor/RX_READY authorization and exact generation ownership on cancellation/reconnect. Add endpoint failure propagation, not just FIFO tests.
@@ -83,4 +85,20 @@ For iOS, build-for-testing `KOEONTests/LiveKitRtpLabTests`, set `KOEON_RTP_LAB=1
 5. Exercise three simultaneous receivers, disconnect/reconnect and bandwidth recovery through production session/control code; assert marked leading/trailing audio, not just nonzero tone.
 6. Apple PushToTalk background activation is unsupported by Simulator. Keep this explicit limitation and retain physical acceptance as unverified; do not claim the SDK-only test verified background wake.
 
-Do not enable the product switch based solely on the passing transport probes above.
+The strict no-loss contract above was superseded by the explicit real-time-first requirement. Physical background/headset acceptance and field latency measurements remain unverified; do not infer them from transport probes.
+
+## Real-time-first product verification
+
+- Android native test uses `PttController` without an HTTP buffered transmitter; iOS native test also uses `PTTController` and an SDK microphone adapter. Floor is local/fake and control is lab data, not the deployed backend.
+- AVD `KOEON_Lab_API35` was started with `-netspeed 128:128`; `adb emu network status` confirmed upload/download **128000 bits/s**, latency 0ms. This limit is on the virtual network, not the adb loopback proxy.
+- UDP SFU config uses `udp_port: 19082`, zero port ranges, `force_tcp` unset, and the Mac LAN address in `node_ip`/`ips.includes`. The address is local-only evidence and is not published. Signaling endpoint is the emulator host alias `ws://10.0.2.2:19080`; debug-only network security allows this alias. Release network policy is unchanged.
+- Test result: Android `selectedProtocol=udp`, decoded 177600 samples, 133301 above threshold, PTT returned IDLE. iOS recorded 98776 above-threshold samples, 1 subscribed track, and returned IDLE. Both test runners passed. Local numeric evidence: `.build/macos/livekit-lab/realtime-udp-results.json`.
+- Android virtual uplink/downlink constrains both voice directions, but the iOS endpoint's own signaling has no independent limit. No carrier packet-loss/latency or real background wake was simulated.
+- Added unit coverage for the 500ms deadline with missing peers, cancellation during the start cue, and safety interruption during the iOS tail.
+
+### Disconnect/rejoin follow-up
+
+- With the same 128kbps AVD/12kbps Opus setup, Android completed two product-PTT transmissions separated by explicit Room disconnect/connect and audio-track recreation. Both rounds returned IDLE and each received at least 16000 additional above-threshold samples; selected ICE protocol remained UDP.
+- Android: 332640 decoded samples, 144223 above threshold, 632 capture callbacks, `completedPttRounds=2`. iOS: 206427 above-threshold samples, 2 subscribed tracks. Both native runners passed. Local evidence: `.build/macos/livekit-lab/rejoin-results.json`.
+- This verifies a deliberate disconnect/rejoin and a new PTT; it does not exercise the production session controller's network-loss recovery, backend Floor API, APNs, Apple PushToTalk or acoustic intelligibility. Those acceptance checks remain open in #54.
+- Regression: Android 200 unit tests, lint and debug/test APK build passed; iOS 302 tests with 300 passing and 2 opt-in probes skipped, plus successful native probe build/run. Feature-parity contract passed. No version bump, release or physical-device installation was performed (Android debug 1.0.13 / 14).

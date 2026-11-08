@@ -46,7 +46,7 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 
 ## 引き継ぎ時の確認
 
-- [#54](https://github.com/dennomusooffice/koeon-client/issues/54): 128kbps制限とLiveKit音声復元。実SDK/ローカルSFUでAndroid15↔16、Android15↔iOS27.0のOpus受信を確認。製品の経路切替は未実装。iOS終了後の保持音声、RTP終端、復旧・背景受信の受入れが残る。[試験条件・限界・再実行手順](../scripts/mixed-lab/RTP_LAB.md)。
+- [#54](https://github.com/dennomusooffice/koeon-client/issues/54): 128kbps制限とLiveKit音声復元。実SDK/ローカルSFUでAndroid15↔16、Android15↔iOS27.0のOpus受信を確認。利用者のリアルタイム優先・多少の欠けを許容する要件変更に従い、両OSの標準TXをLiveKit Opusへ切替済み（未配信）。RX_READY最大500ms、公開後の開始音、アプリ操作の終端180msを実装。Android200件／iOS300件成功・専用2件スキップ、Lint/build成功。128kbps上下制限のAndroid15↔iOS27.0でUDP双方向とAndroid切断・再参加後の新規PTTを確認。実バックエンドFloor・実機背景／Bluetooth・キャリア損失条件の受入れは残る。[試験条件・限界・再実行手順](../scripts/mixed-lab/RTP_LAB.md)。
 
 - Issue／PRと現在のブランチ・HEAD・作業ツリーを読み、記録後の変更がないか確認する。
 - 実機のインストール済みビルドを確認し、配信済みビルドと同一だと推測しない。

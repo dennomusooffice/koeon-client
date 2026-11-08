@@ -6,7 +6,7 @@
 
 - UIは押下を直ちに`preparing` / `REQUESTING_FLOOR`として表示します。
 - microphone publicationは有効なfloor grantより前には開始しません。
-- RX_READYはcold-wake receiverを保護するbest-effort barrierです。現在の4,000ms上限を、レイテンシだけを理由に短縮しません。
+- RX_READYはbest-effort barrierです。2026-11-08の明示要件により標準TXは最大500msで進み、遅いreceiverを待って全員を遅らせません。
 - iOSのApple PushToTalk activationはfloor grant後にRX_READYと並列で準備します。microphone publicationはRX_READY完了とApple activationの両方が成立するまで開始しません。
 - Room、track、audio engineはintercom session中にwarm状態を維持し、PTT押下ごとのreconnect、rejoin、track再生成を行いません。
 
@@ -38,12 +38,12 @@ raw audio、token、credential、endpoint値は診断へ記録しません。`fi
 PTT_DOWN_TO_UI_P95_MS <= 100
 HUMAN_SPEAK_TO_REMOTE_AUDIBLE_P95_MS <= 700
 HUMAN_SPEAK_TO_REMOTE_AUDIBLE_MAX_MS <= 1000
-LEADING_CLIP = 0
-LAG_CONVERGE_P95_MS <= 250
+LEADING_CLIP = BEST_EFFORT（ゼロ保証なし、意味が伝わることを優先）
+NO_APPLICATION_AUDIO_BACKLOG（標準RTPでは蓄積音声の追い上げを行わない）
 REMOTE_END_TO_NEXT_PTT_P95_MS <= 500
 ```
 
-既存のprepared audio pathとSDK prewarmを維持します。現在のBATv1には上限6秒のPCMバッファがあります。leading clipおよびcatch-up値は実機受入で確定し、未計測値をPASSとして扱いません。
+SDK prewarmを維持し、標準音声はLiveKit Opusで送ります。開始音はtrack有効化後、アプリtouch UPでは180msの語尾保護を行います。準備前にUPした発話は後から再送しません。iOS system/headset終了とOS割込みでは安全とAppleのauthorityを優先します。未計測の可聴品質をPASSとしません。以下のBATv1節は旧方式の修正履歴であり、現在の標準TX契約ではありません。
 
 ## Androidの短い発話（2026-10-31修正、未配信）
 

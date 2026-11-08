@@ -272,7 +272,7 @@ class IntercomSessionManager(
     private val batv1Capture = com.dennomuso.koeon.core.audio.Batv1CaptureBuffer(inputGain = gainProcessor)
     private var batv1Transmitter: com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter? = null
     @Volatile private var batv1Receiver: com.dennomuso.koeon.core.audio.HttpBufferedAudioReceiver? = null
-    private val room = LiveKitRoomController(appContext, scope, gainProcessor, batv1Capture) { event ->
+    private val room = LiveKitRoomController(appContext, scope, gainProcessor, null) { event ->
         when (event) {
             is AudioFocusEvent.Lost -> handleAudioInterruption(event.reason)
             AudioFocusEvent.Gained -> handleAudioFocusRegained()
@@ -1064,22 +1064,8 @@ class IntercomSessionManager(
         room.onBufferedAudioStart = { generationId -> batv1Receiver?.start(generationId) }
         room.onBufferedAudioEnd = { batv1Receiver?.noteControlEnd() }
         room.onBufferedAudioEndCue = { batv1Receiver?.noteEndCue() }
-        batv1Transmitter = if (join.canPublish && !deviceId.isNullOrBlank()) {
-            com.dennomuso.koeon.core.audio.HttpBufferedAudioTransmitter(
-                scope = scope,
-                api = api,
-                capture = batv1Capture,
-                channelId = join.channel.id,
-                sessionId = join.sessionId,
-                deviceId = deviceId,
-                onFailure = { code ->
-                    scope.launch {
-                        pttController?.stopForSafety("Buffered TX failed safely: $code")
-                        _state.update { it.copy(error = "Buffered TX failed safely: $code") }
-                    }
-                },
-            )
-        } else null
+        // Standard TX is LiveKit Opus. Retain BATv1 RX for older peers only.
+        batv1Transmitter = null
         pttController = PttController(
             scope = scope,
             floor = floor,

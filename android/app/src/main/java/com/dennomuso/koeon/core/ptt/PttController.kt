@@ -318,15 +318,6 @@ class PttController(
                 return
             }
 
-            if (bufferedGenerationId == null) {
-                val cueStart = clock.now()
-                val cueResult = cuePlayer.playStart()
-                val cueEnd = clock.now()
-                update(snapshot.copy(
-                    startCueResult = cueResult.fold({ "Played" }, { "Failed: ${it.message ?: "unknown"}" }),
-                    timing = snapshot.timing.copy(cueStartAt = cueStart, cueEndAt = cueEnd, localStartCueCompletedAt = cueEnd),
-                ))
-            }
 
             if (!canContinueStart(bufferedGenerationId, requestGeneration)) {
                 discardActiveBuffered()
@@ -352,6 +343,25 @@ class PttController(
             }
 
             val trackEnabledAt = clock.now()
+            if (!canContinueStart(bufferedGenerationId, requestGeneration)) {
+                boundedAbortFinalization(leaseId, "PTT_UP_DURING_PUBLICATION")
+                return
+            }
+            if (bufferedGenerationId == null) {
+                val cueStart = clock.now()
+                val cueResult = cuePlayer.playStart()
+                val cueEnd = clock.now()
+                update(snapshot.copy(
+                    startCueResult = cueResult.fold({ "Played" }, { "Failed: ${it.message ?: "unknown"}" }),
+                    timing = snapshot.timing.copy(cueStartAt = cueStart, cueEndAt = cueEnd, localStartCueCompletedAt = cueEnd),
+                ))
+            }
+
+            if (!canContinueStart(bufferedGenerationId, requestGeneration)) {
+                boundedAbortFinalization(leaseId, "PTT_UP_DURING_CUE")
+                return
+            }
+
             update(
                 snapshot.copy(
                     state = PttState.TRANSMITTING,

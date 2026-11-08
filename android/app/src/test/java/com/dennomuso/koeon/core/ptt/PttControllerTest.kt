@@ -20,14 +20,28 @@ import java.time.Instant
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PttControllerTest {
+    @Test fun `release during RTP start cue mutes and releases without entering TX`() = runTest {
+        val harness = Harness(testScheduler, cueDelayMs = 300)
+        val down = launch { harness.controller.pressDown(true) }
+        runCurrent()
+        assertTrue(harness.microphoneEnabled)
+        val up = launch { harness.controller.pressUp() }
+        runCurrent()
+        advanceTimeBy(300); runCurrent()
+        down.join(); up.join()
+        assertFalse(harness.microphoneEnabled)
+        assertTrue(harness.events.contains("release"))
+        assertEquals(PttState.IDLE, harness.controller.current().state)
+    }
+
     @Test
-    fun `grant plays start cue before microphone TX`() = runTest {
+    fun `grant enables RTP before the speak cue`() = runTest {
         val harness = Harness(testScheduler)
         harness.controller.pressDown(true)
 
         assertEquals(PttState.TRANSMITTING, harness.controller.current().state)
-        assertEquals(listOf("acquire", "control-start", "start-cue", "mic-on"), harness.events.take(4))
-        assertTrue(harness.controller.current().timing.cueEndAt!! <= harness.controller.current().timing.trackEnabledAt!!)
+        assertEquals(listOf("acquire", "control-start", "mic-on", "start-cue"), harness.events.take(4))
+        assertTrue(harness.controller.current().timing.trackEnabledAt!! <= harness.controller.current().timing.cueEndAt!!)
         val timing = harness.controller.current().timing
         assertTrue(timing.localUiFeedbackAt != null)
         assertTrue(timing.localUiFeedbackLatencyMs!! <= 100L)

@@ -290,7 +290,7 @@ private struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("音声品質（従来方式）") {
+                Section("音声品質") {
                     Picker("送信音声", selection: Binding(
                         get: { session.selectedAudioPublishProfile },
                         set: { session.setAudioPublishProfile($0) }
@@ -300,12 +300,12 @@ private struct SettingsView: View {
                         }
                     }
                     row("選択中", session.selectedAudioPublishProfile.displayName)
-                    row("従来方式の接続設定", session.appliedAudioPublishProfile?.displayName ?? "未接続")
-                    Text("この設定は従来の送信方式にのみ適用されます。現在の標準送信では、音質・通信量は変わりません。")
+                    row("現在の接続設定", session.appliedAudioPublishProfile?.displayName ?? "未接続")
+                    Text("LiveKitの送信音質と通信量を変更します。速度制限中は低音質（12kbps）を選んでください。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     if session.isJoined {
-                        Text("選択値は保存され、従来方式の次回接続時に適用されます。")
+                        Text("選択値は保存され、次回接続時に適用されます。")
                             .font(.footnote)
                             .foregroundStyle(.orange)
                     }

@@ -541,6 +541,7 @@ final class IntercomSessionController: ObservableObject {
     private var releaseGeneration = 0
     private var releaseFloorCompleted = false
     private var releaseAppleCompleted = false
+    private var pendingAppAppleStop = false
     private var releaseCleanupTask: Task<Void, Never>?
     private var incomingWakeRecoveryTask: Task<Void, Never>?
     private var bufferedResolveTask: Task<Void, Never>?
@@ -649,6 +650,15 @@ final class IntercomSessionController: ObservableObject {
             if event.type == "start" { self?.rxReadyStartReceivedAt = Date() }
             if event.type == "end" { self?.bufferedReceiver?.noteControlEnd() }
             self?.rx?.handleControl(event, senderSessionId: senderSessionId)
+            if event.type == "start", event.bufferedGenerationId == nil,
+               event.sessionId == senderSessionId, let self,
+               self.rx?.currentSnapshot().leaseId == event.leaseId,
+               self.rx?.currentSnapshot().sessionId == event.sessionId {
+                // Validated RTP START ends legacy HTTP discovery immediately.
+                self.bufferedResolveResult = "LIVEKIT_RTP"
+                self.bufferedResolveTask?.cancel()
+            }
+
             if let self, event.type == "start", event.bufferedGenerationId != nil,
                event.sessionId == senderSessionId, self.rx?.currentSnapshot().leaseId == event.leaseId {
                 self.receivedBufferedStart = (event, self.runtimeLiveness.generation)
@@ -745,7 +755,7 @@ final class IntercomSessionController: ObservableObject {
             self.roomConnectionStateAtIncomingPush = self.room.connectionState.rawValue
             self.rxWakeSource = runtimeAction.rawValue
             self.rxPath = runtimeAction == .useWarmRuntime ? "warm" : "cold_resume"
-            self.rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
+            self.rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: false)
             self.incomingPushRxGeneration = self.rx?.currentSnapshot().generation
             self.scheduleIncomingPushRuntimeRecovery(runtimeAction, generation: wakeGeneration)
             self.resolveIncomingBufferedAudio(incoming)
@@ -832,6 +842,7 @@ final class IntercomSessionController: ObservableObject {
         }
         pushToTalk.onEndTransmitting = { [weak self] source in
             guard let self else { return }
+            self.pendingAppAppleStop = false
             self.appleLastEndAt = Date()
             self.appleLastEndSource = source
             let actions = self.pttRequestGate.didEnd()
@@ -1144,7 +1155,7 @@ final class IntercomSessionController: ObservableObject {
             appliedAudioPublishProfile = connectionAudioPublishProfile
             if let incoming = pushToTalk.currentIncomingEvent(channelId: response.channel.id),
                !completedBufferedLeases.contains(incoming.leaseId) {
-                rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
+                rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: false)
             }
             await audio.prepareForIntercom(canPublish: response.canPublish)
             try await audio.beginPushToTalkManagedSession()
@@ -1169,27 +1180,16 @@ final class IntercomSessionController: ObservableObject {
             guard let deviceId = response.deviceId, !deviceId.isEmpty else {
                 throw APIClientError.invalidResponse
             }
-            let bufferedTransmitter = BufferedAudioTransmitter(
-                api: api,
-                capture: bufferedCapture,
-                channelId: response.channel.id,
-                sessionId: response.sessionId,
-                deviceId: deviceId,
-                onFailure: { [weak self] code in
-                    Task { @MainActor in
-                        await self?.ptt?.stopForSafety(reason: "Buffered TX failed safely: \(code)")
-                        self?.lastError = "Buffered TX failed safely: \(code)"
-                    }
-                }
-            )
-            self.bufferedTransmitter = bufferedTransmitter
+            // Standard TX uses LiveKit Opus; HTTP receiver remains for older peers.
+            self.bufferedTransmitter = nil
             let controller = PTTController(
                 role: response.user.role,
                 floor: FloorClient(sessionId: response.sessionId, api: api),
                 microphone: room,
                 cuePlayer: cuePlayer,
                 control: room,
-                bufferedAudio: bufferedTransmitter
+                bufferedAudio: nil,
+                rtpReleaseHangoverMilliseconds: 180
             ) { [weak self] snapshot in
                 Task { @MainActor in
                     guard let self, self.runtimeLiveness.generation == runtimeGeneration else { return }
@@ -1961,7 +1961,7 @@ final class IntercomSessionController: ObservableObject {
             completeReconnectAttempt(result: "connected", completedAt: resumeLiveKitConnectedAt ?? Date())
             if let incoming = pushToTalk.currentIncomingEvent(channelId: response.channel.id),
                !completedBufferedLeases.contains(incoming.leaseId) {
-                rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
+                rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: false)
             }
             restoreStage = "AUDIO_PREPARE"
             await audio.prepareForIntercom(canPublish: response.canPublish)
@@ -1985,25 +1985,14 @@ final class IntercomSessionController: ObservableObject {
             guard let deviceId = response.deviceId, !deviceId.isEmpty else {
                 throw APIClientError.invalidResponse
             }
-            let bufferedTransmitter = BufferedAudioTransmitter(
-                api: api,
-                capture: bufferedCapture,
-                channelId: response.channel.id,
-                sessionId: response.sessionId,
-                deviceId: deviceId,
-                onFailure: { [weak self] code in
-                    Task { @MainActor in
-                        await self?.ptt?.stopForSafety(reason: "Buffered TX failed safely: \(code)")
-                        self?.lastError = "Buffered TX failed safely: \(code)"
-                    }
-                }
-            )
-            self.bufferedTransmitter = bufferedTransmitter
+            // Standard TX uses LiveKit Opus; HTTP receiver remains for older peers.
+            self.bufferedTransmitter = nil
             let controller = PTTController(
                 role: response.user.role,
                 floor: FloorClient(sessionId: response.sessionId, api: api),
                 microphone: room, cuePlayer: cuePlayer, control: room,
-                bufferedAudio: bufferedTransmitter
+                bufferedAudio: nil,
+                rtpReleaseHangoverMilliseconds: 180
             ) { [weak self] snapshot in Task { @MainActor in
                     guard let self, self.runtimeLiveness.generation == runtimeGeneration else { return }
                     self.applyPttSnapshot(snapshot)
@@ -2144,6 +2133,17 @@ final class IntercomSessionController: ObservableObject {
     private func applyPttSnapshot(_ snapshot: PTTSnapshot) {
         let previous = pttSnapshot.state
         pttSnapshot = snapshot
+        if bufferedTransmitter == nil {
+            if snapshot.state == .requestingFloor && previous != .requestingFloor { inputGain.beginTransmission() }
+            if ![.requestingFloor, .transmitting, .releasing].contains(snapshot.state) {
+                inputGain.endTransmission(learn: snapshot.lastError == nil)
+            }
+        }
+        if pendingAppAppleStop, snapshot.microphoneMutedAt != nil {
+            pendingAppAppleStop = false
+            appleStopRequestedAt = Date()
+            pushToTalk.stopTransmitting()
+        }
         if snapshot.floorReleaseCompletedAt != nil { lastReleaseSnapshot = snapshot }
         if snapshot.state == .busy, previous != .busy { playStatusCue(.busy) }
         if snapshot.state == .error, previous != .error { playStatusCue(.error) }
@@ -2162,8 +2162,15 @@ final class IntercomSessionController: ObservableObject {
                 appleBeginRequestedAt = Date()
                 pushToTalk.requestBeginTransmitting()
             case .stopSystemTransmission:
-                appleStopRequestedAt = Date()
-                pushToTalk.stopTransmitting()
+                if source == "userRequest", bufferedTransmitter == nil,
+                   pttSnapshot.state == .transmitting || pttSnapshot.state == .releasing {
+                    // App touch UP keeps Apple's session for the bounded RTP tail only.
+                    pendingAppAppleStop = true
+                    startFloorCleanup(source: "developerRequest")
+                } else {
+                    appleStopRequestedAt = Date()
+                    pushToTalk.stopTransmitting()
+                }
             case .beginFloor:
                 Task {
                     await ptt?.pttDown(
@@ -2238,6 +2245,11 @@ final class IntercomSessionController: ObservableObject {
                   generation == self.releaseGeneration else { return }
             self.releaseCleanupTask = nil
             self.releaseFloorCompleted = confirmed
+            if self.pendingAppAppleStop {
+                self.pendingAppAppleStop = false
+                self.appleStopRequestedAt = Date()
+                self.pushToTalk.stopTransmitting()
+            }
             self.tryFinishPttRelease(generation: generation)
         }
     }
@@ -2308,6 +2320,7 @@ final class IntercomSessionController: ObservableObject {
         // Cancellation is cooperative: a pending Floor/API operation can still return.
         // Fence its completion before resetting the UI gate for a new runtime/press.
         txAttemptGeneration += 1
+        pendingAppAppleStop = false
         releaseGeneration += 1
         activationWatchdogTask?.cancel()
         activationWatchdogTask = nil
@@ -2771,6 +2784,7 @@ final class IntercomSessionController: ObservableObject {
     private func resetCurrentTxDiagnostics() {
         activationWatchdogTask?.cancel()
         pttSnapshot = .initial(role: joinedSession?.user.role ?? .staff)
+        pendingAppAppleStop = false
         releaseGeneration += 1
         releaseFloorCompleted = false
         releaseAppleCompleted = false
@@ -2810,7 +2824,7 @@ final class IntercomSessionController: ObservableObject {
         switch rxReadyPolicy {
         case .off: 0
         case .fast250: 250
-        case .adaptive: nil
+        case .adaptive: 500
         }
     }
 
@@ -2925,6 +2939,7 @@ final class IntercomSessionController: ObservableObject {
             "schema": fieldDiagnosticSchema,
             "capturedAt": ISO8601DateFormatter().string(from: Date()),
             "platform": "ios",
+            "standardAudioTransport": "LIVEKIT_OPUS_RTP",
             "settings": [
                 "appTxPath": appTxPath.rawValue,
                 "rxReadyPolicy": rxReadyPolicy.rawValue,

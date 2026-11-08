@@ -62,6 +62,7 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             }
         } ?: JsonNull)
         put("schema", JsonPrimitive(FIELD_DIAGNOSTIC_SCHEMA)); put("capturedAt", JsonPrimitive(capturedAt)); put("platform", JsonPrimitive("android"))
+        put("standardAudioTransport", JsonPrimitive("LIVEKIT_OPUS_RTP"))
         put("settings", buildJsonObject { put("headsetPttMode", JsonPrimitive(d.headsetPttMode.name)); put("hardwareVolumePttMode", JsonPrimitive(d.hardwareVolumePttMode.name)) })
         put("state", buildJsonObject { put("connection", JsonPrimitive(state.connectionState.name)); put("ptt", JsonPrimitive(state.ptt.state.name)); put("pttSemanticState", JsonPrimitive(semantic.name)); put("pttEligible", JsonPrimitive(eligible)); put("pttBlockReason", nullable(blockReason)); put("rx", JsonPrimitive(rx.state.name)) })
         put("timingMs", buildJsonObject { put("localUiFeedback", nullable(state.ptt.timing.localUiFeedbackLatencyMs)); put("floor", nullable(state.ptt.timing.floorLatencyMs)); put("ready", nullable(state.ptt.timing.readyWaitMs)); put("controlPublish", JsonNull) })

@@ -40,6 +40,20 @@ private final class RtpLabAudioProbe: NSObject, AudioCustomProcessingDelegate, A
 }
 
 @MainActor
+private final class RtpLabGateway: MicrophoneControlling, PttControlPublishing {
+    let room: Room
+    init(room: Room) { self.room = room }
+    func setMicrophoneEnabled(_ enabled: Bool) async throws { _ = try await room.localParticipant.setMicrophone(enabled: enabled) }
+    func publishStart(leaseId: String) async throws -> PttStartPublishDiagnostics {
+        try await room.localParticipant.publish(data: Data("start".utf8), options: DataPublishOptions(topic: "rtp-lab-control", reliable: true))
+        return .init()
+    }
+    func publishEnd(leaseId: String) async throws {
+        try await room.localParticipant.publish(data: Data("end".utf8), options: DataPublishOptions(topic: "rtp-lab-control", reliable: true))
+    }
+}
+
+@MainActor
 final class LiveKitRtpLabTests: XCTestCase {
     func testNativeOpusInteroperability() async throws {
         guard ProcessInfo.processInfo.environment["KOEON_RTP_LAB"] == "1" else {
@@ -63,13 +77,25 @@ final class LiveKitRtpLabTests: XCTestCase {
             defaultAudioPublishOptions: AudioPublishOptions(encoding: AudioEncoding(maxBitrate: 12000), dtx: false, red: true)))
         do {
             try await room.connect(url: "ws://127.0.0.1:19080", token: token)
-            try await room.localParticipant.setMicrophone(enabled: true)
+            let gateway = RtpLabGateway(room: room)
+            let events = EventLog()
+            let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+                microphone: gateway, cuePlayer: CueMock(events: events), control: gateway,
+                rtpReleaseHangoverMilliseconds: 180, onUpdate: { _ in })
+            await controller.pttDown()
+            let started = await controller.currentSnapshot()
+            XCTAssertEqual(started.state, .transmitting)
             let deadline = ContinuousClock.now.advanced(by: .seconds(90))
             while probe.counts.0 < 16000, ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(100))
             }
             XCTAssertGreaterThan(probe.counts.0, 16000)
             XCTAssertGreaterThan(probe.counts.1, 0)
+            // Keep transmitting while the peer disconnects, rejoins and sends again.
+            try await Task.sleep(for: .seconds(12))
+            await controller.pttUp()
+            let ended = await controller.currentSnapshot()
+            XCTAssertEqual(ended.state, .idle)
             let result: [String: Any] = ["role": "ios27", "nonzeroSamples": probe.counts.0,
                 "subscribedTracks": probe.counts.1, "codecTargetBps": 12000]
             var request = URLRequest(url: URL(string: "http://127.0.0.1:18766/result")!)
@@ -164,6 +190,29 @@ final class PttInitializationGateTests: XCTestCase {
 
 @MainActor
 final class PTTControllerTests: XCTestCase {
+    func testRtpTailKeepsMicUntilBoundedReleaseAndSafetyCanInterrupt() async throws {
+        for interrupt in [false, true] {
+            let events = EventLog()
+            let clock = RtpTailGateClock()
+            let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+                microphone: MicrophoneMock(events: events), cuePlayer: CueMock(events: events),
+                control: ControlMock(events: events), rtpReleaseHangoverMilliseconds: 180,
+                clock: clock, onUpdate: { _ in })
+            await controller.pttDown()
+            let release = Task { await controller.pttUp() }
+            for _ in 0..<100 where !clock.started { try await Task.sleep(for: .milliseconds(1)) }
+            XCTAssertTrue(clock.started)
+            let before = await events.values()
+            XCTAssertFalse(before.contains("mic:off"))
+            if interrupt { await controller.stopForSafety(reason: "interruption during RTP tail") }
+            clock.allow()
+            await release.value
+            let after = await events.values()
+            XCTAssertTrue(after.contains("mic:off"))
+            XCTAssertEqual(after.filter { $0 == "release" }.count, 1)
+        }
+    }
+
     func testC1C2C8SpeakerBluetoothSpeakerPolicySurvivesFiftySwitches() {
         for _ in 0 ..< 50 {
             XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: .speaker))
@@ -232,7 +281,7 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertEqual(machine.snapshot.lastRecoveryError, "route unavailable")
     }
 
-    func testGrantPlaysStartCueBeforeEnablingMicrophoneAndReleaseOrdersEndCue() async throws {
+    func testGrantEnablesRtpBeforeSpeakCueAndReleaseOrdersEndCue() async throws {
         let events = EventLog()
         let floor = FloorMock(events: events)
         let microphone = MicrophoneMock(events: events)
@@ -251,7 +300,7 @@ final class PTTControllerTests: XCTestCase {
         await controller.pttDown()
         let startedEvents = await events.values()
         let transmitting = await controller.currentSnapshot()
-        XCTAssertEqual(Array(startedEvents.prefix(4)), ["acquire", "control:start", "cue:start", "mic:on"])
+        XCTAssertEqual(Array(startedEvents.prefix(4)), ["acquire", "control:start", "mic:on", "cue:start"])
         XCTAssertEqual(transmitting.state, .transmitting)
 
         await controller.pttUp()
@@ -291,7 +340,7 @@ final class PTTControllerTests: XCTestCase {
 
         await controller.activatePrearmedTransmission()
         values = await events.values()
-        XCTAssertEqual(values, ["acquire", "control:start", "mic:on"])
+        XCTAssertEqual(values, ["acquire", "control:start", "mic:on", "cue:start"])
         let transmittingSnapshot = await controller.currentSnapshot()
         XCTAssertEqual(transmittingSnapshot.state, .transmitting)
         XCTAssertGreaterThan(transmittingSnapshot.attemptGeneration, 0)
@@ -3132,6 +3181,21 @@ private actor CueMock: PttCuePlaying {
     func playEnd() async throws {
         await events.append("cue:end")
         if failEnd { throw MockError.expected }
+    }
+}
+
+private final class RtpTailGateClock: PTTClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var entered = false
+    private var permitted = false
+    var started: Bool { lock.withLock { entered } }
+    var now: Date { Date() }
+    func allow() { lock.withLock { permitted = true } }
+    func sleep(milliseconds: Int) async throws {
+        if milliseconds == 180 {
+            lock.withLock { entered = true }
+            while !lock.withLock({ permitted }) { try await Task.sleep(for: .milliseconds(1)) }
+        } else { try await Task.sleep(for: .seconds(3600)) }
     }
 }
 

@@ -1,5 +1,7 @@
 # KOEON 共通製品仕様・設計・検証台帳
 
+2026-11-08更新（#54 / PR #55、未配信）: 利用者がリアルタイム性を優先し、多少の語頭・語尾欠けを許容すると明示。標準TXをLiveKit Opusへ復帰し、準備待ち最大500ms、track有効化後の開始音、アプリtouch UPの180ms語尾保護を採用した。完全な保持音声再送は行わない。旧BATv1受信互換、通知登録保持・背景復帰・再接続・受信監視を維持する。以下の既存配信版の記録と今回の未配信コードを区別する。
+
 2026-11-08 update (#52): iOS 1.0 (2026110801), source `75024fa4553f7a5381603e7ee37ece628d1524b2`, is now VALID / APP_STORE_ELIGIBLE, with beta review APPROVED and external IN_BETA_TESTING. The existing external public-link group has this build. Installation on the affected iPhone 16 was verified with devicectl, replacing 2026082004. SO-52C remains 1.0.13 (14), source `a6f3e10654c7931744a0303ffc9c2a1651bcf249`. Foreground SO-52C transmission was heard on both iPhones; iPhone-to-SO-52C was clear without clipped words. After about one minute locked, only iPhone 16 heard the transmission. The other iPhone recorded Apple activation followed by RUNTIME_CONNECT_FAILED, then a zero-frame BufferedAudioError on foreground recovery about 32 seconds later. Root cause remains open in #52. Device operations finished before 11:30 JST; the Android diagnostic helper was removed.
 
 The next diagnostic change records fixed restore-stage identifiers and explicit BufferedAudioError cases, and exposes timeline head expiry through the existing terminalReason field without changing the shared JSON key contract. The iOS Simulator regression suite passed 299 tests (0 failures), including an expired-head response and failed-player drain. This is diagnostic instrumentation, not a claimed reception fix. Commit `f981a3f8dcbe459640a0b6792f61b7920e08a35a` was distributed as 1.0 (2026110802): VALID / APP_STORE_ELIGIBLE, beta review APPROVED, external IN_BETA_TESTING on 2026-11-08 11:45 JST. Installation on the previously silent iPhone was verified; the other iPhone remains 2026110801. One locked-screen reception on the updated phone succeeded: background at 11:47:15, Apple activation at 11:48:13, drain completion at 11:48:30 before foreground at 11:48:31; 719 frames, no missing/duplicate frames or engine-start failures. This was a single-phone test, not simultaneous reception by both. The earlier runtime-connect failure did not recur, so failure-stage diagnostic acceptance and root-cause verification remain pending. A second locked-screen trial also succeeded: background at 11:49:17, activation at 11:50:44, drain at 11:50:56, foreground at 11:50:57; 454 frames, missing/duplicate/engine-start failures all zero. The user heard both trials. Device collection ended at 11:51:18, before the newly authorized 11:52 deadline. No runtime behavior fix is claimed; reproduction of the earlier connect failure is still needed.
@@ -44,9 +46,9 @@ iOSとAndroidで、同じチャンネルへ参加し、押して話し、離し�
 
 UIの表示期間とインカムセッションの寿命を分ける。認証・参加資格・Floor仲裁・短命LiveKitトークンの発行はサーバーが所有する。クライアントは受け取った権限と世代を照合し、古い非同期処理の完了で新しい接続・送受信を変更しない。
 
-制御はLiveKitのPTT/RX_READYトピックを使用する。現在のBATv1音声はバッファされたPCMをHTTPSで輸送し、旧RTP経路とは区別する。PCMは48kHz・mono・PCM16LE、20ms単位。送信バッチは最大32フレームで、少量でも待たず送る。準備中に得た音声とライブ音声の順序を維持する。
+制御はLiveKitのPTT/RX_READYトピック、標準音声はLiveKit Opus/RTPを使用する。回線条件でUDPまたはTCP/TURNを使用する。12/24/48kbpsの送信品質設定を適用し、速度制限中は12kbpsを選ぶ。アプリで音声を蓄積して追い上げ再生しない。BATv1 HTTP PCM受信は旧送信者との互換のため残す。
 
-Floor TTLは3秒、更新は1秒、連続送信上限60秒。RX_READYの上限は4秒で、期限切れをFloor権限の迂回に使わない。iOSはApple PushToTalkの音声所有権に従い、Androidは音声フォーカス・バックグラウンド実行制約に従う。iOSのBluetooth 16kHz等は共通PCM形式へ変換する。受信は実際の再生完了を待つが、中止を成功完了として記録しない。
+Floor TTLは3秒、更新は1秒、連続送信上限60秒。標準RX_READY上限は500msで、期限切れをFloor権限の迂回に使わない。遅い受信者は途中参加となる。iOSはApple PushToTalkの音声所有権、Androidは音声フォーカス・実行制約に従う。タッチUPでは180msの語尾保護後にmuteし、system/headset/OS停止では即時停止を優先する。
 
 詳細な契約は[PROTOCOL](PROTOCOL.md)、遅延条件は[PTT_STARTUP_LATENCY](PTT_STARTUP_LATENCY.md)、変更理由・検証履歴は[BUG_TRACKING](BUG_TRACKING.md)から辿る。
 

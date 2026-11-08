@@ -470,6 +470,7 @@ class LiveKitRoomController(
             channelId = currentChannel,
             speakerSessionId = currentSession,
             leaseId = leaseId,
+            maximumWaitMs = 500, // Real-time intercom: late peers must not stall everyone.
         )
         _snapshot.value = _snapshot.value.copy(
             rxReadyExpectedCount = rxReadyBarrier?.expectedCount() ?: 0,
