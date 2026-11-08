@@ -22,6 +22,8 @@ struct InputGainSnapshot: Sendable {
     var limiterHits = 0
     var calibrationState = "IDLE"
     var recommendationDb: Float?
+    var lastLearningDecision = "NOT_RUN"
+    var lastCompletedSampleCount = 0
 }
 
 /// In-place, no-lookahead capture trim. It never owns AVAudioSession or queues audio.
@@ -32,6 +34,7 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     private var transmitting = false
     private var measurementsPaused = false
     private var learningAllowed = true
+    private var learningBlockReason: String?
     private var fixedGainDb: Float = 0
     private var sumSquares: Double = 0
     private var sampleCount = 0
@@ -72,20 +75,25 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
             value.recommendationDb = nil
             if transmitting {
                 fixedGainDb = effectiveGain()
-                learningAllowed = false
+                // Apple PTT may reveal the real microphone after DOWN but
+                // before capture starts. No old microphone samples exist yet.
+                if sampleCount > 0 {
+                    learningAllowed = false
+                    learningBlockReason = "ROUTE_CHANGED"
+                }
             }
             resetMeasurements()
         }
     }
     func setMode(_ mode: InputGainMode) {
         lock.withLock {
-            if transmitting, value.mode != mode { learningAllowed = false }
+            if transmitting, value.mode != mode { learningAllowed = false; learningBlockReason = "MODE_CHANGED" }
             value.mode = mode
             defaults.set(mode.rawValue, forKey: "audio.gain.mode")
         }
     }
     func setManualGainDb(_ gain: Float) { lock.withLock { value.manualGainDb = clamp(gain, maximum: 24); defaults.set(value.manualGainDb, forKey: key("manual", value.route)) } }
-    func beginTransmission() { lock.withLock { transmitting = true; measurementsPaused = false; learningAllowed = true; fixedGainDb = effectiveGain(); resetMeasurements() } }
+    func beginTransmission() { lock.withLock { transmitting = true; measurementsPaused = false; learningAllowed = true; learningBlockReason = nil; fixedGainDb = effectiveGain(); resetMeasurements() } }
     func markCaptureBoundary() { lock.withLock { resetMeasurements() } }
     func pauseCaptureMeasurements() { lock.withLock { measurementsPaused = true } }
     func endTransmission(learn: Bool = true) {
@@ -93,15 +101,21 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
             guard transmitting else { return }
             transmitting = false
             measurementsPaused = true
-            if learn, learningAllowed, value.mode == .auto, sampleCount >= 4_800, let rms = rmsDbfs() {
-                value.autoTrimDb = Self.nextAutoTrim(
-                    current: value.autoTrimDb,
-                    speechRmsDbfs: rms,
-                    inputPeakDbfs: dbfs(peak),
-                    limiterRatio: Double(value.limiterHits) / Double(sampleCount)
-                )
-                defaults.set(value.autoTrimDb, forKey: key("auto", value.route))
-            }
+            value.lastCompletedSampleCount = sampleCount
+            guard learn else { value.lastLearningDecision = "CANCELLED"; return }
+            guard learningAllowed else { value.lastLearningDecision = learningBlockReason ?? "DISALLOWED"; return }
+            guard value.mode == .auto else { value.lastLearningDecision = "MODE_" + value.mode.rawValue; return }
+            guard sampleCount >= 4_800, let rms = rmsDbfs() else { value.lastLearningDecision = "INSUFFICIENT_SAMPLES"; return }
+            let previous = value.autoTrimDb
+            value.autoTrimDb = Self.nextAutoTrim(
+                current: previous,
+                speechRmsDbfs: rms,
+                inputPeakDbfs: dbfs(peak),
+                limiterRatio: Double(value.limiterHits) / Double(sampleCount)
+            )
+            value.lastLearningDecision = value.autoTrimDb > previous ? "INCREASED" :
+                value.autoTrimDb < previous ? "DECREASED" : rms <= -60 ? "SILENCE_IGNORED" : "TARGET_REACHED"
+            defaults.set(value.autoTrimDb, forKey: key("auto", value.route))
         }
     }
     func startCalibration(now: Date = Date()) { lock.withLock { calibrationRms = []; calibrationUntil = now.addingTimeInterval(3); value.calibrationState = "MEASURING"; value.recommendationDb = nil } }

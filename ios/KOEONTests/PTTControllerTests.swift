@@ -1278,6 +1278,25 @@ final class InputGainProcessorTests: XCTestCase {
             feed(gain, value: 32_000, count: 9_600)
             gain.endTransmission(learn: false)
             XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            XCTAssertEqual(gain.snapshot().lastLearningDecision, "CANCELLED")
+        }
+    }
+
+    func testInitialMicrophoneSelectionBeforeFirstSampleCanLearnItsOwnProfile() {
+        withCapture { gain, _ in
+            gain.setRoute("ios|Bluetooth|unavailable")
+            gain.setMode(.auto)
+            gain.beginTransmission()
+            // Apple PTT activation can reveal the actual input only after DOWN.
+            gain.setRoute("ios|BluetoothHFP|Test headset")
+            feed(gain, value: 2_000, count: 9_600)
+            gain.endTransmission()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 1)
+            XCTAssertEqual(gain.snapshot().lastLearningDecision, "INCREASED")
+            XCTAssertEqual(gain.snapshot().lastCompletedSampleCount, 9_600)
+            gain.setRoute("ios|Bluetooth|unavailable")
+            XCTAssertEqual(gain.snapshot().lastLearningDecision, "INCREASED")
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
         }
     }
 
@@ -1307,6 +1326,7 @@ final class InputGainProcessorTests: XCTestCase {
             feed(gain, value: 2_000, count: 9_600)
             capture.discard(learnFromCapture: true)
             XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            XCTAssertEqual(gain.snapshot().lastLearningDecision, "ROUTE_CHANGED")
             gain.setRoute("Built-in")
             XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
         }

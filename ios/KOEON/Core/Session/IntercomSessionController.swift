@@ -3314,6 +3314,8 @@ final class IntercomSessionController: ObservableObject {
                 "rmsDbfs": decimal(gain.rmsDbfs),
                 "peakDbfs": decimal(gain.peakDbfs),
                 "limiterHits": gain.limiterHits,
+                "lastLearningDecision": gain.lastLearningDecision,
+                "lastCompletedSampleCount": gain.lastCompletedSampleCount,
             ],
             "bufferedAudio": [
                 "protocolVersion": batv1ProtocolVersion,

@@ -50,3 +50,21 @@ The fix extends onlymanual/UI/samplehelper limits to+24dB and persists the selec
 Commit81cba30881545b1512022605ffb550c205e55e14 includesiOSmanual/modefix plus prioroverload andCarPlayclassification/safetystopchanges. TestFlight1.0(2026110903) was signed/uploaded successfully; IPA SHA256915524e5019c5272170ab8c1f305bb85169110035bfa7493605cf0f61e32dca6, source tree319594ffccf34fdee091e2c44cb4f46b041f6068. Apple freshread:VALID, encryptionfalse, internal/externalIN_BETA_TESTING,2internalgroups+1externalgroup. Physical installation is beingverified separately. This release does notclaimlocked-firstRXorCarPlayaudioresolved.
 
 Android1.0.17(18), source45176b1695047b061673de25db8db2b2867a1f80, was published as a GitHubprerelease at https://github.com/dennomusooffice/koeon-client/releases/tag/android-v1.0.17-18 . Signedcandidate andGitHubuploadedAPKdigests match72e946a17e672b22b0d00585f9ecb961561fde25b7af2b4fe4d261fb8ff6c085. This includesnormal-end-onlyAUTOlearning andfocusrecovery. Allchangesremainunmerged; broaderdevice/headsetacceptanceisopen.
+
+## iPhone0903 device persistence verification
+
+PhysicaliPhone TestFlight1.0(2026110903) installation verified byfreshdiagnostic; originalenrollment and8participants survivedupdate. ActualBluetooth remainsconnected. InDiagnostics selectedOFF, terminatedonlyKOEON, relaunchedandobservedModeOFF. RepeatedwithMANUAL andobservedModeMANUALafterrelaunch. RestoredoriginalAUTO andreturnedtoPTT. Manualprofilevalueswerenotchanged. PrivateUIevidence iphone-0903-off-restarted.xml / iphone-0903-manual-restarted.xml / gain-mode-after.xml. This verifiesmodepersistenceononephysicaldevice, notheadsetgainacoustics ormanual+24performanceinhardware.
+
+## Android AUTO through the actual LiveKit callback
+
+Android14 AVD, signed1.0.17(18)/source45176b, productionD_WEBRTC_OWNER(AGC enabled) withKOEONmode explicitlyAUTO fortrial; all8endpoints remainedconnected. Injectedtheknown6.88s speechthroughvirtualmicrophone onlyafterTALKING, usingfinitegesture andpreservingtheexistingWebRTCprocessingprofile. No physicalheadsetwasattached tothisAVD. Wholeutterancemeter includes quiettimearoundinjection; this is notisolatedspeechRMSorVAD.
+
+Three normalreleasesadvancedAUTO0→1→2→3dB. MeasuredpreKOEONRMS−23.837244/−23.840180/−23.842611dBFS; peaks−3.285661/−3.286023/−3.235600; samplecounts421,920/422,080/422,240; limiterhits0/3/83. EachnextgainmatchedtheproductionRMS/peak/limiterpolicycomputedfromthatmeasurement. KnownspeechwasdetectedonAPI35inall3trials. RestoredoriginalmodeOFFandPTTREADY,removeddiagnostichelper. ThetestAVD'slearnedAUTOtrim3dBremainsasanintentionalresult; manualgainwasunchanged0dB. Evidence auto-sdk-api34-results.json andprivateper-trialdiagnostics. Thisdoesnotestablishheadsetperformance orfullconvergenceunderchangingnoise.
+
+## Initial microphone selection before capture
+
+Additional regression against0903source81cba30 reproduced a distinctfailure: setroute(inputunavailable)→beginTransmission→setroute(actualBluetoothinput) beforeanyPCM→9,600validsamples→normalend leftAUTO0dB rather than+1dB.16gainiOStests ranwith1failure. This modelsApplePTT revealingtheactualinputafterDOWN; physicalfailurecausality isnotyetproven.
+
+Thefix allowsinitialroute selection whilezero sampleshavebeenmeasured; a routechangeaftercapturedsamples stilldisableslearningforthatutterance. Fixedgain switches tothenewroute'sprofile asbefore. Repeatedchanges cannotre-enablealreadydisallowedlearning. Modechanges/cancelledutterances retain theirguards. Addedpersistentlast-completiondiagnosticdecision andsamplecount so normallearning,silence,insufficientcapture,cancellation androutechanges canbedistinguishedaftertheactiveinputdisappears. No audioornewdeviceidentifiersareadded. A post-capture routechange thatdiscardslearningstillreportsROUTE_CHANGED; this isnotclaimedresolvedwithoutphysicalevidence.
+
+FulliOSregression324executed/322passed/2dedicatedlabskipped/0failures; parity/diffcheckpassed. Thisadditionalfixisnotyetdistributed/deviceverified. Tests alsoassertthat actualmid-capturemicrophoneswitchstilldoesnottrainanotherprofile andthatcancellation remainsdiscarded.
