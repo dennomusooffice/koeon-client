@@ -17,9 +17,35 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import com.dennomuso.koeon.core.audio.InputGainProcessor
+import com.dennomuso.koeon.core.audio.InputGainMode
+import com.dennomuso.koeon.core.session.onLiveKitPttSnapshot
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PttControllerTest {
+    @Test fun `LiveKit AUTO learns only normal release not safety or microphone failure`() = runTest {
+        for (outcome in listOf("normal", "safety", "mic-failure")) {
+            val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
+            var previous = PttState.IDLE
+            val harness = Harness(testScheduler, microphoneOffSucceeds = outcome != "mic-failure",
+                onSnapshot = { snapshot ->
+                    gain.onLiveKitPttSnapshot(previous, snapshot)
+                    previous = snapshot.state
+                })
+            harness.controller.pressDown(true)
+            val samples = ByteBuffer.allocateDirect(9_600 * 4).order(ByteOrder.nativeOrder())
+            repeat(9_600) { samples.putFloat(2_000f) }
+            samples.rewind()
+            gain.processAudio(1, 9_600, samples)
+            if (outcome == "safety") harness.controller.stopForSafety("route lost")
+            else harness.controller.pressUp()
+            assertEquals(PttState.IDLE, harness.controller.current().state)
+            assertEquals(outcome, if (outcome == "normal") 1f else 0f, gain.snapshot().autoTrimDb, 0f)
+        }
+    }
+
     @Test fun `release during RTP start cue mutes and releases without entering TX`() = runTest {
         val harness = Harness(testScheduler, cueDelayMs = 300)
         val down = launch { harness.controller.pressDown(true) }
@@ -517,6 +543,7 @@ class PttControllerTest {
         private val acquireFailure: Boolean = false,
         externalEvents: MutableList<String>? = null,
         bufferedGateway: BufferedAudioTxGateway? = null,
+        onSnapshot: (PttSnapshot) -> Unit = {},
     ) {
         val events = externalEvents ?: mutableListOf()
         var acquireCount = 0
@@ -618,7 +645,7 @@ class PttControllerTest {
             control = control,
             bufferedAudio = bufferedGateway,
             clock = clock,
-            onSnapshot = {},
+            onSnapshot = onSnapshot,
         )
 
         fun ack(receiverSessionId: String) {

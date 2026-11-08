@@ -1108,15 +1108,9 @@ class IntercomSessionManager(
             bufferedAudio = batv1Transmitter,
             clock = SystemPttClock(),
             onSnapshot = { ptt ->
-                // BATv1 owns gain measurement at the capture boundaries. The
-                // legacy RTP fallback still follows its microphone/PTT lifecycle.
-                val txLifecycle = setOf(PttState.TRANSMITTING, PttState.RELEASING)
+                // Buffered capture owns its measurement boundaries; LiveKit uses PTT lifecycle.
                 if (batv1Transmitter == null) {
-                    if (ptt.state in txLifecycle && previousPttState !in txLifecycle) {
-                        gainProcessor.beginTransmission()
-                    } else if (ptt.state !in txLifecycle && previousPttState in txLifecycle) {
-                        gainProcessor.endTransmission()
-                    }
+                    gainProcessor.onLiveKitPttSnapshot(previousPttState, ptt)
                 }
                 previousPttState = ptt.state
                 refreshInputGainDiagnostics()

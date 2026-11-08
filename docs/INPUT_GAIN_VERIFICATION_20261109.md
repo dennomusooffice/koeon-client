@@ -21,7 +21,7 @@ The fix uses the same peak/limiter rule as Android after normal completion. Gain
 
 - The product summary says manual +24 dB for both platforms, but current iOS processor and UI cap manual input at +12 dB; Android allows +24 dB. AUTO remains +12 dB on both. This discrepancy is not resolved by the overload fix.
 - iOS processor starts in AUTO; Android starts in OFF. Verify intended default and persistence before changing user-visible behavior.
-- Android LiveKit session lifecycle currently calls `endTransmission()` without passing terminal failure state; compare normal completion and error/abort paths against the normal-end-only learning contract.
+- Android LiveKit terminal-learning discrepancy was subsequently reproduced and fixed; see below. Physical interrupted-transmission verification remains outstanding.
 - Profile keys describe input routes, but route switching and headset-specific identity need physical verification. Do not infer microphone characteristics solely from model or transport names.
 - Silence rejection is not voice/noise classification. Steady noise can still influence RMS-based learning.
 
@@ -30,3 +30,11 @@ No new release or device acceptance is implied by implementation or unit tests. 
 ## Automated verification of overload fix
 
 iOS: 320 tests executed, 318 passed, 2 dedicated lab tests skipped, no failures. Android: 224 tests passed, Lint and debug build succeeded. Feature-parity gate and diff check passed. The iOS regression run covers the unchanged route-switch, cancellation, fixed-gain and silence behaviors alongside the new overload cases. These are local automated results; no new build has been distributed or installed on the physical headset device for this fix.
+
+## Android LiveKit abort learning
+
+The production session callback treated every exit from TRANSMITTING/RELEASING as successful input for AUTO. Safety stops, microphone-stop failure and normal releases all return to IDLE, so state alone cannot distinguish them.
+
+The callback lifecycle was extracted without changing behavior and tested with the real PttController, synthetic FloatS16 samples and the real gain processor. The baseline test failed on safety stop: AUTO advanced from0 to+1 dB despite an aborted transmission. A normal release correctly advanced to+1 dB. The fix requires both no terminal error and `release.terminalRecoveryResult == NORMAL_COMPLETE` before learning; other paths end measurement without learning. BATv1 retains its separate capture lifecycle. Tests cover normal release, explicit safety stop and microphone-stop failure.
+
+After the Android lifecycle fix: all225 Android tests passed, Lint/debug build and feature-parity checks passed. No new version has been released or installed for this change; device acceptance remains pending.
