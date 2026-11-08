@@ -865,6 +865,22 @@ enum BufferedAudioError: Error {
     case invalidAudioGraphFormat
     case playbackEngineUnavailable
     case playbackBacklogExceeded
+
+    // Fixed identifiers only: never persist server messages, URLs or identities.
+    var diagnosticCode: String {
+        switch self {
+        case .captureNotConfirmed: "capture_not_confirmed"
+        case .generationMismatch: "generation_mismatch"
+        case .emptyGeneration: "empty_generation"
+        case .invalidWireFormat: "invalid_wire_format"
+        case .sequenceGap: "sequence_gap"
+        case .timelineHeadExpired: "timeline_head_expired"
+        case .illegalLifecycle: "illegal_lifecycle"
+        case .invalidAudioGraphFormat: "invalid_audio_graph_format"
+        case .playbackEngineUnavailable: "playback_engine_unavailable"
+        case .playbackBacklogExceeded: "playback_backlog_exceeded"
+        }
+    }
 }
 
 func makeBatv1PlaybackGraphFormat() -> AVAudioFormat? {
@@ -1348,8 +1364,8 @@ final class BufferedAudioReceiver {
         audioSessionActive = true
         do { try player.resumeIfNeeded() } catch {
             diagnostics.timelineLost = true
-            diagnostics.terminalReason = player.playbackDiagnostics.lastErrorCode ?? "receive_failed"
-            Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_RESUME_FAILED", resultClass: String(describing: type(of: error)))
+            diagnostics.terminalReason = player.playbackDiagnostics.lastErrorCode ?? (error as? BufferedAudioError)?.diagnosticCode ?? "receive_failed"
+            Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_PLAYER_RESUME_FAILED", resultClass: (error as? BufferedAudioError)?.diagnosticCode ?? "receive_failed")
             recordTerminalSnapshot()
             onFailure("BATV1_RX_RESUME_FAILED")
         }
@@ -1562,8 +1578,8 @@ final class BufferedAudioReceiver {
                     diagnostics.graphLastErrorCode = "RX_AUDIO_GRAPH_PREPARE_FAILED"
                 }
             }
-            diagnostics.terminalReason = player.playbackDiagnostics.lastErrorCode ?? "receive_failed"
-            Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_FAILED", generationId: generationId, resultClass: String(describing: type(of: error)))
+            diagnostics.terminalReason = player.playbackDiagnostics.lastErrorCode ?? (error as? BufferedAudioError)?.diagnosticCode ?? "receive_failed"
+            Batv1CrashBreadcrumbStore.shared.record(role: "RX", stage: "RX_FAILED", generationId: generationId, resultClass: (error as? BufferedAudioError)?.diagnosticCode ?? "receive_failed")
             recordTerminalSnapshot()
             onFailure("BATV1_RX_\(String(describing: type(of: error)).uppercased())")
         }

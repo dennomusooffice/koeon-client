@@ -1943,10 +1943,12 @@ final class IntercomSessionController: ObservableObject {
             selected: selectedAudioPublishProfile,
             applied: appliedAudioPublishProfile
         )
+        var restoreStage = "CHECK_CANCELLATION"
         do {
             try Task.checkCancellation()
             resumeLiveKitConnectStartedAt = Date()
             beginReconnectAttempt(reason: "livekit_resume_connect", startedAt: resumeLiveKitConnectStartedAt ?? Date())
+            restoreStage = "LIVEKIT_CONNECT"
             try await room.connect(
                 url: response.livekitUrl, token: response.token, canPublish: response.canPublish,
                 channelId: response.channel.id, userId: response.user.id, sessionId: response.sessionId,
@@ -1961,8 +1963,11 @@ final class IntercomSessionController: ObservableObject {
                !completedBufferedLeases.contains(incoming.leaseId) {
                 rx?.handleTrustedIncomingStart(incoming, awaitingBufferedTimeline: true)
             }
+            restoreStage = "AUDIO_PREPARE"
             await audio.prepareForIntercom(canPublish: response.canPublish)
+            restoreStage = "AUDIO_BEGIN"
             try await audio.beginPushToTalkManagedSession()
+            restoreStage = "APPLE_CHANNEL_JOIN"
             try await pushToTalk.join(channelId: response.channel.id, channelName: response.channel.name,
                 canPublish: response.canPublish, knownUsers: [:])
             coordinator.reapplyAfterChannelJoin()
@@ -1976,6 +1981,7 @@ final class IntercomSessionController: ObservableObject {
             pushToTalk.updateBackendSessionId(response.sessionId)
             pendingJoinResponse = nil
             joinedAt = Date()
+            restoreStage = "VALIDATE_DEVICE"
             guard let deviceId = response.deviceId, !deviceId.isEmpty else {
                 throw APIClientError.invalidResponse
             }
@@ -2022,6 +2028,11 @@ final class IntercomSessionController: ObservableObject {
             Batv1CrashBreadcrumbStore.shared.record(
                 role: "APP", stage: "RUNTIME_CONNECT_FAILED", generationId: String(runtimeGeneration),
                 resultClass: Task.isCancelled ? "CANCELLED" : "LISTENING_RETAINED"
+            )
+            Batv1CrashBreadcrumbStore.shared.record(
+                role: "APP", stage: "RUNTIME_FAILED_" + restoreStage,
+                generationId: String(runtimeGeneration),
+                resultClass: Task.isCancelled ? "CANCELLED" : "FAILED"
             )
             pendingJoinResponse = nil
             joinedSession = nil

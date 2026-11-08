@@ -2212,6 +2212,36 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testExpiredTimelineHeadIsRetainedInFieldDiagnostic() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 1368,
+                latestSequence: 1667, nextSequence: 1368, finalSequence: 1667,
+                bufferHeadExpired: true, timelineEnded: false, chunks: []
+            )
+        }
+        let player = Batv1PcmPlayerMock()
+        var retained: BufferedAudioRxSnapshot?
+        let receiver = BufferedAudioReceiver(
+            api: api, sessionId: "session-a", onFailure: { _ in },
+            onTerminalSnapshot: { retained = $0 }, player: player
+        )
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "expired-head", senderSessionId: "speaker")
+        await receiver.awaitCurrentGenerationTermination()
+        let diagnostic = retained?.fieldDiagnostic(build: "test")
+        XCTAssertEqual(diagnostic?["terminalReason"] as? String, "timeline_head_expired")
+        XCTAssertEqual(retained?.receive.bufferHeadExpired, true)
+        XCTAssertEqual(diagnostic?["outcome"] as? String, "failed")
+        XCTAssertEqual(diagnostic?["playbackCursor"] as? Int, 0)
+        XCTAssertNil(retained?.receive.playerDrainCompletedAt)
+        XCTAssertEqual(player.endCount, 1)
+    }
+
+    @MainActor
     func testReceiverDrainFailureIsNotPublishedAsSuccessfulPlayback() async {
         let api = Batv1APIStub()
         api.subscribeHandler = { request in
@@ -2235,14 +2265,14 @@ final class BufferedAudioTimelineTests: XCTestCase {
         receiver.audioSessionDidActivate()
         receiver.start(generationId: "failed-engine", senderSessionId: "speaker")
         await receiver.awaitCurrentGenerationTermination()
-        XCTAssertEqual(retained?.receive.terminalReason, "receive_failed")
+        XCTAssertEqual(retained?.receive.terminalReason, "playback_engine_unavailable")
         XCTAssertTrue(retained?.receive.timelineLost == true)
         XCTAssertNil(retained?.receive.playerDrainCompletedAt)
         XCTAssertNil(retained?.receive.generationId)
         XCTAssertTrue(failureReported)
         XCTAssertTrue(receiver.diagnostics.timelineLost)
         XCTAssertNil(receiver.diagnostics.playerDrainCompletedAt)
-        XCTAssertEqual(receiver.diagnostics.terminalReason, "receive_failed")
+        XCTAssertEqual(receiver.diagnostics.terminalReason, "playback_engine_unavailable")
         XCTAssertEqual(player.endCount, 1)
     }
 
