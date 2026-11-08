@@ -214,3 +214,11 @@ loadFixtureは保存資格を確認し、取得成功またはエラーの適用
 修正後のiOS27.2/arm64全314件は312成功・2スキップ、parity成功。再試行後のユーザー情報復元、明示失効、キャンセル、資格変更中の古い401を確認。実機未配信・画面での再試行操作とSimulator再登録は未確認。先のSimulator登録画面遷移の直接原因を確定したとは扱わない。
 
 以前の並行試験時のHangDetector終了を避けるため、試験開始時にREADY待機中のAndroid4AVDを正常終了した（userdata保持）。OPPO・motoは操作せず接続継続し、自然な2時間満了の確認対象を保持した。
+
+### iOS Simulator session expiry validation (2026-11-09 02:10 JST)
+
+Source: 59dcea13e5716ea7abc0cc43e09f76e1d89baa10; Debug Simulator 0.1(1), iOS 27.0. The unsigned-build-then-codesign artifact lacked the executable __entitlements section and enrollment failed with DeviceCredentialStoreError. The earlier successful signing-enabled build contained this section. Rebuilding with signing enabled and preserving bundle/endpoint restored the existing enrollment without another invite entry, then POWER ON reached CONNECTED/READY. This packaging failure is distinct from the independently reproduced startup transport-error credential deletion in #61. Audit the attempted recovery enrollment privately before any orphan cleanup.
+
+The simulator session was uniquely attributed using fixture and server journal. Invalidating only this session through /api/leave yielded 401 SESSION_INVALID on its old floor/status. Without manual POWER or registration changes, exactly one ptt.session_resumed event created a new session for the same user/channel in 1.022 seconds. Its floor/status returned 200; UI showed CONNECTED/READY.
+
+Scope: real HTTP recovery after explicit server invalidation, not natural two-hour expiry. Foreground Simulator only: no claim about Apple PTT/APNs, locked first reception, audible audio, or network failure during recovery. Physical sessions were preserved for natural expiry observation. Tracking: #60, #61, PR #55.
