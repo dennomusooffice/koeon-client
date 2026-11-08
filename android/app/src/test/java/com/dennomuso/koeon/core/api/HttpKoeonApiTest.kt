@@ -3,6 +3,8 @@ package com.dennomuso.koeon.core.api
 import com.dennomuso.koeon.core.model.Batv1Chunk
 import com.dennomuso.koeon.core.model.Batv1PublishRequest
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
+import okio.buffer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -31,6 +33,61 @@ class HttpKoeonApiTest {
 
     @After
     fun tearDown() = server.shutdown()
+
+    @Test
+    fun `cancellation also closes a stalled response body`() = kotlinx.coroutines.runBlocking {
+        val readingBody = java.util.concurrent.CountDownLatch(1)
+        val client = okhttp3.OkHttpClient.Builder()
+            .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .addNetworkInterceptor { chain ->
+                val response = chain.proceed(chain.request())
+                val body = response.body!!
+                val source = object : okio.ForwardingSource(body.source()) {
+                    override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                        readingBody.countDown()
+                        return super.read(sink, byteCount)
+                    }
+                }.buffer()
+                response.newBuilder().body(object : okhttp3.ResponseBody() {
+                    override fun contentType() = body.contentType()
+                    override fun contentLength() = body.contentLength()
+                    override fun source() = source
+                }).build()
+            }.build()
+        val cancellableApi = HttpKoeonApi(server.url("/").toString(), client = client)
+        server.enqueue(jsonResponse("""{"outcome":"accepted","acceptedChunks":0,"latestSequence":-1}""")
+            .setBodyDelay(3, java.util.concurrent.TimeUnit.SECONDS))
+        val pending = launch(kotlinx.coroutines.Dispatchers.IO) {
+            cancellableApi.publishBufferedAudio(Batv1PublishRequest(1, "slow-body", "lab", "lab", "lab",
+                "lease", "pcm16le", 48000, 1, 20, "lab", emptyList(), null))
+        }
+        assertTrue(readingBody.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        val started = System.nanoTime()
+        pending.cancel()
+        pending.join()
+        assertTrue("Body read survived cancellation", (System.nanoTime() - started) / 1_000_000 < 1500)
+    }
+
+    @Test
+    fun `cancelling a stalled subscription releases transport promptly`() = kotlinx.coroutines.runBlocking {
+        val client = okhttp3.OkHttpClient.Builder().readTimeout(3, java.util.concurrent.TimeUnit.SECONDS).build()
+        val cancellableApi = HttpKoeonApi(server.url("/").toString(), client = client)
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+        val pending = launch(kotlinx.coroutines.Dispatchers.IO) {
+            cancellableApi.subscribeBufferedAudio(com.dennomuso.koeon.core.model.Batv1SubscribeRequest("lab", "stalled", 0))
+        }
+        org.junit.Assert.assertNotNull(server.takeRequest(2, java.util.concurrent.TimeUnit.SECONDS))
+        val started = System.nanoTime()
+        pending.cancel()
+        pending.join()
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        assertTrue("Cancellation held transport for $elapsedMs ms", elapsedMs < 1500)
+        server.enqueue(jsonResponse("""{"outcome":"accepted","acceptedChunks":0,"latestSequence":-1}"""))
+        // A cancelled subscription must not poison the shared HTTP client's next request.
+        val response = cancellableApi.publishBufferedAudio(Batv1PublishRequest(1, "next", "lab", "lab", "lab",
+            "lease", "pcm16le", 48000, 1, 20, "lab", emptyList(), null))
+        assertEquals("accepted", response.outcome)
+    }
 
     @Test
     fun `listener join uses existing backend contract without publish request`() = runTest {

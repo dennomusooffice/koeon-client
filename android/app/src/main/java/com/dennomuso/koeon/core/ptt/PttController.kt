@@ -132,7 +132,9 @@ class PttController(
 ) {
     private val transitionMutex = Mutex()
     private var snapshot = PttSnapshot()
-    private var held = false
+    @Volatile private var held = false
+    @Volatile private var releasedBufferedGenerationId: String? = null
+    @Volatile private var safetyAbortRequested = false
     private var generation = 0L
     private var renewJob: Job? = null
     private var maxTxJob: Job? = null
@@ -172,12 +174,14 @@ class PttController(
             return
         }
         transitionMutex.withLock {
-            safetyStopSignal.tryReceive().getOrNull()
             if (held || snapshot.state in setOf(
                     PttState.REQUESTING_FLOOR,
                     PttState.TRANSMITTING,
                     PttState.RELEASING,
                 )) return
+            safetyStopSignal.tryReceive().getOrNull()
+            safetyAbortRequested = false
+            releasedBufferedGenerationId = null
             held = true
             generation += 1
             val requestGeneration = generation
@@ -266,8 +270,9 @@ class PttController(
             startRenewal(leaseId, requestGeneration)
             startMaxTxGuard(leaseId, requestGeneration, acquired.maxTxExpiresAt)
 
-            if (!held || requestGeneration != generation) {
+            if (!canContinueStart(bufferedGenerationId, requestGeneration)) {
                 discardActiveBuffered()
+                cancelTimers()
                 runCatching { floor.release(leaseId) }
                 update(snapshot.copy(state = PttState.IDLE, leaseId = null, currentSpeaker = null))
                 return
@@ -304,8 +309,9 @@ class PttController(
                     readyAllAt = ready.allReadyAtMs?.let(Instant::ofEpochMilli),
                 ),
             ))
-            if (ready.reason == RxReadyReason.CANCELLED || !held || requestGeneration != generation) {
+            if (ready.reason == RxReadyReason.CANCELLED || !canContinueStart(bufferedGenerationId, requestGeneration)) {
                 discardActiveBuffered()
+                cancelTimers()
                 runCatching { control.publishEnd(leaseId) }
                 runCatching { floor.release(leaseId) }
                 update(snapshot.copy(state = PttState.IDLE, leaseId = null, currentSpeaker = null))
@@ -322,7 +328,9 @@ class PttController(
                 ))
             }
 
-            if (!held || requestGeneration != generation) {
+            if (!canContinueStart(bufferedGenerationId, requestGeneration)) {
+                discardActiveBuffered()
+                cancelTimers()
                 runCatching { floor.release(leaseId) }
                 update(snapshot.copy(state = PttState.IDLE, leaseId = null, currentSpeaker = null))
                 return
@@ -354,12 +362,33 @@ class PttController(
                     ),
                 ),
             )
+            if (bufferedGenerationId != null && releasedBufferedGenerationId == bufferedGenerationId) {
+                cancelMaxTxGuard()
+                finalizeActiveTransmission(
+                    leaseId = leaseId,
+                    releaseGeneration = requestGeneration,
+                    includeHangover = false,
+                    requestedExitReason = "PTT_UP_DURING_READY",
+                )
+                releasedBufferedGenerationId = null
+            }
         }
     }
 
+    private fun canContinueStart(bufferedGenerationId: String?, requestGeneration: Long): Boolean =
+        requestGeneration == generation && !safetyAbortRequested &&
+            (held || (bufferedGenerationId != null && releasedBufferedGenerationId == bufferedGenerationId))
+
     suspend fun pressUp() {
+        val bufferedGenerationId = activeBufferedGenerationId
+        val frozen = snapshot.state == PttState.REQUESTING_FLOOR && bufferedGenerationId != null &&
+            bufferedAudio?.freezePendingCapture(bufferedGenerationId) == true
+        // A captured utterance may finish during the cue, before acquire returns.
+        // Keep it frozen; pressDown still requires a valid grant before authorization.
+        val retainUntilReady = frozen && !safetyAbortRequested
+        if (retainUntilReady) releasedBufferedGenerationId = bufferedGenerationId
         held = false
-        control.cancelRxReady()
+        if (!retainUntilReady) control.cancelRxReady()
         transitionMutex.withLock {
             val leaseId = snapshot.leaseId
             if (snapshot.state == PttState.TRANSMITTING) {
@@ -522,6 +551,7 @@ class PttController(
     private class ReleaseInterruptedException(val reason: String) : IllegalStateException(reason)
 
     suspend fun stopForSafety(reason: String) {
+        safetyAbortRequested = true
         held = false
         safetyStopSignal.trySend(Unit)
         control.cancelRxReady()
@@ -590,7 +620,11 @@ class PttController(
     }
 
     private suspend fun failLease(reason: String, leaseId: String, expectedGeneration: Long) {
+        if (generation != expectedGeneration || snapshot.leaseId != leaseId) return
+        safetyAbortRequested = true
+        held = false
         safetyStopSignal.trySend(Unit)
+        control.cancelRxReady()
         transitionMutex.withLock {
             if (generation != expectedGeneration || snapshot.leaseId != leaseId) return
             held = false
@@ -672,6 +706,7 @@ class PttController(
     }
 
     private fun discardActiveBuffered() {
+        releasedBufferedGenerationId = null
         activeBufferedGenerationId?.let { bufferedAudio?.discard(it) }
         activeBufferedGenerationId = null
     }

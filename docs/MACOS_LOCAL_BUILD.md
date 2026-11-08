@@ -122,3 +122,14 @@ Simulator用`.app`をiPhoneに直接インストールすることはできま�
 Protocol packageを編集・検証する場合のみ、別途Node.js 22以上とpnpm 10.15.0が必要です。
 また、既存の`ci-public-safety.sh`は`mapfile`を使うためBash 4以上が必要です。
 これらは今回のネイティブビルド環境の対象外です。
+
+## 混在エミュレータ通信試験（2026-11-08）
+
+Android 15（Pixel 2 profile）・Android 16（Pixel 10 profile）とiOS 27.0 Simulatorで、
+ネイティブHTTPクライアント／受信処理を使った合成PCMの36ケースを検証した。
+再現手順・対象範囲・起動順序は[scripts/mixed-lab/README.md](../scripts/mixed-lab/README.md)。
+本番サーバー、LiveKit制御、Apple PushToTalkのOS起動、マイク／Bluetoothの聴取試験ではない。
+
+SDK管理CLIがIntel版で動く環境ではエミュレータ導入時に`--platform=mac_arm64`を明示する。
+実機シリアルは使用せず、専用AVDだけを対象にする。負荷を抑えるためビルドと仮想端末試験を
+分け、全端末の起動・APK準備を完了してから同時試験を始める。実施後は専用AVDを停止する。

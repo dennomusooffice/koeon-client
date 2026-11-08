@@ -105,6 +105,8 @@ class InputGainProcessor(
     private var route = "Unavailable"
     private var profile = AudioDeviceProfile("gain.unavailable", route, "unknown")
     private var transmissionActive = false
+    private var measurementsPaused = false
+    private var learningAllowed = true
     private var fixedTransmissionGainDb = 0f
     private var sumSquares = 0.0
     private var sampleCount = 0L
@@ -126,25 +128,40 @@ class InputGainProcessor(
         if (value == route) return
         route = value
         profile = profileStore?.load(value) ?: AudioDeviceProfile("gain.$value", value, value.substringBefore(':'))
+        calibrationUntilMs = null
+        calibrationFrameRms.clear()
+        recommendation = null
+        if (transmissionActive) {
+            fixedTransmissionGainDb = effectiveGainDb()
+            learningAllowed = false
+        }
         resetUtterance()
         publish()
     }
 
-    @Synchronized fun setMode(value: InputGainMode) { mode = value; publish() }
+    @Synchronized fun setMode(value: InputGainMode) {
+        if (transmissionActive && value != mode) learningAllowed = false
+        mode = value
+        publish()
+    }
     @Synchronized fun setManualGainDb(value: Float) { profile = profile.copy(manualGainDb = value.coerceIn(-6f, MAX_MANUAL_INPUT_GAIN_DB)); profileStore?.save(profile); publish() }
 
     @Synchronized
     fun beginTransmission() {
         transmissionActive = true
+        measurementsPaused = false
+        learningAllowed = true
         fixedTransmissionGainDb = effectiveGainDb()
         resetUtterance()
         publish()
     }
 
     @Synchronized
-    fun endTransmission() {
+    fun endTransmission(learn: Boolean = true) {
+        if (!transmissionActive) return
         transmissionActive = false
-        if (mode == InputGainMode.AUTO && sampleCount >= 4_800) {
+        measurementsPaused = true
+        if (learn && learningAllowed && mode == InputGainMode.AUTO && sampleCount >= 4_800) {
             val rms = rmsDbfs()
             if (rms != null) {
                 val limiterRatio = limiterHits.toDouble() / sampleCount.toDouble()
@@ -162,6 +179,9 @@ class InputGainProcessor(
         }
         publish()
     }
+
+    @Synchronized fun markCaptureBoundary() { resetUtterance() }
+    @Synchronized fun pauseCaptureMeasurements() { measurementsPaused = true }
 
     @Synchronized
     fun startCalibration(nowMs: Long = System.currentTimeMillis()) {
@@ -216,25 +236,31 @@ class InputGainProcessor(
             if (processingEnabled) {
                 var output = normalized * multiplier
                 val limited = softLimit(output)
-                if (limited != output) limiterHits++
+                if (!measurementsPaused && limited != output) limiterHits++
                 output = limited
                 if (pcm16) {
                     view.putShort(position, (output * 32768f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort())
                 } else {
                     view.putFloat(position, output * 32768f)
                 }
-                postSumSquares += output * output
-                postPeak = maxOf(postPeak, abs(output))
+                if (!measurementsPaused) {
+                    postSumSquares += output * output
+                    postPeak = maxOf(postPeak, abs(output))
+                }
             } else {
-                postSumSquares += normalized * normalized
-                postPeak = maxOf(postPeak, abs(normalized))
+                if (!measurementsPaused) {
+                    postSumSquares += normalized * normalized
+                    postPeak = maxOf(postPeak, abs(normalized))
+                }
             }
             count++
         }
         if (count > 0) {
-            sumSquares += frameSquare
-            sampleCount += count
-            peak = maxOf(peak, framePeak)
+            if (!measurementsPaused) {
+                sumSquares += frameSquare
+                sampleCount += count
+                peak = maxOf(peak, framePeak)
+            }
             val frameRms = sqrt(frameSquare / count).toFloat()
             calibrationUntilMs?.let { deadline ->
                 calibrationFrameRms += dbfs(frameRms)
@@ -298,8 +324,15 @@ class InputGainProcessor(
         internal fun recommendedGain(speechRmsDbfs: Float): Float =
             (-18f - speechRmsDbfs).coerceIn(-6f, 12f)
 
-        internal fun nextAutoTrim(current: Float, speechRmsDbfs: Float): Float =
-            (current + (-18f - speechRmsDbfs).coerceIn(-1f, 1f)).coerceIn(-6f, 12f)
+        internal fun nextAutoTrim(current: Float, speechRmsDbfs: Float): Float {
+            val boundedCurrent = current.takeIf { it.isFinite() }?.coerceIn(-6f, 12f) ?: 0f
+            // This is pre-gain RMS. Move towards the required *total* gain,
+            // rather than adding the entire input error again on every PTT.
+            // Negligible energy cannot train AUTO; this gate is not a VAD.
+            if (!speechRmsDbfs.isFinite() || speechRmsDbfs <= -60f) return boundedCurrent
+            val targetGain = recommendedGain(speechRmsDbfs)
+            return boundedCurrent + (targetGain - boundedCurrent).coerceIn(-1f, 1f)
+        }
 
         internal fun nextAutoTrim(
             current: Float,
@@ -307,11 +340,11 @@ class InputGainProcessor(
             inputPeakDbfs: Float,
             limiterRatio: Double,
         ): Float {
-            // Platform/WebRTC AGC runs before this optional trim. Persistent
-            // full-scale input or limiter activity must pull AUTO down, never
-            // become a condition that freezes an excessive positive profile.
+            // BATv1 taps AudioRecord before APM: software WebRTC AGC is not
+            // guaranteed here. Pull down on overload regardless of pipeline.
             if (inputPeakDbfs >= -0.5f || limiterRatio >= 0.01) {
-                return (current - 1f).coerceAtLeast(-6f)
+                val boundedCurrent = current.takeIf { it.isFinite() }?.coerceIn(-6f, 12f) ?: 0f
+                return (boundedCurrent - 1f).coerceAtLeast(-6f)
             }
             return nextAutoTrim(current, speechRmsDbfs)
         }

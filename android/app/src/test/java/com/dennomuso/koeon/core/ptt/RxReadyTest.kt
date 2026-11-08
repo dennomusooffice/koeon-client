@@ -12,6 +12,20 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RxReadyTest {
+    @Test fun `session mismatch audit separates missing SDK identity from contradictory claims`() = runTest {
+        val barrier = barrier(listOf("receiver-a")) { testScheduler.currentTime }
+        val valid = event("lease-a", "receiver-a")
+        assertFalse(barrier.accept(valid, null))
+        assertFalse(barrier.accept(valid.copy(speakerSessionId = "wrong"), "receiver-a"))
+        assertFalse(barrier.accept(valid, "receiver-b"))
+        assertFalse(barrier.accept(valid.copy(receiverSessionId = "unexpected"), "unexpected"))
+        val audit = barrier.auditSnapshot()
+        assertEquals(4, audit.rejectedSessionMismatch)
+        assertEquals(RxReadySessionMismatch.entries.associate { it.name to 1 }, audit.sessionMismatchReasons)
+        assertTrue(barrier.accept(valid, "receiver-a"))
+        assertEquals(audit.sessionMismatchReasons, barrier.auditSnapshot().sessionMismatchReasons)
+    }
+
     @Test fun `no expected receiver adds no wait`() = runTest {
         val result = barrier(emptyList()) { testScheduler.currentTime }.waitForReady()
         assertEquals(RxReadyReason.NO_EXPECTATIONS, result.reason)

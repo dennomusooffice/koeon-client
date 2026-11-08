@@ -3,6 +3,77 @@ import XCTest
 @testable import KOEON
 
 @MainActor
+final class PttInitializationGateTests: XCTestCase {
+    func testConcurrentCallersWaitForTheSameCompleteRestoration() async throws {
+        let gate = PttInitializationGate()
+        let configurationStarted = expectation(description: "Manager created, restoration suspended")
+        let secondEntered = expectation(description: "Second caller entered")
+        var releaseConfiguration: CheckedContinuation<Void, Never>?
+        var starts = 0
+        var configured = false
+        var secondReturned = false
+        let first = Task {
+            try await gate.run {
+                starts += 1
+                await withCheckedContinuation { continuation in
+                    releaseConfiguration = continuation
+                    configurationStarted.fulfill()
+                }
+                configured = true
+            }
+        }
+        await fulfillment(of: [configurationStarted], timeout: 1)
+        let second = Task {
+            secondEntered.fulfill()
+            try await gate.run { starts += 1 }
+            secondReturned = true
+            XCTAssertTrue(configured)
+        }
+        await fulfillment(of: [secondEntered], timeout: 1)
+        XCTAssertEqual(starts, 1)
+        XCTAssertFalse(secondReturned)
+        releaseConfiguration?.resume()
+        try await first.value
+        try await second.value
+        XCTAssertEqual(starts, 1)
+        XCTAssertTrue(secondReturned)
+        try await gate.run { XCTFail("Successful initialization must not repeat") }
+    }
+
+    func testFailedRestorationCanRetryInsteadOfTreatingCreatedManagerAsReady() async throws {
+        enum Failure: Error { case configuration }
+        let gate = PttInitializationGate()
+        var attempts = 0
+        do {
+            try await gate.run { attempts += 1; throw Failure.configuration }
+            XCTFail("Configuration failure must reach the caller")
+        } catch Failure.configuration { }
+        try await gate.run { attempts += 1 }
+        try await gate.run { XCTFail("Completed retry must be shared") }
+        XCTAssertEqual(attempts, 2)
+    }
+
+    func testCancellationOfOneCallerDoesNotCancelSharedInitialization() async throws {
+        let gate = PttInitializationGate()
+        let started = expectation(description: "Shared operation started")
+        var release: CheckedContinuation<Void, Never>?
+        var cancelledInsideOperation = false
+        let caller = Task {
+            try await gate.run {
+                await withCheckedContinuation { release = $0; started.fulfill() }
+                cancelledInsideOperation = Task.isCancelled
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+        caller.cancel()
+        release?.resume()
+        try await caller.value
+        try await gate.run { XCTFail("Cancelled waiter must not restart the shared operation") }
+        XCTAssertFalse(cancelledInsideOperation)
+    }
+}
+
+@MainActor
 final class PTTControllerTests: XCTestCase {
     func testC1C2C8SpeakerBluetoothSpeakerPolicySurvivesFiftySwitches() {
         for _ in 0 ..< 50 {
@@ -479,6 +550,231 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertLessThan(snapshot.txFinalMarkerAcceptedSequence!, snapshot.txFloorReleaseRequestedSequence!)
     }
 
+    func testReleaseDuringStartCuePreservesCapturedSpeechButSafetyStillDiscards() async throws {
+        for safetyStop in [false, true] {
+            let events = EventLog()
+            let buffered = BufferedAudioMock(events: events)
+            let control = BlockingReadyControl(events: events)
+            let cue = SuspendedStartCue()
+            let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+                microphone: MicrophoneMock(events: events), cuePlayer: cue, control: control,
+                bufferedAudio: buffered, clock: ControlledClock(), onUpdate: { _ in })
+            let prepared = await controller.preArmForAppleActivation()
+            XCTAssertTrue(prepared)
+            await controller.appleAudioSessionDidActivate()
+            let activation = Task { await controller.activatePrearmedTransmission() }
+            for _ in 0..<100 where !cue.waiting { try await Task.sleep(for: .milliseconds(1)) }
+            XCTAssertTrue(cue.waiting)
+            let release = Task { await controller.pttUp(playEndCue: false) }
+            for _ in 0..<100 where !buffered.frozen { try await Task.sleep(for: .milliseconds(1)) }
+            XCTAssertTrue(buffered.frozen, "Confirmed audio must freeze even while the start cue is pending")
+            if safetyStop { await controller.stopForSafety(reason: "test safety stop during cue") }
+            cue.resume()
+            if !safetyStop {
+                for _ in 0..<100 where !control.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+                XCTAssertTrue(control.isWaiting)
+                control.ack()
+            }
+            await activation.value
+            await release.value
+            let values = await events.values()
+            XCTAssertEqual(values.contains("buffer:authorize"), !safetyStop)
+            XCTAssertFalse(values.contains("buffer:hangover"))
+            let clean = await controller.cleanupIsConfirmed()
+            XCTAssertTrue(clean)
+        }
+    }
+
+    func testReleaseDuringCueSendsRealFrozenPcmAndExcludesPostReleaseSamples() async throws {
+        let events = EventLog()
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let api = Batv1APIStub()
+        let transmitter = BufferedAudioTransmitter(api: api, capture: capture,
+            channelId: "channel", sessionId: "session", deviceId: "device", recordingAuthority: authority)
+        let control = BlockingReadyControl(events: events)
+        let cue = SuspendedStartCue()
+        let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+            microphone: MicrophoneMock(events: events), cuePlayer: cue, control: control,
+            bufferedAudio: transmitter, clock: ControlledClock(), onUpdate: { _ in })
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        await controller.appleAudioSessionDidActivate()
+        capture.append(samples: [Int16](repeating: 1, count: 960), sampleRate: 48_000, channels: 1)
+        let activation = Task { await controller.activatePrearmedTransmission() }
+        for _ in 0..<100 where !cue.waiting { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(cue.waiting)
+        capture.append(samples: [Int16](repeating: 7, count: 1060), sampleRate: 48_000, channels: 1)
+        let release = Task { await controller.pttUp(playEndCue: false) }
+        for _ in 0..<100 where authority.isRecording { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertFalse(authority.isRecording)
+        XCTAssertTrue(api.publishedRequests.isEmpty)
+        capture.append(samples: [Int16](repeating: 9, count: 960), sampleRate: 48_000, channels: 1)
+        cue.resume()
+        for _ in 0..<100 where !control.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(control.isWaiting)
+        control.ack()
+        await activation.value
+        await release.value
+        let chunks = api.publishedRequests.flatMap(\.chunks)
+        XCTAssertEqual(chunks.map(\.sequence), [0, 1])
+        let samples = try chunks.flatMap { chunk in
+            try Batv1Pcm16LEConverter.floatSamples(from: XCTUnwrap(Data(base64Encoded: chunk.payloadBase64)))
+        }
+        XCTAssertEqual(samples.count, 1920)
+        XCTAssertTrue(samples.prefix(1060).allSatisfy { abs($0 - Float(7) / 32768) < 0.000001 })
+        XCTAssertTrue(samples.dropFirst(1060).allSatisfy { $0 == 0 })
+        XCTAssertEqual(api.publishedRequests.last?.finalSequence, 1)
+        let clean = await controller.cleanupIsConfirmed()
+        XCTAssertTrue(clean)
+    }
+
+    func testShortBufferedReleaseKeepsReadyWaitAndSendsOnlyFrozenAudio() async throws {
+        let events = EventLog()
+        let buffered = BufferedAudioMock(events: events)
+        let control = BlockingReadyControl(events: events)
+        let controller = PTTController(
+            role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events), control: control, bufferedAudio: buffered,
+            clock: ControlledClock(), onUpdate: { _ in }
+        )
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        await controller.appleAudioSessionDidActivate()
+        let activation = Task { await controller.activatePrearmedTransmission() }
+        for _ in 0..<100 where !control.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(control.isWaiting)
+        let release = Task { await controller.pttUp(playEndCue: false) }
+        for _ in 0..<100 where !buffered.frozen { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(buffered.frozen)
+        XCTAssertTrue(control.isWaiting)
+        var values = await events.values()
+        XCTAssertFalse(values.contains("buffer:authorize"))
+        XCTAssertFalse(values.contains("release"))
+        control.ack()
+        await activation.value
+        await release.value
+        values = await events.values()
+        XCTAssertTrue(values.contains("buffer:authorize"))
+        XCTAssertTrue(values.contains("buffer:finish"))
+        XCTAssertFalse(values.contains("buffer:hangover"))
+        if let final = values.firstIndex(of: "buffer:finish"), let end = values.firstIndex(of: "control:end"),
+           let released = values.firstIndex(of: "release") {
+            XCTAssertLessThan(final, end)
+            XCTAssertLessThan(end, released)
+        } else { XCTFail("Missing final marker/END/release") }
+        let confirmed = await controller.cleanupIsConfirmed()
+        XCTAssertTrue(confirmed)
+    }
+
+    func testSafetyAbortsFrozenReadyWaitWithoutPublishingRecordedSpeech() async throws {
+        let events = EventLog()
+        let buffered = BufferedAudioMock(events: events)
+        let control = BlockingReadyControl(events: events)
+        let controller = PTTController(
+            role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events), control: control, bufferedAudio: buffered,
+            clock: ControlledClock(), onUpdate: { _ in }
+        )
+        _ = await controller.preArmForAppleActivation()
+        await controller.appleAudioSessionDidActivate()
+        let activation = Task { await controller.activatePrearmedTransmission() }
+        for _ in 0..<100 where !control.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+        let release = Task { await controller.pttUp(playEndCue: false) }
+        for _ in 0..<100 where !buffered.frozen { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(buffered.frozen)
+        await controller.stopForSafety(reason: "disconnected")
+        await activation.value
+        await release.value
+        control.ack()
+        let values = await events.values()
+        XCTAssertFalse(values.contains("buffer:authorize"))
+        XCTAssertFalse(values.contains("buffer:finish"))
+        XCTAssertTrue(values.contains("buffer:discard"))
+        let confirmed = await controller.cleanupIsConfirmed()
+        XCTAssertTrue(confirmed)
+    }
+
+    func testCancelledBarrierAloneCannotAuthorizeFrozenSpeech() async throws {
+        let events = EventLog()
+        let buffered = BufferedAudioMock(events: events)
+        let control = BlockingReadyControl(events: events)
+        let controller = PTTController(
+            role: .staff, floor: FloorMock(events: events), microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events), control: control, bufferedAudio: buffered,
+            clock: ControlledClock(), onUpdate: { _ in }
+        )
+        _ = await controller.preArmForAppleActivation()
+        await controller.appleAudioSessionDidActivate()
+        let activation = Task { await controller.activatePrearmedTransmission() }
+        for _ in 0..<100 where !control.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+        let release = Task { await controller.pttUp(playEndCue: false) }
+        for _ in 0..<100 where !buffered.frozen { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(buffered.frozen)
+        await control.cancelRxReady(leaseId: "lease-a")
+        await activation.value
+        await release.value
+        let values = await events.values()
+        XCTAssertFalse(values.contains("buffer:authorize"))
+        XCTAssertTrue(values.contains("buffer:discard"))
+        let confirmed = await controller.cleanupIsConfirmed()
+        XCTAssertTrue(confirmed)
+    }
+
+    func testMissingOrCancelledReadyBarrierIsNotNoExpectations() async {
+        let barrier = PttRxReadyBarrier()
+        let missing = await barrier.wait(leaseId: "missing")
+        XCTAssertTrue(missing.cancelled)
+        await barrier.prepare(leaseId: "empty", expectedSessionIds: [])
+        let empty = await barrier.wait(leaseId: "empty")
+        XCTAssertFalse(empty.cancelled)
+        await barrier.prepare(leaseId: "cancelled", expectedSessionIds: ["receiver"])
+        await barrier.cancel(leaseId: "cancelled")
+        let cancelled = await barrier.wait(leaseId: "cancelled")
+        XCTAssertTrue(cancelled.cancelled)
+        XCTAssertFalse(cancelled.timedOut)
+    }
+
+    func testCancelledReadyWaitTaskReturnsWithoutBusyLoopingUntilTimeout() async {
+        let barrier = PttRxReadyBarrier()
+        await barrier.prepare(leaseId: "lease", expectedSessionIds: ["receiver"])
+        let wait = Task { await barrier.wait(leaseId: "lease") }
+        wait.cancel()
+        let result = await wait.value
+        XCTAssertTrue(result.cancelled)
+        XCTAssertFalse(result.timedOut)
+    }
+
+    func testLeaseFailureAbortsFrozenReadyWaitWithoutPublication() async throws {
+        let events = EventLog()
+        let buffered = BufferedAudioMock(events: events)
+        let control = BlockingReadyControl(events: events)
+        let clock = RenewalGateClock()
+        let controller = PTTController(
+            role: .staff, floor: FloorMock(events: events, failRenew: true), microphone: MicrophoneMock(events: events),
+            cuePlayer: CueMock(events: events), control: control, bufferedAudio: buffered,
+            clock: clock, onUpdate: { _ in }
+        )
+        _ = await controller.preArmForAppleActivation()
+        await controller.appleAudioSessionDidActivate()
+        let activation = Task { await controller.activatePrearmedTransmission() }
+        for _ in 0..<100 where !control.isWaiting { try await Task.sleep(for: .milliseconds(1)) }
+        let finished = expectation(description: "Release exits after lease loss")
+        let release = Task { await controller.pttUp(playEndCue: false); finished.fulfill() }
+        for _ in 0..<100 where !buffered.frozen { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertTrue(buffered.frozen)
+        clock.allowRenewal()
+        await fulfillment(of: [finished], timeout: 2)
+        control.ack()
+        await activation.value
+        await release.value
+        let values = await events.values()
+        XCTAssertTrue(values.contains("renew"))
+        XCTAssertFalse(values.contains("buffer:authorize"))
+        XCTAssertFalse(values.contains("buffer:finish"))
+        XCTAssertTrue(values.contains("buffer:discard"))
+    }
+
     func testA2A3RenewContinuesWhileBufferedFinalizationExceedsLeaseTtl() async {
         let events = EventLog()
         let buffered = BlockingFinishBufferedAudioMock(events: events)
@@ -740,6 +1036,122 @@ final class PTTControllerTests: XCTestCase {
 }
 
 final class InputGainProcessorTests: XCTestCase {
+    func testRouteChangeCancelsCalibrationAndUsesNewMicrophoneGain() {
+        withCapture { gain, capture in
+            gain.setMode(.manual)
+            gain.setRoute("Wired")
+            gain.setManualGainDb(12)
+            gain.setRoute("Built-in")
+            gain.setManualGainDb(6)
+            capture.arm(generationId: "route-change")
+            gain.startCalibration()
+            gain.setRoute("Wired")
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 12)
+            XCTAssertEqual(gain.snapshot().calibrationState, "IDLE")
+            XCTAssertNil(gain.snapshot().recommendationDb)
+        }
+    }
+
+    func testRouteChangeCannotTrainAnotherMicrophoneProfile() {
+        withCapture { gain, capture in
+            gain.setMode(.auto)
+            gain.setRoute("Built-in")
+            capture.arm(generationId: "route-change")
+            feed(gain, value: 2_000, count: 9_600)
+            gain.setRoute("Wired")
+            feed(gain, value: 2_000, count: 9_600)
+            capture.discard(learnFromCapture: true)
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            gain.setRoute("Built-in")
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+        }
+    }
+
+    func testCaptureRetainsPreRollMetersAndLearnsOnlyAfterSuccessfulCompletion() {
+        withCapture { gain, capture in
+            gain.setMode(.auto)
+            capture.arm(generationId: "short")
+            feed(gain, value: 32_000, count: 960)
+            capture.markCueBoundary()
+            feed(gain, value: 2_000, count: 9_600)
+            XCTAssertTrue(capture.freeze(generationId: "short"))
+            _ = capture.startForwarding { _ in }
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            let before = gain.snapshot().rmsDbfs
+            feed(gain, value: 32_000, count: 960)
+            XCTAssertEqual(gain.snapshot().rmsDbfs, before)
+            XCTAssertEqual(gain.snapshot().peakDbfs!, -24.2884, accuracy: 0.001)
+            capture.discard(learnFromCapture: true)
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 1)
+            capture.discard(learnFromCapture: true)
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 1)
+        }
+    }
+
+    func testCancelledCaptureDoesNotTrainAuto() {
+        withCapture { gain, capture in
+            gain.setMode(.auto)
+            capture.arm(generationId: "cancelled")
+            feed(gain, value: 2_000, count: 9_600)
+            capture.discard()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+        }
+    }
+
+    func testGainRemainsFixedThroughReleaseTailAndStopsMeteringAfterCapture() {
+        withCapture { gain, capture in
+            gain.setMode(.manual)
+            gain.setManualGainDb(6)
+            capture.arm(generationId: "normal")
+            capture.markCueBoundary()
+            feed(gain, value: 2_000, count: 960)
+            gain.setManualGainDb(12)
+            _ = capture.startForwarding { _ in }
+            feed(gain, value: 2_000, count: 960)
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 6)
+            XCTAssertEqual(capture.frameCount, 2)
+            capture.stopForwarding()
+            feed(gain, value: 32_000, count: 960)
+            XCTAssertEqual(gain.snapshot().peakDbfs!, -24.2884, accuracy: 0.001)
+            capture.discard(learnFromCapture: true)
+            capture.arm(generationId: "next")
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 12)
+        }
+    }
+
+    private func feed(_ gain: InputGainProcessor, value: Float, count: Int) {
+        var samples = [Float](repeating: value, count: count)
+        samples.withUnsafeMutableBufferPointer { buffer in
+            gain.processFloatS16(channels: 1, frames: count) { _ in buffer.baseAddress! }
+        }
+    }
+
+    private func withCapture(_ body: (InputGainProcessor, Batv1CaptureBuffer) -> Void) {
+        let name = "input-gain-capture-tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let gain = InputGainProcessor(defaults: defaults)
+        let capture = Batv1CaptureBuffer(inputGain: gain)
+        gain.audioProcessingInitialize(sampleRate: 48_000, channels: 1)
+        gain.setPostProcessedPcmConsumer { [weak capture] samples, rate, channels in
+            capture?.append(samples: samples, sampleRate: rate, channels: channels)
+        }
+        body(gain, capture)
+    }
+
+    func testAutoConvergesToOutputTargetAndReducesExcessGain() {
+        var trim: Float = 0
+        for _ in 0..<30 { trim = InputGainProcessor.nextAutoTrim(current: trim, speechRmsDbfs: -24) }
+        XCTAssertEqual(trim, 6, accuracy: 0.001)
+        XCTAssertEqual(InputGainProcessor.nextAutoTrim(current: 6, speechRmsDbfs: -18), 5)
+    }
+
+    func testAutoIgnoresSilentAndInvalidMeasurements() {
+        for level: Float in [-120, -90, -60, .nan, -.infinity] {
+            XCTAssertEqual(InputGainProcessor.nextAutoTrim(current: 4, speechRmsDbfs: level), 4)
+        }
+    }
+
     func testPositiveAndNegativeSamplesReceiveSymmetricManualGain() {
         let positive = InputGainProcessor.processSample(0.1, gainDb: 6)
         let negative = InputGainProcessor.processSample(-0.1, gainDb: 6)
@@ -851,6 +1263,325 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testRealPlayerCancelledDrainReturnsWithoutMarkingQueuedAudioPlayed() async throws {
+        let player = IOSBatv1PcmPlayer()
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        let entered = expectation(description: "Drain entered")
+        let returned = expectation(description: "Cancelled drain returned")
+        let draining = Task { @MainActor in
+            entered.fulfill()
+            try await player.drain(generationToken: 1)
+            returned.fulfill()
+        }
+        await fulfillment(of: [entered], timeout: 1)
+        draining.cancel()
+        await fulfillment(of: [returned], timeout: 1)
+        try await draining.value
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        player.endGeneration(token: 1)
+        try player.beginGeneration(token: 2, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 2)
+        player.endGeneration(token: 1)
+        XCTAssertEqual(player.pendingFrames, 1, "Old cleanup must not clear the next generation")
+        XCTAssertEqual(player.completedFrames, 0)
+    }
+
+    @MainActor
+    func testRealPlayerDrainContinuesWaitingForUnplayedAudioUntilGenerationEnds() async throws {
+        let player = IOSBatv1PcmPlayer()
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        var returned = false
+        let draining = Task { @MainActor in
+            try await player.drain(generationToken: 1)
+            returned = true
+        }
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertFalse(returned)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        player.endGeneration(token: 1)
+        try await draining.value
+        XCTAssertTrue(returned)
+    }
+
+    @MainActor
+    func testConfigurationChangeRetainsUnplayedPcmUntilAppleAudioActivation() async throws {
+        let engine = AVAudioEngine()
+        let player = IOSBatv1PcmPlayer(engine: engine)
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(player.configurationChangeCount, 1)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertEqual(player.recoveryCount, 0)
+        XCTAssertFalse(engine.isRunning, "Configuration changes do not grant Apple audio authority")
+        XCTAssertEqual(player.playbackDiagnostics.inputRmsDbfs, -120)
+        XCTAssertNotNil(player.playbackDiagnostics.lastEnqueueOutput)
+        XCTAssertNil(player.playbackDiagnostics.lastCompletionOutput)
+    }
+
+    @MainActor
+    func testConfigurationChangeRestartsEngineAndRendersRetainedPcm() async throws {
+        for (outputRate, outputChannels) in [(16_000.0, AVAudioChannelCount(1)), (44_100.0, AVAudioChannelCount(2))] {
+            let engine = AVAudioEngine()
+            let player = IOSBatv1PcmPlayer(engine: engine)
+            defer { player.shutdown() }
+            let format = try XCTUnwrap(player.playbackGraphFormat)
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
+            try player.prepareGraphIfNeeded()
+            try player.beginGeneration(token: 1)
+            var data = Data()
+            for _ in 0..<(batv1BytesPerFrame / 2) { data.append(contentsOf: [0x00, 0x10]) }
+            try player.enqueue(data, generationToken: 1)
+            try player.enqueue(data, generationToken: 1)
+            engine.stop()
+            engine.disableManualRenderingMode()
+            let changedFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: outputRate, channels: outputChannels))
+            try engine.enableManualRenderingMode(.offline, format: changedFormat, maximumFrameCount: 4096)
+            NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+            for _ in 0..<100 where player.recoveryCount == 0 { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(engine.isRunning)
+            XCTAssertEqual(player.recoveryCount, 1)
+            XCTAssertEqual(player.pendingFrames, 2, "Stopped buffers must not be counted as played")
+            XCTAssertEqual(player.completedFrames, 0)
+            let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: changedFormat, frameCapacity: 4096))
+            var observedNonzeroPcm = false
+            for _ in 0..<20 {
+                _ = try engine.renderOffline(4096, to: output)
+                if let samples = output.floatChannelData?[0] {
+                    observedNonzeroPcm = observedNonzeroPcm || (0..<Int(output.frameLength)).contains { abs(samples[$0]) > 0.01 }
+                }
+                await Task.yield()
+            }
+            XCTAssertTrue(observedNonzeroPcm, "Recovery must render the retained speech, not just restart an empty node")
+            XCTAssertEqual(player.graphPreparationCount, 1)
+            XCTAssertEqual(try XCTUnwrap(player.playbackDiagnostics.inputRmsDbfs), -18.0618, accuracy: 0.001)
+            // Offline manual rendering does not deliver dataPlayedBack on this
+            // Simulator. The realtime test below checks actual callback accounting.
+        }
+    }
+
+    @MainActor
+    func testRealtimeRecoveryCompletesEachRetainedFrameExactlyOnce() async throws {
+        let engine = AVAudioEngine()
+        let player = IOSBatv1PcmPlayer(engine: engine)
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1)
+        // Silent synthetic PCM: use the Simulator render clock without speech
+        // playback, recording, or any connected phone operation.
+        for _ in 0..<3 { try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1) }
+        engine.stop()
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+        XCTAssertEqual(player.pendingFrames, 3)
+        XCTAssertEqual(player.completedFrames, 0)
+        for _ in 0..<100 where player.completedFrames != 3 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(player.recoveryCount, 1)
+        XCTAssertEqual(player.completedFrames, 3)
+        XCTAssertEqual(player.pendingFrames, 0)
+        XCTAssertNotNil(player.playbackDiagnostics.lastCompletionOutput)
+        XCTAssertNil(player.playbackDiagnostics.lastErrorCode)
+    }
+
+    @MainActor
+    func testConfigurationChangeFromEndedGenerationCannotRestartNextIdleGeneration() async throws {
+        let engine = AVAudioEngine()
+        let player = IOSBatv1PcmPlayer(engine: engine)
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+        player.endGeneration(token: 1)
+        try player.beginGeneration(token: 2, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 2)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertEqual(player.configurationChangeCount, 0)
+        XCTAssertEqual(player.recoveryCount, 0)
+        XCTAssertFalse(engine.isRunning)
+    }
+
+    @MainActor
+    func testInitialEngineStartRetriesAndRendersRetainedPcm() async throws {
+        let engine = AVAudioEngine()
+        var attempts = 0
+        let player = IOSBatv1PcmPlayer(engine: engine, startEngine: {
+            attempts += 1
+            if attempts <= 2 { throw NSError(domain: NSOSStatusErrorDomain, code: -50) }
+            try $0.start()
+        })
+        defer { player.shutdown() }
+        let format = try XCTUnwrap(player.playbackGraphFormat)
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
+        try player.beginGeneration(token: 1)
+        let pcm = Data(Array(repeating: [UInt8(0), UInt8(0x10)], count: batv1BytesPerFrame / 2).flatMap { $0 })
+        try player.enqueue(pcm, generationToken: 1)
+        try player.enqueue(pcm, generationToken: 1)
+        XCTAssertEqual(player.pendingFrames, 2)
+        XCTAssertEqual(player.completedFrames, 0)
+        for _ in 0..<100 where player.recoveryCount == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(attempts, 3)
+        XCTAssertEqual(player.playbackDiagnostics.engineStartFailures, 2)
+        XCTAssertEqual(player.playbackDiagnostics.lastEngineStartErrorDomain, NSOSStatusErrorDomain)
+        XCTAssertEqual(player.playbackDiagnostics.lastEngineStartErrorCode, -50)
+        XCTAssertTrue(engine.isRunning)
+        XCTAssertNil(player.playbackDiagnostics.lastErrorCode)
+        let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096))
+        var renderedSpeech = false
+        for _ in 0..<20 {
+            _ = try engine.renderOffline(4096, to: output)
+            if let samples = output.floatChannelData?[0] {
+                renderedSpeech = renderedSpeech || (0..<Int(output.frameLength)).contains { abs(samples[$0]) > 0.01 }
+            }
+            await Task.yield()
+        }
+        XCTAssertTrue(renderedSpeech)
+        XCTAssertEqual(player.graphPreparationCount, 1)
+    }
+
+    @MainActor
+    func testInitialEngineStartFailureHasBoundedRetriesAndCannotReportDrainSuccess() async throws {
+        var attempts = 0
+        let player = IOSBatv1PcmPlayer(startEngine: { _ in
+            attempts += 1
+            throw NSError(domain: NSOSStatusErrorDomain, code: -50)
+        })
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        for _ in 0..<100 where player.playbackDiagnostics.lastErrorCode == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(attempts, 6)
+        XCTAssertEqual(player.playbackDiagnostics.lastErrorCode, "RX_ENGINE_RECOVERY_FAILED")
+        guard player.playbackDiagnostics.lastErrorCode != nil else { return }
+        do { try await player.drain(generationToken: 1); XCTFail("No successful drain without a started engine") }
+        catch { XCTAssertEqual((error as NSError).code, -50) }
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+    }
+
+    @MainActor
+    func testInitialStartRetryWaitsForAppleReactivation() async throws {
+        let engine = AVAudioEngine()
+        var attempts = 0
+        let player = IOSBatv1PcmPlayer(engine: engine, startEngine: {
+            attempts += 1
+            if attempts == 1 { throw NSError(domain: NSOSStatusErrorDomain, code: -50) }
+            try $0.start()
+        })
+        defer { player.shutdown() }
+        try engine.enableManualRenderingMode(.offline, format: XCTUnwrap(player.playbackGraphFormat), maximumFrameCount: 4096)
+        try player.beginGeneration(token: 1)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        player.audioSessionDidDeactivate()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(attempts, 1)
+        XCTAssertFalse(engine.isRunning)
+        XCTAssertEqual(player.pendingFrames, 1)
+        try player.resumeIfNeeded()
+        for _ in 0..<100 where player.recoveryCount == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(attempts, 2)
+        XCTAssertTrue(engine.isRunning)
+        XCTAssertEqual(player.pendingFrames, 1)
+    }
+
+    @MainActor
+    func testInitialStartRetryCannotStartReplacementGenerationWithoutAudioPermission() async throws {
+        var attempts = 0
+        let player = IOSBatv1PcmPlayer(startEngine: { _ in
+            attempts += 1
+            throw NSError(domain: NSOSStatusErrorDomain, code: -50)
+        })
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        player.endGeneration(token: 1)
+        try player.beginGeneration(token: 2, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 2)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertEqual(player.recoveryCount, 0)
+    }
+
+    @MainActor
+    func testFailedEngineRecoveryTerminatesDrainWithoutFalsePlaybackCompletion() async throws {
+        var attempts = 0
+        let player = IOSBatv1PcmPlayer(startEngine: { _ in
+            attempts += 1
+            throw BufferedAudioError.playbackEngineUnavailable
+        })
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        try player.resumeIfNeeded()
+        for _ in 0..<100 where player.playbackDiagnostics.lastErrorCode == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(attempts, 6)
+        XCTAssertEqual(player.playbackDiagnostics.lastErrorCode, "RX_ENGINE_RECOVERY_FAILED")
+        guard player.playbackDiagnostics.lastErrorCode != nil else { return }
+        XCTAssertThrowsError(try player.checkPlaybackHealth())
+        do {
+            try await player.drain(generationToken: 1)
+            XCTFail("Failed recovery must not finish a successful drain")
+        } catch BufferedAudioError.playbackEngineUnavailable { }
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertNil(player.playbackDiagnostics.lastCompletionOutput)
+    }
+
+    @MainActor
+    func testAppleDeactivationCancelsRecoveryAndReactivationResumesRetainedAudio() async throws {
+        let engine = AVAudioEngine()
+        var attempts = 0
+        let player = IOSBatv1PcmPlayer(engine: engine, startEngine: {
+            attempts += 1
+            try $0.start()
+        })
+        defer { player.shutdown() }
+        try engine.enableManualRenderingMode(.offline, format: XCTUnwrap(player.playbackGraphFormat), maximumFrameCount: 4096)
+        try player.prepareGraphIfNeeded()
+        try player.beginGeneration(token: 1, startEngine: false)
+        try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1)
+        try player.resumeIfNeeded()
+        player.audioSessionDidDeactivate()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(attempts, 0)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+        XCTAssertFalse(engine.isRunning)
+        try player.resumeIfNeeded()
+        for _ in 0..<100 where player.recoveryCount == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(player.recoveryCount, 1)
+        XCTAssertTrue(engine.isRunning)
+        XCTAssertEqual(player.pendingFrames, 1)
+        XCTAssertEqual(player.completedFrames, 0)
+    }
+
+    @MainActor
+    func testPlayerRetainedQueueIsBoundedWithoutSilentlyDroppingSpeech() throws {
+        let player = IOSBatv1PcmPlayer()
+        defer { player.shutdown() }
+        try player.beginGeneration(token: 1, startEngine: false)
+        for _ in 0..<batv1MaximumFrames { try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1) }
+        XCTAssertThrowsError(try player.enqueue(Data(count: batv1BytesPerFrame), generationToken: 1))
+        XCTAssertEqual(player.pendingFrames, batv1MaximumFrames)
+        XCTAssertEqual(player.completedFrames, 0)
+    }
+
+    @MainActor
     func testRealAudioEnginePlayerReusesGraphForOneHundredGenerations() throws {
         let player = IOSBatv1PcmPlayer()
         let frame = Data(count: batv1BytesPerFrame)
@@ -933,6 +1664,75 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testCancelledCaptureWaitDoesNotAcceptBufferedPcm() async {
+        let capture = Batv1CaptureBuffer()
+        capture.arm(generationId: "cancelled")
+        capture.append(samples: Array(repeating: Int16(7), count: batv1BytesPerFrame / 2),
+                       sampleRate: batv1SampleRate, channels: batv1Channels)
+        let wait = Task { @MainActor in await capture.awaitCapture() }
+        wait.cancel()
+        let confirmed = await wait.value
+        XCTAssertFalse(confirmed)
+        XCTAssertEqual(capture.frameCount, 1)
+    }
+
+    @MainActor
+    func testLateCaptureConfirmationCannotOverwriteStoppedDiagnostics() async throws {
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let transmitter = BufferedAudioTransmitter(
+            api: Batv1APIStub(), capture: capture, channelId: "channel-a",
+            sessionId: "session-a", deviceId: "device-a", recordingAuthority: authority
+        )
+        await transmitter.prepare(generationId: "old")
+        try await transmitter.audioSessionDidActivate()
+        let started = expectation(description: "Old capture wait started")
+        let wait = Task { @MainActor in
+            started.fulfill()
+            return await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "old")
+        }
+        await fulfillment(of: [started], timeout: 1)
+        await transmitter.discard(generationId: "old")
+        let confirmed = await wait.value
+        XCTAssertFalse(confirmed)
+        XCTAssertEqual(transmitter.diagnostics.captureState, "STOPPED")
+        XCTAssertNil(transmitter.diagnostics.lastErrorCode)
+        XCTAssertFalse(authority.isRecording)
+    }
+
+    @MainActor
+    func testOldCaptureWaitCannotConsumeNewGenerationPreRoll() async throws {
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let transmitter = BufferedAudioTransmitter(
+            api: Batv1APIStub(), capture: capture, channelId: "channel-a",
+            sessionId: "session-a", deviceId: "device-a", recordingAuthority: authority
+        )
+        await transmitter.prepare(generationId: "old")
+        try await transmitter.audioSessionDidActivate()
+        let started = expectation(description: "Old capture wait started")
+        let wait = Task { @MainActor in
+            started.fulfill()
+            return await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "old")
+        }
+        await fulfillment(of: [started], timeout: 1)
+        await transmitter.prepare(generationId: "new")
+        try await transmitter.audioSessionDidActivate()
+        capture.append(samples: Array(repeating: Int16(17), count: batv1BytesPerFrame / 2),
+                       sampleRate: batv1SampleRate, channels: batv1Channels)
+        let oldConfirmed = await wait.value
+        XCTAssertFalse(oldConfirmed)
+        XCTAssertEqual(capture.frameCount, 1, "Old confirmation must not clear the new capture boundary")
+        XCTAssertEqual(transmitter.diagnostics.generationId, "new")
+        XCTAssertEqual(transmitter.diagnostics.captureState, "RECORDING")
+        XCTAssertFalse(transmitter.diagnostics.captureConfirmed)
+        XCTAssertTrue(authority.isRecording)
+        let newConfirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "new")
+        XCTAssertTrue(newConfirmed)
+        await transmitter.discard(generationId: "new")
+    }
+
+    @MainActor
     func testLocalRecordingStartsOnlyAfterDidActivateAndStopsIdempotently() async throws {
         let capture = Batv1CaptureBuffer()
         let authority = RecordingAuthorityMock()
@@ -985,6 +1785,129 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertEqual(authority.startCount, 100)
         XCTAssertEqual(authority.stopCount, 100)
         XCTAssertFalse(authority.isRecording)
+    }
+
+    @MainActor
+    func testOnlyAcknowledgedFinalMarkerCommitsCaptureGainLearning() async throws {
+        for rejectFinal in [false, true] {
+            let name = "gain-transmitter-tests.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: name)!
+            defer { defaults.removePersistentDomain(forName: name) }
+            let gain = InputGainProcessor(defaults: defaults)
+            gain.setMode(.auto)
+            gain.audioProcessingInitialize(sampleRate: 48_000, channels: 1)
+            let capture = Batv1CaptureBuffer(inputGain: gain)
+            gain.setPostProcessedPcmConsumer { [weak capture] samples, rate, channels in
+                capture?.append(samples: samples, sampleRate: rate, channels: channels)
+            }
+            let api = Batv1APIStub()
+            api.rejectFinal = rejectFinal
+            let transmitter = BufferedAudioTransmitter(
+                api: api, capture: capture, channelId: "channel-a", sessionId: "session-a",
+                deviceId: "device-a", recordingAuthority: RecordingAuthorityMock()
+            )
+            await transmitter.prepare(generationId: "gain")
+            try await transmitter.audioSessionDidActivate()
+            capture.append(samples: [Int16](repeating: 1, count: 960), sampleRate: 48_000, channels: 1)
+            let confirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "gain")
+            XCTAssertTrue(confirmed)
+            var samples = [Float](repeating: 2_000, count: 9_600)
+            samples.withUnsafeMutableBufferPointer { buffer in
+                gain.processFloatS16(channels: 1, frames: buffer.count) { _ in buffer.baseAddress! }
+            }
+            XCTAssertTrue(try transmitter.freezePendingCapture(generationId: "gain"))
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            try await transmitter.authorize(leaseId: "lease-a", generationId: "gain")
+            do {
+                try await transmitter.finish(generationId: "gain")
+                XCTAssertFalse(rejectFinal)
+            } catch {
+                XCTAssertTrue(rejectFinal)
+            }
+            XCTAssertEqual(gain.snapshot().autoTrimDb, rejectFinal ? 0 : 1)
+            XCTAssertEqual(gain.snapshot().rmsDbfs!, -24.2884, accuracy: 0.001)
+        }
+    }
+
+    @MainActor
+    func testSlowHttpCatchesUpPreRollAndPreservesLiveSpeechThroughFinalMarker() async throws {
+        for requestMs in [150, 250, 500] {
+            let capture = Batv1CaptureBuffer()
+            let api = Batv1APIStub()
+            api.publishDelay = .milliseconds(requestMs)
+            let transmitter = BufferedAudioTransmitter(
+                api: api, capture: capture, channelId: "channel-a", sessionId: "session-a",
+                deviceId: "device-a", recordingAuthority: RecordingAuthorityMock()
+            )
+            func append(_ index: Int) {
+                capture.append(samples: [Int16](repeating: Int16(index), count: 960), sampleRate: 48_000, channels: 1)
+            }
+            await transmitter.prepare(generationId: "slow")
+            try await transmitter.audioSessionDidActivate()
+            append(0)
+            let confirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "slow")
+            XCTAssertTrue(confirmed)
+            for index in 0..<200 { append(index) }
+            try await transmitter.authorize(leaseId: "lease-a", generationId: "slow")
+            // Continue recording at 50 frames/sec during real sender HTTP suspension.
+            for index in 200..<250 {
+                try await Task.sleep(for: .milliseconds(20))
+                append(index)
+            }
+            let finishing = ContinuousClock.now
+            try await transmitter.finish(generationId: "slow")
+            XCTAssertLessThan(finishing.duration(to: .now), .seconds(6), "HTTP \(requestMs)ms must fit terminal budget")
+            let chunks = api.publishedRequests.flatMap(\.chunks)
+            XCTAssertEqual(chunks.map(\.sequence), Array(0..<250))
+            for (index, chunk) in chunks.enumerated() {
+                let pcm = try XCTUnwrap(Data(base64Encoded: chunk.payloadBase64))
+                XCTAssertEqual(pcm.count, 1920)
+                for offset in stride(from: 0, to: pcm.count, by: 2) {
+                    XCTAssertEqual(Int(pcm[offset]) | Int(pcm[offset + 1]) << 8, index)
+                }
+            }
+            XCTAssertTrue(api.publishedRequests.allSatisfy { $0.chunks.count <= 32 })
+            XCTAssertEqual(api.publishedRequests.last?.finalSequence, 249)
+            XCTAssertEqual(api.publishedRequests.filter { $0.finalSequence != nil }.count, 1)
+        }
+    }
+
+    @MainActor
+    func testFrozenRecordingStopsBeforeReadinessAndPublishesOnlyRetainedPcm() async throws {
+        let capture = Batv1CaptureBuffer()
+        let authority = RecordingAuthorityMock()
+        let api = Batv1APIStub()
+        let transmitter = BufferedAudioTransmitter(
+            api: api, capture: capture, channelId: "channel-a", sessionId: "session-a",
+            deviceId: "device-a", recordingAuthority: authority
+        )
+        await transmitter.prepare(generationId: "short")
+        try await transmitter.audioSessionDidActivate()
+        capture.append(samples: [Int16](repeating: 1, count: 960), sampleRate: 48_000, channels: 1)
+        let confirmed = await transmitter.awaitCaptureAndMarkCueBoundary(generationId: "short")
+        XCTAssertTrue(confirmed)
+        capture.append(samples: [Int16](repeating: 7, count: 1060), sampleRate: 48_000, channels: 1)
+        XCTAssertTrue(try transmitter.freezePendingCapture(generationId: "short"))
+        XCTAssertFalse(authority.isRecording)
+        XCTAssertEqual(authority.stopCount, 1)
+        capture.append(samples: [Int16](repeating: 9, count: 960), sampleRate: 48_000, channels: 1)
+        XCTAssertTrue(api.publishedRequests.isEmpty)
+        try await transmitter.authorize(leaseId: "lease-a", generationId: "short")
+        capture.append(samples: [Int16](repeating: 11, count: 960), sampleRate: 48_000, channels: 1)
+        try await transmitter.finish(generationId: "short")
+        let chunks = api.publishedRequests.flatMap(\.chunks)
+        XCTAssertEqual(chunks.map(\.sequence), [0, 1])
+        let last = try XCTUnwrap(chunks.last)
+        let tail = try XCTUnwrap(Data(base64Encoded: last.payloadBase64))
+        let samples = try Batv1Pcm16LEConverter.floatSamples(from: tail)
+        XCTAssertTrue(samples.prefix(100).allSatisfy { abs($0 - Float(7) / 32768) < 0.000001 })
+        XCTAssertTrue(samples.dropFirst(100).allSatisfy { $0 == 0 })
+        XCTAssertEqual(api.publishedRequests.last?.finalSequence, 1)
+        XCTAssertEqual(authority.stopCount, 1)
+        capture.arm(generationId: "new")
+        XCTAssertFalse(capture.freeze(generationId: "short"))
+        capture.append(samples: [Int16](repeating: 3, count: 960), sampleRate: 48_000, channels: 1)
+        XCTAssertEqual(capture.frameCount, 1)
     }
 
     @MainActor
@@ -1091,6 +2014,175 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 
     @MainActor
+    func testLateStopCompletionPreservesReplacementReceiverTask() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0, bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())])
+        }
+        var releaseOldDrain: CheckedContinuation<Void, Never>?
+        var drainCount = 0
+        var activities: [(String?, Bool)] = []
+        let player = Batv1PcmPlayerMock()
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "local",
+            onActivity: { activities.append(($0, $1)) },
+            onTimelineDrained: {
+                drainCount += 1
+                if drainCount == 1 { await withCheckedContinuation { releaseOldDrain = $0 } }
+            }, player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "old", senderSessionId: "old-speaker")
+        for _ in 0..<100 where releaseOldDrain == nil { try? await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertNotNil(releaseOldDrain)
+        receiver.audioSessionDidDeactivate()
+        var stopEntered = false
+        let stopping = Task { @MainActor in
+            stopEntered = true
+            await receiver.stopAndAwait()
+        }
+        while !stopEntered { await Task.yield() }
+        receiver.start(generationId: "replacement", senderSessionId: "next-speaker")
+        releaseOldDrain?.resume()
+        await stopping.value
+
+        XCTAssertEqual(receiver.diagnostics.generationId, "replacement")
+        XCTAssertFalse(activities.contains { $0.0 == "next-speaker" && !$0.1 },
+            "The obsolete stop must not clear the replacement speaker's activity")
+        receiver.audioSessionDidActivate()
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertEqual(drainCount, 2, "The replacement Task must remain owned and awaitable")
+        XCTAssertEqual(player.enqueueCount, 2)
+        await receiver.shutdownAndAwait()
+    }
+
+    @MainActor
+    func testStopActivityCallbackCanStartReplacementWithoutLosingItsState() async {
+        for awaitStop in [false, true] {
+            var receiver: BufferedAudioReceiver!
+            receiver = BufferedAudioReceiver(api: Batv1APIStub(), sessionId: "local",
+                onActivity: { sender, active in
+                    if sender == "old-speaker", !active {
+                        receiver.start(generationId: "replacement", senderSessionId: "next-speaker")
+                    }
+                }, player: Batv1PcmPlayerMock())
+            // No Apple audio activation: both tasks wait without fetching PCM.
+            receiver.start(generationId: "old", senderSessionId: "old-speaker")
+            if awaitStop { await receiver.stopAndAwait() } else { receiver.stop() }
+            XCTAssertEqual(receiver.diagnostics.generationId, "replacement")
+            await receiver.shutdownAndAwait()
+        }
+    }
+
+    @MainActor
+    func testShutdownRejectsStartsWhilePreviousDrainIsFinishing() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0, bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())])
+        }
+        var releaseOldDrain: CheckedContinuation<Void, Never>?
+        var drainCount = 0
+        let player = Batv1PcmPlayerMock()
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "local", onTimelineDrained: {
+            drainCount += 1
+            if drainCount == 1 { await withCheckedContinuation { releaseOldDrain = $0 } }
+        }, player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "old", senderSessionId: "old-speaker")
+        for _ in 0..<100 where releaseOldDrain == nil { try? await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertNotNil(releaseOldDrain)
+        receiver.audioSessionDidDeactivate()
+        var shutdownEntered = false
+        let shuttingDown = Task { @MainActor in
+            shutdownEntered = true
+            await receiver.shutdownAndAwait()
+        }
+        while !shutdownEntered { await Task.yield() }
+        receiver.start(generationId: "during-shutdown", senderSessionId: "next-speaker")
+        releaseOldDrain?.resume()
+        await shuttingDown.value
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "after-shutdown", senderSessionId: "next-speaker")
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertEqual(player.beginCount, 1, "A retired receiver cannot restart its audio graph")
+        XCTAssertEqual(player.enqueueCount, 1)
+        XCTAssertEqual(player.shutdownCount, 1)
+        XCTAssertNil(receiver.diagnostics.generationId)
+    }
+
+    func testTerminalReceiveDiagnosticJSONSeparatesFailureAndUnknownOutput() throws {
+        let keys: Set<String> = ["capturedAt", "build", "outcome", "terminalReason", "playbackCursor",
+            "latestSequence", "finalSequence", "missingSequenceCount", "duplicateSequenceCount",
+            "playerDrainCompletedAt", "endCueAt", "lastEnqueueOutput", "lastCompletionOutput",
+            "engineStartFailures", "lastErrorCode", "inputRmsDbfs", "inputPeakDbfs"]
+        for failed in [false, true] {
+            let snapshot = BufferedAudioRxSnapshot(
+                receive: BufferedAudioRxDiagnostics(generationId: "private-generation",
+                    playbackCursor: 42, latestSequence: 41, timelineLost: failed, finalSequence: 41,
+                    playerDrainCompletedAt: failed ? nil : Date(timeIntervalSince1970: 1),
+                    terminalReason: failed ? "receive_failed" : "final_sequence"),
+                playback: Batv1PlaybackDiagnostics(generationToken: 123))
+            let data = try JSONSerialization.data(withJSONObject: snapshot.fieldDiagnostic(build: "test-build"))
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(Set(json.keys), keys)
+            XCTAssertEqual(json["outcome"] as? String, failed ? "failed" : "completed")
+            XCTAssertEqual(json["playbackCursor"] as? Int, 42)
+            XCTAssertEqual(json["engineStartFailures"] as? Int, 0)
+            XCTAssertTrue(json["inputRmsDbfs"] is NSNull)
+            XCTAssertTrue(json["lastCompletionOutput"] is NSNull)
+            if failed { XCTAssertTrue(json["playerDrainCompletedAt"] is NSNull) }
+            else { XCTAssertEqual(json["playerDrainCompletedAt"] as? String, "1970-01-01T00:00:01Z") }
+            XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("private-generation"))
+            XCTAssertNil(json["generationToken"])
+        }
+    }
+
+    @MainActor
+    func testTerminalReceiveSnapshotSurvivesReplacementAndShutdownWithoutIdentifiers() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0, bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())])
+        }
+        var retained: BufferedAudioRxSnapshot?
+        let player = Batv1PcmPlayerMock()
+        player.playbackDiagnostics.inputRmsDbfs = -24
+        player.playbackDiagnostics.inputPeakDbfs = -12
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "private-session",
+            onTerminalSnapshot: { retained = $0 }, player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "private-generation", senderSessionId: "private-sender")
+        await receiver.awaitCurrentGenerationTermination()
+        let completed = retained
+        XCTAssertEqual(completed?.receive.terminalReason, "final_sequence")
+        XCTAssertEqual(completed?.receive.playbackCursor, 1)
+        XCTAssertNotNil(completed?.receive.playerDrainCompletedAt)
+        XCTAssertNotNil(completed?.receive.endCueAt)
+        XCTAssertEqual(completed?.playback.inputRmsDbfs, -24)
+        XCTAssertEqual(completed?.playback.inputPeakDbfs, -12)
+        XCTAssertNil(completed?.receive.generationId)
+        XCTAssertNil(completed?.playback.generationToken)
+
+        // A pending replacement cancelled before starting must not overwrite terminal evidence.
+        receiver.start(generationId: "cancelled-replacement", senderSessionId: "next-sender")
+        await receiver.shutdownAndAwait()
+        XCTAssertEqual(retained, completed)
+        let replacement = BufferedAudioReceiver(api: api, sessionId: "next-runtime",
+            onTerminalSnapshot: { retained = $0 }, player: Batv1PcmPlayerMock())
+        await replacement.shutdownAndAwait()
+        XCTAssertEqual(retained, completed)
+    }
+
+    @MainActor
     func testReceiverDrainsFinalSequenceWhenControlEndArrivesFirst() async {
         let api = Batv1APIStub()
         api.subscribeHandler = { request in
@@ -1117,6 +2209,102 @@ final class BufferedAudioTimelineTests: XCTestCase {
         XCTAssertNotNil(receiver.diagnostics.playerDrainCompletedAt)
         XCTAssertNotNil(receiver.diagnostics.endCueAt)
         XCTAssertEqual(receiver.diagnostics.controlEndReceivedAt, Date(timeIntervalSince1970: 1))
+    }
+
+    @MainActor
+    func testExpiredTimelineHeadIsRetainedInFieldDiagnostic() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 1368,
+                latestSequence: 1667, nextSequence: 1368, finalSequence: 1667,
+                bufferHeadExpired: true, timelineEnded: false, chunks: []
+            )
+        }
+        let player = Batv1PcmPlayerMock()
+        var retained: BufferedAudioRxSnapshot?
+        let receiver = BufferedAudioReceiver(
+            api: api, sessionId: "session-a", onFailure: { _ in },
+            onTerminalSnapshot: { retained = $0 }, player: player
+        )
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "expired-head", senderSessionId: "speaker")
+        await receiver.awaitCurrentGenerationTermination()
+        let diagnostic = retained?.fieldDiagnostic(build: "test")
+        XCTAssertEqual(diagnostic?["terminalReason"] as? String, "timeline_head_expired")
+        XCTAssertEqual(retained?.receive.bufferHeadExpired, true)
+        XCTAssertEqual(diagnostic?["outcome"] as? String, "failed")
+        XCTAssertEqual(diagnostic?["playbackCursor"] as? Int, 0)
+        XCTAssertNil(retained?.receive.playerDrainCompletedAt)
+        XCTAssertEqual(player.endCount, 1)
+    }
+
+    @MainActor
+    func testReceiverDrainFailureIsNotPublishedAsSuccessfulPlayback() async {
+        let api = Batv1APIStub()
+        api.subscribeHandler = { request in
+            Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 0, nextSequence: 1, finalSequence: 0,
+                bufferHeadExpired: false, timelineEnded: true,
+                chunks: [Batv1Chunk(sequence: 0, payloadBase64: Data(count: batv1BytesPerFrame).base64EncodedString())]
+            )
+        }
+        let player = Batv1PcmPlayerMock()
+        player.drainError = BufferedAudioError.playbackEngineUnavailable
+        var failureReported = false
+        var retained: BufferedAudioRxSnapshot?
+        let receiver = BufferedAudioReceiver(
+            api: api, sessionId: "session-a", onFailure: { _ in failureReported = true },
+            onTerminalSnapshot: { retained = $0 }, player: player
+        )
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "failed-engine", senderSessionId: "speaker")
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertEqual(retained?.receive.terminalReason, "playback_engine_unavailable")
+        XCTAssertTrue(retained?.receive.timelineLost == true)
+        XCTAssertNil(retained?.receive.playerDrainCompletedAt)
+        XCTAssertNil(retained?.receive.generationId)
+        XCTAssertTrue(failureReported)
+        XCTAssertTrue(receiver.diagnostics.timelineLost)
+        XCTAssertNil(receiver.diagnostics.playerDrainCompletedAt)
+        XCTAssertEqual(receiver.diagnostics.terminalReason, "playback_engine_unavailable")
+        XCTAssertEqual(player.endCount, 1)
+    }
+
+
+    @MainActor
+    func testReceiverWaitsForQueuedPlaybackBeforeFetchingMoreFrames() async throws {
+        let api = Batv1APIStub()
+        let payload = Data(count: batv1BytesPerFrame).base64EncodedString()
+        api.subscribeHandler = { request in
+            let first = request.nextSequence == 0
+            return Batv1SubscribeResponse(
+                protocolVersion: batv1ProtocolVersion, generationId: request.generationId,
+                codec: "pcm16le", sampleRate: batv1SampleRate, channels: batv1Channels,
+                frameDurationMs: batv1FrameDurationMilliseconds, firstAvailableSequence: 0,
+                latestSequence: 76, nextSequence: first ? 76 : 77, finalSequence: first ? nil : 76,
+                bufferHeadExpired: false, timelineEnded: !first,
+                chunks: (first ? Array(0..<76) : [76]).map { Batv1Chunk(sequence: $0, payloadBase64: payload) }
+            )
+        }
+        let player = Batv1PcmPlayerMock()
+        player.holdFrames = true
+        let receiver = BufferedAudioReceiver(api: api, sessionId: "session-a", player: player)
+        receiver.audioSessionDidActivate()
+        receiver.start(generationId: "backpressure", senderSessionId: "speaker")
+        for _ in 0..<100 where player.enqueueCount < 76 { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(player.enqueueCount, 76, "Do not fetch the next batch while playback is behind")
+        player.completeHeldFrames()
+        await receiver.awaitCurrentGenerationTermination()
+        XCTAssertEqual(player.enqueueCount, 77)
+        XCTAssertFalse(receiver.diagnostics.timelineLost)
+        XCTAssertNotNil(receiver.diagnostics.playerDrainCompletedAt)
     }
 
     @MainActor
@@ -1344,6 +2532,131 @@ final class BufferedAudioTimelineTests: XCTestCase {
     }
 }
 
+final class Batv1BreadcrumbLifecycleTests: XCTestCase {
+    func testPollingWindowIsBoundedAndRestartsAfterReload() {
+        let defaults = isolatedDefaults()
+        let store = Batv1CrashBreadcrumbStore(defaults: defaults)
+        store.startRun(build: "test")
+        for index in 0..<100 {
+            store.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: "g\(index)")
+        }
+        XCTAssertEqual(store.snapshot().count, 64)
+        for _ in 0..<2 { store.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: "g0") }
+        XCTAssertEqual(store.snapshot().filter { $0.generationToken == "g0" }.count, 1)
+        let restored = Batv1CrashBreadcrumbStore(defaults: defaults)
+        restored.startRun(build: "next")
+        restored.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: "g0")
+        XCTAssertEqual(restored.snapshot().last?.stage, "RX_SUBSCRIBE_BEGIN")
+        XCTAssertEqual(restored.snapshot().last?.build, "next")
+        XCTAssertEqual(restored.snapshot().count, 64)
+    }
+
+    func testPollingDoesNotEvictBackgroundAndFailureEvidenceAcrossReload() {
+        let defaults = isolatedDefaults()
+        let store = Batv1CrashBreadcrumbStore(defaults: defaults)
+        store.startRun(build: "test")
+        store.recordAppLifecycle("background")
+        store.record(role: "APP", stage: "RUNTIME_CONNECT_FAILED", resultClass: "LISTENING_RETAINED")
+        for _ in 0..<200 {
+            store.record(role: "RX", stage: "RX_SUBSCRIBE_BEGIN", generationId: "generation-a")
+            store.record(role: "RX", stage: "RX_SUBSCRIBE_END", generationId: "generation-a")
+        }
+        let restored = Batv1CrashBreadcrumbStore(defaults: defaults)
+        restored.startRun(build: "next")
+        XCTAssertTrue(restored.snapshot().contains { $0.stage == "APP_BACKGROUND" })
+        XCTAssertTrue(restored.snapshot().contains { $0.stage == "RUNTIME_CONNECT_FAILED" })
+        XCTAssertEqual(restored.snapshot().filter { $0.stage == "RX_SUBSCRIBE_BEGIN" }.count, 1)
+        XCTAssertEqual(restored.snapshot().filter { $0.stage == "RX_SUBSCRIBE_END" }.count, 1)
+    }
+
+    func testPollingCoalescingSeparatesFullGenerationsAndPreservesErrors() {
+        let store = Batv1CrashBreadcrumbStore(defaults: isolatedDefaults())
+        store.startRun(build: "test")
+        for generation in ["samepref-one", "samepref-two"] {
+            for _ in 0..<20 {
+                store.record(role: "RX", stage: "RX_SUBSCRIBE_END", generationId: generation)
+            }
+        }
+        store.record(role: "RX", stage: "RX_SUBSCRIBE_END", generationId: "samepref-two", resultClass: "ERROR")
+        XCTAssertEqual(store.snapshot().filter { $0.stage == "RX_SUBSCRIBE_END" }.count, 3)
+        XCTAssertEqual(store.snapshot().last?.resultClass, "ERROR")
+    }
+
+    private func isolatedDefaults() -> UserDefaults {
+        let name = "koeon.breadcrumb.tests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testLegacyFlagsDoNotProveCleanExitOrUnexpectedTermination() {
+        for clean in [false, true] {
+            let defaults = isolatedDefaults()
+            defaults.set(true, forKey: "batv1.runKnown")
+            defaults.set(clean, forKey: "batv1.cleanExit")
+            let store = Batv1CrashBreadcrumbStore(defaults: defaults)
+            store.startRun(build: "test")
+            XCTAssertEqual(store.previousRunTermination, "UNKNOWN",
+                "A lifecycle flag without a termination report cannot identify the cause")
+        }
+    }
+
+    func testBackgroundTransitionIsNotEvidenceOfCleanProcessExit() {
+        let defaults = isolatedDefaults()
+        let before = Batv1CrashBreadcrumbStore(defaults: defaults)
+        before.startRun(build: "before")
+        before.recordAppLifecycle("background")
+        let after = Batv1CrashBreadcrumbStore(defaults: defaults)
+        after.startRun(build: "after")
+        XCTAssertEqual(after.previousRunTermination, "UNKNOWN")
+        XCTAssertEqual(after.previousRunLastLifecycleState, "BACKGROUND")
+        XCTAssertEqual(before.snapshot().last?.stage, "APP_BACKGROUND")
+    }
+
+    func testBackgroundAudioDoesNotChangeLastObservedAppLifecycle() {
+        let defaults = isolatedDefaults()
+        let before = Batv1CrashBreadcrumbStore(defaults: defaults)
+        before.startRun(build: "before")
+        before.recordAppLifecycle("background")
+        for _ in 0..<100 { before.record(role: "RX", stage: "RX_SUBSCRIBE_END") }
+        let after = Batv1CrashBreadcrumbStore(defaults: defaults)
+        after.startRun(build: "after")
+        XCTAssertEqual(after.previousRunTermination, "UNKNOWN")
+        XCTAssertEqual(after.previousRunLastLifecycleState, "BACKGROUND",
+            "Audio callbacks and bounded breadcrumb eviction do not imply a foreground transition")
+    }
+
+    func testForegroundResumeUpdatesObservedLifecycleWithoutInferringTermination() {
+        let defaults = isolatedDefaults()
+        let before = Batv1CrashBreadcrumbStore(defaults: defaults)
+        before.startRun(build: "before")
+        before.recordAppLifecycle("background")
+        before.recordAppLifecycle("inactive")
+        before.recordAppLifecycle("active")
+        let after = Batv1CrashBreadcrumbStore(defaults: defaults)
+        after.startRun(build: "after")
+        XCTAssertEqual(after.previousRunTermination, "UNKNOWN")
+        XCTAssertEqual(after.previousRunLastLifecycleState, "ACTIVE")
+    }
+
+    func testStartupAndUnknownLifecycleAreReportedWithoutInventingACause() {
+        let defaults = isolatedDefaults()
+        let first = Batv1CrashBreadcrumbStore(defaults: defaults)
+        first.startRun(build: "first")
+        XCTAssertEqual(first.previousRunLastLifecycleState, "UNKNOWN")
+        let second = Batv1CrashBreadcrumbStore(defaults: defaults)
+        second.startRun(build: "second")
+        XCTAssertEqual(second.previousRunLastLifecycleState, "STARTING")
+        second.recordAppLifecycle("unrecognized-private-value")
+        let third = Batv1CrashBreadcrumbStore(defaults: defaults)
+        third.startRun(build: "third")
+        XCTAssertEqual(third.previousRunLastLifecycleState, "UNKNOWN")
+        XCTAssertFalse(third.snapshot().contains { $0.stage.contains("private") })
+        XCTAssertEqual(third.previousRunTermination, "UNKNOWN")
+    }
+}
+
 final class FieldLabSafetyTests: XCTestCase {
     func testVolumeProbeNeverTriggersPttIncludingMinMaxNoChange() {
         for mode in IOSVolumeProbeMode.allCases {
@@ -1397,6 +2710,14 @@ private final class BlockingReadyControl: PttControlPublishing {
     let events: EventLog
     private var continuation: CheckedContinuation<PttRxReadyWaitResult, Never>?
     private(set) var isWaiting = false
+    func ack() {
+        isWaiting = false
+        continuation?.resume(returning: PttRxReadyWaitResult(
+            expectedCount: 1, receivedCount: 1, lateCount: 0, waitMilliseconds: 2_800,
+            timedOut: false, firstReadyAt: Date(), allReadyAt: Date()
+        ))
+        continuation = nil
+    }
     init(events: EventLog) { self.events = events }
     func publishStart(leaseId: String) async throws -> PttStartPublishDiagnostics {
         await events.append("control:start")
@@ -1412,7 +2733,7 @@ private final class BlockingReadyControl: PttControlPublishing {
         isWaiting = false
         continuation?.resume(returning: PttRxReadyWaitResult(
             expectedCount: 1, receivedCount: 0, lateCount: 0, waitMilliseconds: 1,
-            timedOut: false, firstReadyAt: nil, allReadyAt: nil
+            timedOut: false, firstReadyAt: nil, allReadyAt: nil, cancelled: true
         ))
         continuation = nil
     }
@@ -1428,6 +2749,12 @@ private actor EventLog {
 private final class BufferedAudioMock: BufferedAudioTransmitting {
     let events: EventLog
     var diagnostics = BufferedAudioTxDiagnostics()
+    var frozen = false
+    func freezePendingCapture(generationId: String) throws -> Bool {
+        guard diagnostics.generationId == generationId, diagnostics.captureConfirmed else { return false }
+        frozen = true
+        return true
+    }
     let failFinish: Bool
     let failCapture: Bool
     let failActivation: Bool
@@ -1511,22 +2838,32 @@ private final class RecordingAuthorityMock: Batv1LocalRecordingAuthority {
 
 @MainActor
 private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
+    var playbackDiagnostics = Batv1PlaybackDiagnostics()
+    var drainError: Error?
+    var holdFrames = false
     private(set) var pendingFrames = 0
     private(set) var completedFrames = 0
     private(set) var beginCount = 0
     private(set) var endCount = 0
     private(set) var enqueueCount = 0
+    private(set) var receivedFrames: [Data] = []
     private(set) var shutdownCount = 0
     private var activeToken: Int?
 
-    func beginGeneration(token: Int) throws { activeToken = token; beginCount += 1 }
+    func beginGeneration(token: Int) throws { activeToken = token; playbackDiagnostics.generationToken = token; beginCount += 1 }
     func setRate(_ rate: Float) {}
     func enqueue(_ data: Data, generationToken: Int) throws {
         guard activeToken == generationToken else { throw BufferedAudioError.generationMismatch }
         enqueueCount += 1
-        completedFrames += 1
+        receivedFrames.append(data)
+        if holdFrames { pendingFrames += 1 } else { completedFrames += 1 }
     }
-    func drain(generationToken: Int) async {}
+    func completeHeldFrames() {
+        completedFrames += pendingFrames
+        pendingFrames = 0
+        holdFrames = false
+    }
+    func drain(generationToken: Int) async throws { if let drainError { throw drainError } }
     func endGeneration(token: Int) {
         guard activeToken == token else { return }
         activeToken = nil
@@ -1537,6 +2874,8 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
 }
 
 private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
+    var publishDelay: Duration = .zero
+    var rejectFinal = false
     var subscribeHandler: ((Batv1SubscribeRequest) throws -> Batv1SubscribeResponse)?
     var floorStatusHandler: (() throws -> FloorResponse)?
     private(set) var publishedRequests: [Batv1PublishRequest] = []
@@ -1557,6 +2896,8 @@ private final class Batv1APIStub: KOEONAPIClientProtocol, @unchecked Sendable {
     func unregisterPttToken(sessionId: String) async throws { throw MockError.expected }
     func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
         publishedRequests.append(request)
+        if publishDelay > .zero { try await Task.sleep(for: publishDelay) }
+        if rejectFinal, request.finalSequence != nil { throw MockError.expected }
         return Batv1PublishResponse(outcome: "accepted", acceptedChunks: request.chunks.count, latestSequence: request.chunks.last?.sequence ?? -1)
     }
     func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
@@ -1702,6 +3043,21 @@ private actor CueMock: PttCuePlaying {
     func playEnd() async throws {
         await events.append("cue:end")
         if failEnd { throw MockError.expected }
+    }
+}
+
+private final class RenewalGateClock: PTTClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var permitted = false
+    var now: Date { Date() }
+    func allowRenewal() { lock.withLock { permitted = true } }
+    func sleep(milliseconds: Int) async throws {
+        if milliseconds == 1_000 {
+            while !lock.withLock({ permitted }) { try await Task.sleep(for: .milliseconds(1)) }
+            lock.withLock { permitted = false }
+        } else {
+            try await Task.sleep(for: .seconds(3_600))
+        }
     }
 }
 
@@ -1868,4 +3224,67 @@ private final class BluetoothFrameCollector: @unchecked Sendable {
     private var storage: [Data] = []
     func append(_ data: Data) { lock.lock(); storage.append(data); lock.unlock() }
     var frames: [Data] { lock.lock(); defer { lock.unlock() }; return storage }
+}
+
+@MainActor
+private final class SuspendedStartCue: PttCuePlaying {
+    private var continuation: CheckedContinuation<Void, Never>?
+    var waiting: Bool { continuation != nil }
+    func playStart() async throws { await withCheckedContinuation { continuation = $0 } }
+    func playEnd() async throws {}
+    func resume() { continuation?.resume(); continuation = nil }
+}
+
+/// Opt-in, loopback-only integration test; ordinary unit suites skip this lab.
+@MainActor
+final class MixedEmulatorTransportTests: XCTestCase {
+    func testMixedNativeTransportAndRecovery() async throws {
+        guard let role = ProcessInfo.processInfo.environment["KOEON_MIXED_LAB_ROLE"] else {
+            throw XCTSkip("Run scripts/mixed-lab with an explicit virtual-device role")
+        }
+        let base = URL(string: "http://127.0.0.1:18765")!
+        let api = KOEONAPIClient(baseURL: base)
+        let scenarios = ["normal", "transient", "expired", "recovered"]
+        for scenario in scenarios {
+            let generation = role + "-" + scenario
+            let chunks = (0..<32).map { Batv1Chunk(sequence: $0,
+                payloadBase64: Data(repeating: UInt8($0), count: batv1BytesPerFrame).base64EncodedString()) }
+            _ = try await api.publishBufferedAudio(Batv1PublishRequest(
+                protocolVersion: 1, sessionId: role, generationId: generation, channelId: "lab",
+                speakerSessionId: role, speakerDeviceId: role, leaseId: "lab-lease",
+                codec: "pcm16le", sampleRate: 48000, channels: 1, frameDurationMs: 20,
+                chunks: chunks, finalSequence: 31))
+        }
+        for sender in ["android35", "android36", "ios27"] {
+            for scenario in scenarios {
+                let player = Batv1PcmPlayerMock()
+                var terminal: BufferedAudioRxSnapshot?
+                let receiver = BufferedAudioReceiver(api: api, sessionId: role,
+                    onTerminalSnapshot: { terminal = $0 }, player: player)
+                receiver.audioSessionDidActivate()
+                receiver.start(generationId: sender + "-" + scenario, senderSessionId: sender)
+                let deadline = Date().addingTimeInterval(120)
+                while terminal == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+                await receiver.shutdownAndAwait()
+                let snapshot = try XCTUnwrap(terminal, "Timed out waiting for mixed lab peer")
+                if scenario == "expired" {
+                    XCTAssertTrue(snapshot.receive.timelineLost)
+                    XCTAssertEqual(snapshot.receive.terminalReason, "timeline_head_expired")
+                    XCTAssertEqual(player.enqueueCount, 0)
+                } else {
+                    XCTAssertFalse(snapshot.receive.timelineLost)
+                    XCTAssertEqual(snapshot.receive.playbackCursor, 32)
+                    XCTAssertEqual(player.enqueueCount, 32)
+                    XCTAssertEqual(player.receivedFrames, (0..<32).map { Data(repeating: UInt8($0), count: batv1BytesPerFrame) })
+                }
+                var report = URLRequest(url: base.appendingPathComponent("lab/result"))
+                report.httpMethod = "POST"
+                report.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                report.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "role": role, "sender": sender, "scenario": scenario,
+                    "frames": player.enqueueCount, "failed": snapshot.receive.timelineLost])
+                _ = try await URLSession.shared.data(for: report)
+            }
+        }
+    }
 }

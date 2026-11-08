@@ -45,6 +45,8 @@ KOEON rights holderが権利を管理するsource codeには、[Mozilla Public L
 
 ## 不具合・修正の記録
 
+[共通製品仕様・設計・検証台帳](docs/PRODUCT_SPEC_AND_VERIFICATION.md)に、実装済みの動作、両OSの差、今後の実装予定と受入条件をまとめています。
+
 [追跡ルールとIssue一覧](docs/BUG_TRACKING.md)から、再現条件、修正PR、配信ビルド、検証結果と残件を確認できます。開発者・AIエージェントは調査や修正の都度、関連IssueとPRを更新してください。
 
 ## BuildとTest

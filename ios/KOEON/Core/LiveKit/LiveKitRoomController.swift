@@ -64,6 +64,7 @@ private enum LiveKitDelegateEvent: Sendable {
     case disconnected(String?)
     case participantDisconnected(sessionId: String?, names: [String])
     case participantConnected(sessionId: String?, names: [String])
+    case participantMetadata(sessionId: String?, deviceId: String?)
     case speakingParticipant(name: String?, sessionId: String?)
     case pttControl(PttControlEvent, senderSessionId: String?, resolution: ControlSenderIdentityResolution)
     case rxReady(PttRxReadyEvent, participantIdentity: String?, participantDeviceId: String?)
@@ -80,6 +81,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     @Published private(set) var lastError: String?
     @Published private(set) var deployment = "UNKNOWN"
     @Published private(set) var endpointHost: String?
+    var serverVersion: String? { connectionState == .connected ? room?.serverVersion : nil }
 
     var onUnsafeDisconnect: (@MainActor @Sendable (String) -> Void)?
     var onReconnected: (@MainActor @Sendable () -> Void)?
@@ -448,6 +450,15 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         )
     }
 
+    nonisolated func room(_ room: Room, participant: Participant, didUpdateMetadata metadata: String?) {
+        guard let remote = participant as? RemoteParticipant else { return }
+        enqueueDelegateEvent(sourceRoom: room,
+            name: "participant.didUpdateMetadata",
+            event: .participantMetadata(sessionId: remote.identity?.stringValue,
+                                        deviceId: Self.deviceIdentity(remote))
+        )
+    }
+
     nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
         enqueueDelegateEvent(sourceRoom: room,
             name: "participantDidDisconnect",
@@ -540,6 +551,19 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         case let .participantConnected(sessionId, names):
             participantNames = names
             if let sessionId { onParticipantAvailable?(sessionId) }
+            if let sourceRoom = room {
+                Task { [weak self] in
+                    await self?.reconcileReadyParticipant(sessionId, sourceRoom: sourceRoom)
+                }
+            }
+        case let .participantMetadata(sessionId, deviceId):
+            guard let sourceRoom = room else { return }
+            Task { [weak self] in
+                guard let self, self.room === sourceRoom else { return }
+                await self.rxReadyBarrier.reconcileParticipant(
+                    participantIdentity: sessionId, participantDeviceId: deviceId
+                )
+            }
         case let .speakingParticipant(name, sessionId):
             if let sessionId {
                 currentSpeaker = name
@@ -555,12 +579,29 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
             onPttControl?(event, senderSessionId)
         case let .rxReady(event, participantIdentity, participantDeviceId):
             guard event.channelId == channelId, event.speakerSessionId == sessionId else { return }
-            Task { await rxReadyBarrier.accept(
-                event,
-                participantIdentity: participantIdentity,
-                participantDeviceId: participantDeviceId
-            ) }
+            guard let sourceRoom = room else { return }
+            Task { [weak self] in
+                guard let self, self.room === sourceRoom else { return }
+                await self.rxReadyBarrier.accept(
+                    event,
+                    participantIdentity: participantIdentity,
+                    participantDeviceId: participantDeviceId
+                )
+                // Metadata may have arrived between delegate ingress and this Task.
+                // Lookup uses the SDK event identity, never an unverified payload ID.
+                await self.reconcileReadyParticipant(participantIdentity, sourceRoom: sourceRoom)
+            }
         }
+    }
+
+    private func reconcileReadyParticipant(_ identity: String?, sourceRoom: Room) async {
+        guard room === sourceRoom, let identity,
+              let participant = sourceRoom.remoteParticipants.values.first(where: {
+                  $0.identity?.stringValue == identity
+              }) else { return }
+        await rxReadyBarrier.reconcileParticipant(
+            participantIdentity: identity, participantDeviceId: Self.deviceIdentity(participant)
+        )
     }
 
     nonisolated private static func deviceIdentity(_ participant: RemoteParticipant) -> String? {
