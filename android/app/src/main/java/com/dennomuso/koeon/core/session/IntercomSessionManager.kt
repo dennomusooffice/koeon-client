@@ -219,6 +219,7 @@ enum class OperationalState {
     CONNECTING,
     ACTIVE,
     SWITCHING_CHANNEL,
+    RECOVERING_SESSION,
     AUDIO_INTERRUPTED,
     RECOVERING_AUDIO,
     ERROR,
@@ -775,15 +776,22 @@ class IntercomSessionManager(
     private suspend fun joinChannel(userId: String, channelId: String): Boolean =
         operationMutex.withLock { joinChannelLocked(userId, channelId) }
 
-    private suspend fun joinChannelLocked(userId: String, channelId: String): Boolean {
-        if (_state.value.joined || _state.value.loading) return false
+    private suspend fun joinChannelLocked(
+        userId: String,
+        channelId: String,
+        recovering: JoinResponse? = null,
+        onFailure: (Throwable) -> Unit = {},
+    ): Boolean {
+        if (recovering == null && (_state.value.joined || _state.value.loading)) return false
         val user = _state.value.fixture?.users?.firstOrNull { it.id == userId }
         val wantsToPublish = user?.role != Role.LISTENER
         _state.update {
             it.copy(
                 loading = true,
                 connectionState = IntercomConnectionState.CONNECTING,
-                operationalState = OperationalState.CONNECTING,
+                operationalState = if (recovering != null) OperationalState.RECOVERING_SESSION else OperationalState.CONNECTING,
+                joined = recovering != null || it.joined,
+                join = recovering ?: it.join,
                 error = null,
             )
         }
@@ -823,21 +831,24 @@ class IntercomSessionManager(
             )
             true
         } catch (error: Throwable) {
+            val retry = recovering != null && isRetryableJoinFailure(error)
             room.disconnect()
             audioRouteMonitor.stop()
             networkMonitor.stop()
-            IntercomForegroundService.stop(appContext)
+            if (!retry) IntercomForegroundService.stop(appContext)
             joined?.let { runCatching { api.leave(it.sessionId) } }
             _state.update {
                 it.copy(
                     loading = false,
-                    joined = false,
-                    join = null,
-                    connectionState = IntercomConnectionState.DISCONNECTED,
+                    joined = retry,
+                    join = if (retry) recovering else null,
+                    connectionState = if (retry) IntercomConnectionState.RECONNECTING else IntercomConnectionState.DISCONNECTED,
                     error = error.message ?: "Channel join failed",
-                    operationalState = OperationalState.ERROR,
+                    operationalState = if (retry) OperationalState.RECOVERING_SESSION else OperationalState.ERROR,
                 )
             }
+            onFailure(error)
+            if (error is kotlinx.coroutines.CancellationException) throw error
             false
         }
     }
@@ -853,7 +864,7 @@ class IntercomSessionManager(
         operationMutex.withLock { leaveLocked(powerOff) }
     }
 
-    private suspend fun leaveLocked(powerOff: Boolean) {
+    private suspend fun leaveLocked(powerOff: Boolean, keepService: Boolean = false) {
         appTouchPttGate.cancel()
         hardwareVolumePttGate.clear()
         val join = _state.value.join
@@ -869,7 +880,7 @@ class IntercomSessionManager(
         audioRouteMonitor.stop()
         networkMonitor.stop()
         if (join != null) runCatching { api.leave(join.sessionId) }
-        IntercomForegroundService.stop(appContext)
+        if (!keepService) IntercomForegroundService.stop(appContext)
         pttController = null
         previousConnectionState = IntercomConnectionState.DISCONNECTED
         connectionLostElapsed = null
@@ -1115,11 +1126,18 @@ class IntercomSessionManager(
         // This must not be a child of statusJob: teardown cancels that poller.
         scope.launch {
             operationMutex.withLock {
+                var retryable = false
                 joinSessionRecovery.run(
                     ticket = ticket,
                     currentSessionId = { _state.value.join?.sessionId },
-                    stopRuntime = { leaveLocked(powerOff = false) },
-                    rejoin = { joinChannelLocked(expired.user.id, expired.channel.id) },
+                    stopRuntime = { leaveLocked(powerOff = false, keepService = true) },
+                    rejoin = {
+                        retryable = false
+                        joinChannelLocked(expired.user.id, expired.channel.id, recovering = expired) {
+                            retryable = isRetryableJoinFailure(it)
+                        }
+                    },
+                    shouldRetry = { retryable },
                 )
             }
         }

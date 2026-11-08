@@ -222,3 +222,9 @@ Source: 59dcea13e5716ea7abc0cc43e09f76e1d89baa10; Debug Simulator 0.1(1), iOS 27
 The simulator session was uniquely attributed using fixture and server journal. Invalidating only this session through /api/leave yielded 401 SESSION_INVALID on its old floor/status. Without manual POWER or registration changes, exactly one ptt.session_resumed event created a new session for the same user/channel in 1.022 seconds. Its floor/status returned 200; UI showed CONNECTED/READY.
 
 Scope: real HTTP recovery after explicit server invalidation, not natural two-hour expiry. Foreground Simulator only: no claim about Apple PTT/APNs, locked first reception, audible audio, or network failure during recovery. Physical sessions were preserved for natural expiry observation. Tracking: #60, #61, PR #55.
+
+### Android expiry recovery interrupted by network failure (2026-11-09)
+
+A new regression test failed on the previous implementation: after stopping the expiry poller/runtime, one failed rejoin ended recovery with no remaining trigger. The recovery owner now retries transport failures and HTTP408/429/5xx with 1/2/4/8/15-second capped backoff. Registration/auth denial and cancellation are not retryable. POWER OFF invalidates the intent and wakes the backoff immediately; a connection that succeeds after invalidation is torn down. The foreground service is retained during transient recovery rather than repeatedly stopped, and RECOVERING_SESSION retains a usable POWER OFF control while disallowing PTT.
+
+Validation: red baseline 6 tests/1 failure; final Android suite 216 tests/0 failures, feature parity PASS. Lint/debug assembly checked. This is implemented and automatically tested only: no new signed/public build, emulator network-failure acceptance and physical acceptance remain pending. Existing physical candidate1.0.16(17) sessions are left untouched for natural expiry observation. Follow-up to #60, PR #55.

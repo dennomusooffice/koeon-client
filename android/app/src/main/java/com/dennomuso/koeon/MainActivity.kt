@@ -360,7 +360,8 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     val pttSemantic = pttSemanticState(
         canPublish = joined.canPublish,
         connected = state.connectionState == IntercomConnectionState.CONNECTED,
-        recovering = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING,
+        recovering = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING ||
+            state.operationalState == OperationalState.RECOVERING_SESSION,
         remoteTalking = remoteTalking,
         pttState = state.ptt.state,
     )
@@ -484,7 +485,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             textAlign = TextAlign.Center,
         )
     }
-    Button(onClick = manager::leaveAsync, enabled = !inputPressed && state.operationalState == OperationalState.ACTIVE, modifier = Modifier.fillMaxWidth()) { Text("POWER OFF", color = KoeonRed) }
+    Button(onClick = manager::leaveAsync, enabled = !inputPressed && state.operationalState in setOf(OperationalState.ACTIVE, OperationalState.RECOVERING_SESSION), modifier = Modifier.fillMaxWidth()) { Text("POWER OFF", color = KoeonRed) }
     HeadsetPttSettings(state, manager)
     AudioBitrateSettings(state, manager)
     HardwareAndGainSettings(state, manager)

@@ -11,6 +11,72 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class JoinSessionRecoveryTest {
+    @Test fun `transient rejoin failure retries without another expiry poll`() = runTest {
+        val recovery = JoinSessionRecovery()
+        val ticket = recovery.request("expired")!!
+        var attempts = 0
+        var stops = 0
+        val restored = recovery.run(
+            ticket,
+            { "expired" },
+            { stops++ },
+            { ++attempts >= 2 },
+            shouldRetry = { true },
+        )
+        assertTrue("The expiry poller is stopped; recovery must own its retry", restored)
+        assertEquals(2, attempts)
+        assertEquals("A failed retry must not tear down the old runtime again", 1, stops)
+    }
+
+    @Test fun `power off wakes retry backoff and prevents another attempt`() = runTest {
+        val recovery = JoinSessionRecovery(); val ticket = recovery.request("old")!!
+        val failed = CompletableDeferred<Unit>()
+        var attempts = 0
+        val job = launch { recovery.run(ticket, { "old" }, {}, {
+            attempts++; failed.complete(Unit); false
+        }, shouldRetry = { true }) }
+        failed.await()
+        recovery.invalidate()
+        job.join()
+        assertEquals(1, attempts)
+        assertEquals(0L, testScheduler.currentTime)
+    }
+
+    @Test fun `retry classification excludes registration denial and cancellation`() {
+        assertTrue(isRetryableJoinFailure(java.io.IOException("offline")))
+        assertTrue(isRetryableJoinFailure(KoeonApiException(503, "UNAVAILABLE", "retry")))
+        assertFalse(isRetryableJoinFailure(KoeonApiException(401, "DEVICE_REVOKED", "stop")))
+        assertFalse(isRetryableJoinFailure(KoeonApiException(403, "DENIED", "stop")))
+        assertFalse(isRetryableJoinFailure(kotlinx.coroutines.CancellationException()))
+    }
+
+    @Test fun `retries back off and cap delay without repeatedly stopping runtime`() = runTest {
+        val recovery = JoinSessionRecovery(); val ticket = recovery.request("old")!!
+        val times = mutableListOf<Long>()
+        assertTrue(recovery.run(ticket, { "old" }, {}, {
+            times += testScheduler.currentTime
+            times.size == 7
+        }, shouldRetry = { true }))
+        assertEquals(listOf(0L, 1_000L, 3_000L, 7_000L, 15_000L, 30_000L, 45_000L), times)
+    }
+
+    @Test fun `permanent failure stops retry loop`() = runTest {
+        val recovery = JoinSessionRecovery(); val ticket = recovery.request("old")!!
+        var attempts = 0
+        assertFalse(recovery.run(ticket, { "old" }, {}, { attempts++; false }, shouldRetry = { false }))
+        assertEquals(1, attempts)
+        assertNotNull(recovery.request("next"))
+    }
+
+    @Test fun `power off during successful join tears down the late connection`() = runTest {
+        val recovery = JoinSessionRecovery(); val ticket = recovery.request("old")!!
+        var stops = 0
+        assertFalse(recovery.run(ticket, { "old" }, { stops++ }, {
+            recovery.invalidate(); true
+        }, shouldRetry = { true }))
+        assertEquals(2, stops)
+    }
+
     @Test fun `expired join response recovers runtime without clearing device credential`() = runTest {
         val server = MockWebServer(); server.start()
         try {
