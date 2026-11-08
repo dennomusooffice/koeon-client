@@ -1,6 +1,29 @@
 import XCTest
 @testable import KOEON
 
+final class FieldDiagnosticSnapshotFileTests: XCTestCase {
+    func testExportReplacesOnlyLatestSnapshot() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let first = Data("{\"sequence\":1}".utf8)
+        let second = Data("{\"sequence\":2}".utf8)
+        let url = try FieldDiagnosticSnapshotFile.write(first, cachesDirectory: base)
+        XCTAssertEqual(try Data(contentsOf: url), first)
+        XCTAssertEqual(try FieldDiagnosticSnapshotFile.write(second, cachesDirectory: base), url)
+        XCTAssertEqual(try Data(contentsOf: url), second)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path),
+                       ["field-diagnostic-latest.json"])
+    }
+
+    func testUnavailableDestinationReportsFailure() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("occupied".utf8).write(to: file)
+        XCTAssertThrowsError(try FieldDiagnosticSnapshotFile.write(Data("{}".utf8), cachesDirectory: file))
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "occupied")
+    }
+}
+
 final class DeviceCredentialStoreTests: XCTestCase {
     func testCredentialLifecycleUsesKeychainAbstraction() throws {
         let store = FakeCredentialStore()

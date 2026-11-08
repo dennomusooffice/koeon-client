@@ -3399,7 +3399,13 @@ final class IntercomSessionController: ObservableObject {
             return
         }
         UIPasteboard.general.string = string
-        fieldDiagnosticCopyResult = "Copied"
+        do {
+            _ = try FieldDiagnosticSnapshotFile.write(data)
+            fieldDiagnosticCopyResult = "Copied · diagnostic file saved"
+        } catch {
+            // Preserve the clipboard result even if local export is unavailable.
+            fieldDiagnosticCopyResult = "Copied · diagnostic file unavailable"
+        }
     }
 
     private func persistFieldLab() {

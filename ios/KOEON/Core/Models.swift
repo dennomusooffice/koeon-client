@@ -2,6 +2,21 @@ import Foundation
 
 let fieldDiagnosticSchema = "koeon.field-diagnostic.v2"
 
+/// Explicit diagnostic export only. One replaceable cache file; no audio or history.
+enum FieldDiagnosticSnapshotFile {
+    static func write(_ data: Data, cachesDirectory: URL? = nil) throws -> URL {
+        let manager = FileManager.default
+        let base = try cachesDirectory ?? manager.url(
+            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        )
+        let directory = base.appendingPathComponent("KOEONDiagnostics", isDirectory: true)
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("field-diagnostic-latest.json")
+        try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        return file
+    }
+}
+
 enum KOEONRole: String, Codable, Sendable {
     case admin = "ADMIN"
     case staff = "STAFF"
