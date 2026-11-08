@@ -400,12 +400,12 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                     if (state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING) {
                         "AUDIO INTERRUPTED · 音声を復旧しています…"
                     } else {
-                        "AUDIO INTERRUPTED · 通話中はPTTを利用できません"
+                        "AUDIO INTERRUPTED · 他の音声が終了したら音声を再接続してください"
                     },
                     color = Color(0xFFFFB020),
                     fontWeight = FontWeight.Bold,
                 )
-                if (state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERY_FAILED) {
+                if (state.diagnostics.audioAvailabilityState in setOf(AudioAvailabilityState.INTERRUPTED, AudioAvailabilityState.RECOVERY_FAILED)) {
                     Button(onClick = manager::retryAudioRecovery, modifier = Modifier.fillMaxWidth()) {
                         Text("音声を再接続")
                     }

@@ -31,6 +31,7 @@ import com.dennomuso.koeon.core.model.FloorResponse
 import io.livekit.android.LiveKit
 import io.livekit.android.LiveKitOverrides
 import io.livekit.android.audio.AudioSwitchHandler
+import com.dennomuso.koeon.core.audio.RecoverableAudioHandler
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
 import io.livekit.android.room.Room
@@ -234,7 +235,7 @@ class LiveKitRoomController(
 ) : MicrophoneGateway, PttControlGateway {
     private var audioCaptureProfile = productionAudioCaptureProfile
     private val appContext = context.applicationContext
-    private val audioHandler = AudioSwitchHandler(appContext).also { handler ->
+    private val routingHandler = AudioSwitchHandler(appContext).also { handler ->
         // Some Android vendors do not apply the communication route unless the
         // SDK is explicitly allowed to manage it. KOEON is always a voice-chat
         // session, so keep the SDK on its documented communication mode.
@@ -245,22 +246,17 @@ class LiveKitRoomController(
                 audioRoute = selected?.toString() ?: "Unavailable",
             )
         }
-        handler.registerOnAudioFocusChangeListener { change ->
-            when (change) {
-                AudioManager.AUDIOFOCUS_GAIN -> {
-                    _snapshot.value = _snapshot.value.copy(audioFocusState = "Granted")
-                    onAudioFocusEvent(AudioFocusEvent.Gained)
-                }
-                AudioManager.AUDIOFOCUS_LOSS,
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK,
-                -> {
-                    _snapshot.value = _snapshot.value.copy(audioFocusState = "Lost")
-                    onAudioFocusEvent(AudioFocusEvent.Lost("Android audio focus change $change"))
-                }
-            }
-        }
     }
+    private val audioHandler = RecoverableAudioHandler(appContext, routingHandler,
+        onGranted = {
+            _snapshot.value = _snapshot.value.copy(audioFocusState = "Granted")
+            onAudioFocusEvent(AudioFocusEvent.Gained)
+        },
+        onLost = { reason ->
+            _snapshot.value = _snapshot.value.copy(audioFocusState = "Lost")
+            onAudioFocusEvent(AudioFocusEvent.Lost(reason))
+        },
+    )
     private var room: Room? = null
     private var eventJob: Job? = null
     private var remotePcmJob: Job? = null
@@ -537,7 +533,16 @@ class LiveKitRoomController(
         rxReadyLeaseId = null
     }
 
+    fun requestAudioFocusRecovery(): Result<Unit> {
+        if (room == null || _snapshot.value.connectionState != IntercomConnectionState.CONNECTED) {
+            return Result.failure(IllegalStateException("LiveKit Room is not connected"))
+        }
+        return if (audioHandler.resumeFocus()) Result.success(Unit)
+        else Result.failure(IllegalStateException("Audio focus request denied; another audio session may have priority"))
+    }
+
     fun validateAudioRecovery(): Result<Unit> {
+        if (!audioHandler.hasFocus) return Result.failure(IllegalStateException("Android audio focus is not granted"))
         val current = room ?: return Result.failure(IllegalStateException("LiveKit Room is unavailable"))
         if (_snapshot.value.connectionState != IntercomConnectionState.CONNECTED) {
             return Result.failure(IllegalStateException("LiveKit Room is not connected"))

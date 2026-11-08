@@ -973,7 +973,13 @@ class IntercomSessionManager(
     }
 
     fun retryAudioRecovery() {
-        recoverAudio(audioInterruption.snapshot.generation)
+        if (!_state.value.joined) return
+        val result = room.requestAudioFocusRecovery()
+        if (result.isSuccess) {
+            recoverAudio(audioInterruption.snapshot.generation)
+        } else {
+            _state.update { it.copy(error = "音声を再接続できません。通話や他の音声アプリが終了してから再試行してください。") }
+        }
     }
 
     private fun pttUp(source: PttInputSource) {
