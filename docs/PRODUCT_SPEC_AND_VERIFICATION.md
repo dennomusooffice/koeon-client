@@ -1,5 +1,7 @@
 # KOEON 共通製品仕様・設計・検証台帳
 
+2026-11-08 update (#52): iOS 1.0 (2026110801), source `75024fa4553f7a5381603e7ee37ece628d1524b2`, is now VALID / APP_STORE_ELIGIBLE, with beta review APPROVED and external IN_BETA_TESTING. The existing external public-link group has this build. Installation on the affected iPhone 16 was verified with devicectl, replacing 2026082004. SO-52C remains 1.0.13 (14), source `a6f3e10654c7931744a0303ffc9c2a1651bcf249`. Bidirectional listening and locked-screen reception are still pending; distribution and installation do not prove the reported audio failure is resolved. Device operations end at 11:30 JST on 2026-11-08.
+
 更新: 2026-10-31。基準ソースは `6fe000f8ac2c6cbc4695399c8025bd60f8b91143`、実機記録は `131d0136114ef171c484493ff7550a84df639668`。これは実装済み機能と目標・未達項目を区別する統合資料であり、すべての受入れ完了を宣言するものではない。
 
 ## 現在の基準と次の受入れ（2026-10-31）
