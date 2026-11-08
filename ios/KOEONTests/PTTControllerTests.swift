@@ -1,6 +1,95 @@
 import AVFoundation
 import XCTest
+import LiveKit
 @testable import KOEON
+
+// Opt-in SFU interoperability probe. Apple PushToTalk is NOT exercised here.
+private final class RtpLabAudioProbe: NSObject, AudioCustomProcessingDelegate, AudioRenderer, RoomDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var phase = 0.0
+    private var rate = 48000.0
+    private var nonzero = 0
+    private var subscribed = 0
+    var counts: (Int, Int) { lock.withLock { (nonzero, subscribed) } }
+    func audioProcessingInitialize(sampleRate: Int, channels: Int) { lock.withLock { rate = Double(sampleRate) } }
+    func audioProcessingRelease() {}
+    func audioProcessingProcess(audioBuffer: LKAudioBuffer) {
+        lock.withLock {
+            for frame in 0..<audioBuffer.frames {
+                let sample = Float(sin(phase) * 6000)
+                phase += 2 * .pi * 660 / rate
+                for channel in 0..<audioBuffer.channels { audioBuffer.rawBuffer(forChannel: channel)[frame] = sample }
+            }
+        }
+    }
+    func render(pcmBuffer: AVAudioPCMBuffer) {
+        lock.withLock {
+            if let data = pcmBuffer.floatChannelData {
+                for i in 0..<Int(pcmBuffer.frameLength) where abs(data[0][i]) > 0.01 { nonzero += 1 }
+            } else if let data = pcmBuffer.int16ChannelData {
+                for i in 0..<Int(pcmBuffer.frameLength) where abs(Int(data[0][i])) > 300 { nonzero += 1 }
+            }
+        }
+    }
+    func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) {
+        guard let track = publication.track as? RemoteAudioTrack else { return }
+        track.add(audioRenderer: self)
+        lock.withLock { subscribed += 1 }
+        Task { try? await room.localParticipant.publish(data: Data("ready".utf8), options: DataPublishOptions(topic: "rtp-lab", reliable: true)) }
+    }
+}
+
+@MainActor
+final class LiveKitRtpLabTests: XCTestCase {
+    func testNativeOpusInteroperability() async throws {
+        guard ProcessInfo.processInfo.environment["KOEON_RTP_LAB"] == "1" else {
+            throw XCTSkip("Opt-in local SFU probe")
+        }
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("This test must not run on a physical device")
+        #endif
+        let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18766/token/ios27")!)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+        let token = try XCTUnwrap(object["token"])
+        let probe = RtpLabAudioProbe()
+        let manager = AudioManager.shared
+        let oldProcessor = manager.capturePostProcessingDelegate
+        let oldAutomatic = manager.audioSession.isAutomaticConfigurationEnabled
+        let oldAvailability = manager.engineAvailability
+        manager.audioSession.isAutomaticConfigurationEnabled = true
+        try manager.setEngineAvailability(.default)
+        manager.capturePostProcessingDelegate = probe
+        let room = Room(delegate: probe, roomOptions: RoomOptions(
+            defaultAudioPublishOptions: AudioPublishOptions(encoding: AudioEncoding(maxBitrate: 12000), dtx: false, red: true)))
+        do {
+            try await room.connect(url: "ws://127.0.0.1:19080", token: token)
+            try await room.localParticipant.setMicrophone(enabled: true)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(90))
+            while probe.counts.0 < 16000, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            XCTAssertGreaterThan(probe.counts.0, 16000)
+            XCTAssertGreaterThan(probe.counts.1, 0)
+            let result: [String: Any] = ["role": "ios27", "nonzeroSamples": probe.counts.0,
+                "subscribedTracks": probe.counts.1, "codecTargetBps": 12000]
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:18766/result")!)
+            request.httpMethod = "POST"
+            request.httpBody = try JSONSerialization.data(withJSONObject: result)
+            _ = try await URLSession.shared.data(for: request)
+            try await Task.sleep(for: .seconds(5))
+        } catch {
+            await room.disconnect()
+            manager.capturePostProcessingDelegate = oldProcessor
+            manager.audioSession.isAutomaticConfigurationEnabled = oldAutomatic
+            try? manager.setEngineAvailability(oldAvailability)
+            throw error
+        }
+        await room.disconnect()
+        manager.capturePostProcessingDelegate = oldProcessor
+        manager.audioSession.isAutomaticConfigurationEnabled = oldAutomatic
+        try? manager.setEngineAvailability(oldAvailability)
+    }
+}
 
 @MainActor
 final class PttInitializationGateTests: XCTestCase {

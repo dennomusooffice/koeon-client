@@ -46,6 +46,8 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 
 ## 引き継ぎ時の確認
 
+- [#54](https://github.com/dennomusooffice/koeon-client/issues/54): 128kbps制限とLiveKit音声復元。実SDK/ローカルSFUでAndroid15↔16、Android15↔iOS27.0のOpus受信を確認。製品の経路切替は未実装。iOS終了後の保持音声、RTP終端、復旧・背景受信の受入れが残る。[試験条件・限界・再実行手順](../scripts/mixed-lab/RTP_LAB.md)。
+
 - Issue／PRと現在のブランチ・HEAD・作業ツリーを読み、記録後の変更がないか確認する。
 - 実機のインストール済みビルドを確認し、配信済みビルドと同一だと推測しない。
 - 前回の結果、未検証の条件、検証時間枠を確認して次の作業を決める。
