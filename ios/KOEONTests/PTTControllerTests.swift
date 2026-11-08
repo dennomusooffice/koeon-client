@@ -1174,6 +1174,47 @@ final class PTTControllerTests: XCTestCase {
 }
 
 final class InputGainProcessorTests: XCTestCase {
+    func testLimiterDominatedCompletedUtteranceReducesAutoGain() {
+        withCapture { gain, _ in
+            gain.setRoute("Bluetooth")
+            gain.setMode(.auto)
+            gain.beginTransmission()
+            feed(gain, value: 32_000, count: 9_600)
+            XCTAssertEqual(gain.snapshot().effectiveGainDb, 0)
+            XCTAssertEqual(gain.snapshot().limiterHits, 9_600)
+            gain.endTransmission()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, -1)
+            gain.endTransmission()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, -1)
+            gain.setRoute("Built-in")
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+            gain.setRoute("Bluetooth")
+            XCTAssertEqual(gain.snapshot().autoTrimDb, -1)
+        }
+    }
+
+    func testSparseClippedPeakDoesNotRaiseAutoDespiteQuietAverage() {
+        withCapture { gain, _ in
+            gain.setMode(.auto)
+            gain.beginTransmission()
+            feed(gain, value: 1_000, count: 9_599)
+            feed(gain, value: 32_000, count: 1)
+            XCTAssertLessThan(gain.snapshot().rmsDbfs!, -24)
+            gain.endTransmission()
+            XCTAssertEqual(gain.snapshot().autoTrimDb, -1)
+        }
+    }
+
+    func testCancelledOverloadedUtteranceDoesNotTrainAuto() {
+        withCapture { gain, _ in
+            gain.setMode(.auto)
+            gain.beginTransmission()
+            feed(gain, value: 32_000, count: 9_600)
+            gain.endTransmission(learn: false)
+            XCTAssertEqual(gain.snapshot().autoTrimDb, 0)
+        }
+    }
+
     func testRouteChangeCancelsCalibrationAndUsesNewMicrophoneGain() {
         withCapture { gain, capture in
             gain.setMode(.manual)

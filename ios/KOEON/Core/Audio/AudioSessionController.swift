@@ -88,8 +88,13 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
             guard transmitting else { return }
             transmitting = false
             measurementsPaused = true
-            if learn, learningAllowed, value.mode == .auto, sampleCount >= 4_800, value.limiterHits < sampleCount / 20, let rms = rmsDbfs() {
-                value.autoTrimDb = Self.nextAutoTrim(current: value.autoTrimDb, speechRmsDbfs: rms)
+            if learn, learningAllowed, value.mode == .auto, sampleCount >= 4_800, let rms = rmsDbfs() {
+                value.autoTrimDb = Self.nextAutoTrim(
+                    current: value.autoTrimDb,
+                    speechRmsDbfs: rms,
+                    inputPeakDbfs: dbfs(peak),
+                    limiterRatio: Double(value.limiterHits) / Double(sampleCount)
+                )
                 defaults.set(value.autoTrimDb, forKey: key("auto", value.route))
             }
         }
@@ -153,6 +158,15 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         guard speechRmsDbfs.isFinite, speechRmsDbfs > -60 else { return boundedCurrent }
         let targetGain = recommendedGain(speechRmsDbfs: speechRmsDbfs)
         return boundedCurrent + min(1, max(-1, targetGain - boundedCurrent))
+    }
+    static func nextAutoTrim(current: Float, speechRmsDbfs: Float, inputPeakDbfs: Float, limiterRatio: Double) -> Float {
+        // Match Android: a quiet average must not increase gain when peaks
+        // already clip. Apply the change only to the next completed utterance.
+        if inputPeakDbfs >= -0.5 || limiterRatio >= 0.01 {
+            let boundedCurrent = current.isFinite ? min(12, max(-6, current)) : 0
+            return max(-6, boundedCurrent - 1)
+        }
+        return nextAutoTrim(current: current, speechRmsDbfs: speechRmsDbfs)
     }
     static func processSample(_ sample: Float, gainDb: Float) -> (sample: Float, limited: Bool) {
         let amplified = sample * powf(10, min(12, max(-6, gainDb)) / 20)

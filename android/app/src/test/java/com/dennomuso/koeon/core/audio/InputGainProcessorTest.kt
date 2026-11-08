@@ -9,6 +9,40 @@ import org.junit.Test
 
 class InputGainProcessorTest {
     @Test
+    fun `LiveKit float input overload trains only next utterance and retains route profile`() {
+        val gain = InputGainProcessor(MemoryProfiles(), initialMode = InputGainMode.AUTO)
+        gain.setRoute("Bluetooth")
+        gain.beginTransmission()
+        val input = ByteBuffer.allocateDirect(9_600 * 4).order(ByteOrder.nativeOrder())
+        repeat(9_600) { input.putFloat(32_000f) }
+        input.rewind()
+        gain.processAudio(1, 9_600, input)
+        assertEquals(0f, gain.snapshot().effectiveGainDb, 0f)
+        assertEquals(9_600L, gain.snapshot().limiterHitCount)
+        gain.endTransmission()
+        assertEquals(-1f, gain.snapshot().autoTrimDb, 0f)
+        gain.endTransmission()
+        assertEquals(-1f, gain.snapshot().autoTrimDb, 0f)
+        gain.setRoute("Built-in")
+        assertEquals(0f, gain.snapshot().autoTrimDb, 0f)
+        gain.setRoute("Bluetooth")
+        assertEquals(-1f, gain.snapshot().autoTrimDb, 0f)
+    }
+
+    @Test
+    fun `LiveKit float sparse clipped peak does not raise quiet average gain`() {
+        val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
+        gain.beginTransmission()
+        val input = ByteBuffer.allocateDirect(9_600 * 4).order(ByteOrder.nativeOrder())
+        repeat(9_599) { input.putFloat(1_000f) }
+        input.putFloat(32_000f).rewind()
+        gain.processAudio(1, 9_600, input)
+        assertTrue(gain.snapshot().inputRmsDbfs!! < -24f)
+        gain.endTransmission()
+        assertEquals(-1f, gain.snapshot().autoTrimDb, 0f)
+    }
+
+    @Test
     fun `route changes cancel calibration and use the new microphone gain`() {
         val gain = InputGainProcessor(MemoryProfiles(), initialMode = InputGainMode.MANUAL)
         gain.setRoute("Wired")

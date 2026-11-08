@@ -388,3 +388,12 @@ User reset usage and authorized autonomous Bluetooth/AndroidAuto/CarPlay investi
 All8 senders were exercised once: physicaliPhone withBluetooth headset, iOS Simulator, OPPO, moto, API34/35/36/37. Each20s finite gesture observed the other7 devicesBUSY_REMOTE while the gesture was still active, then all8READY after release.8/8 cases,56receiver observations, no errors. Raw UI/state evidence is private in morning-eight-control. No known-audio injection or acoustic measurement was used; this is a control consistency acceptance, not proof of audible speech or microphone routing.
 
 Added user-requested follow-up after communication/car tests: compare dynamic input gain against documented OFF/MANUAL/AUTO behavior, route isolation, fixed gain within an utterance, normal-end-only bounded learning, silence rejection and limiter behavior. Current product spec retainsAUTO+12dB versusMANUAL+24dB; do not silently reinterpret that as continuous mid-speech AGC. Android headset-specific behavior needs actual hardware distinct from the physicaliPhone headset. Preserve09:00 deadline and restore this morning's original screen settings at completion.
+
+
+## Morning audio capture isolation and gain follow-up
+
+After the eight-way control pass, API34 sent a known synthetic utterance with normal finite PTT. API37 matched the known signal (correlation0.181, ordered segments passed); API35/36 did not (correlation0). Whole audio trial failed. Independent AudioTrack output of660Hz for10s then reproduced bad capture on both API35/36:480000 frames written/played without player error, but only49809/49707 captured samples, dominant frequency about5647Hz and RMS2.76/2.79. This isolates a capture infrastructure failure; it does not prove KOEON audio acceptance on those receivers. Raw audio was not saved.
+
+During the synthetic utterance, fresh physicaliPhone0902 diagnostics showed RX_ACTIVE, BluetoothHFP input/output at16kHz, firstPCM generation matching the current receive generation. iOS Simulator showed RX_ACTIVE and matching generation with built-in48kHz. Neither metadata observation proves acoustic audibility or headset microphoneTX.
+
+AVDs and the enrolled iOS Simulator were shut down without wiping data for resource-isolated gain regression builds. The newly reproduced iOS AUTO overload discrepancy, fix, automated verification and remaining cross-platform differences are recorded in [input gain verification](INPUT_GAIN_VERIFICATION_20261109.md). The eight-endpoint lab must be restored before further mixed-device trials.
