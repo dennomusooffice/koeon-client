@@ -14,6 +14,12 @@ struct RootView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     brand
+                    #if DEBUG && targetEnvironment(simulator)
+                    if session.pushToTalk.isForegroundSimulatorSession {
+                        Text("SIMULATOR: foreground transport only · no Apple PTT/APNs")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    #endif
                     if session.isPoweredOn || session.isJoined { joinedView } else { selectionView }
                     if let error = session.lastError {
                         Text(error).font(.footnote).foregroundStyle(.red)

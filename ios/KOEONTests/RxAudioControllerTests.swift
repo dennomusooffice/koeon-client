@@ -4,6 +4,28 @@ import PushToTalk
 
 @MainActor
 final class RxAudioControllerTests: XCTestCase {
+    #if DEBUG && targetEnvironment(simulator)
+    func testOptInForegroundSimulatorInitializesWithoutApplePttOrPushToken() async throws {
+        let defaults = UserDefaults(suiteName: "koeon.simulator-init-test")!
+        defer { defaults.removePersistentDomain(forName: "koeon.simulator-init-test") }
+        let controller = ApplePushToTalkController(defaults: defaults, foregroundSimulatorRequested: true)
+        var tokens = 0
+        controller.onEphemeralToken = { _ in tokens += 1; return true }
+        var begins = 0
+        controller.onBeginTransmitting = { _ in begins += 1 }
+        try await controller.initialize()
+        XCTAssertEqual(controller.state, .ready)
+        XCTAssertEqual(controller.tokenRegistrationState, "SIMULATOR_FOREGROUND_NO_APNS")
+        XCTAssertNil(controller.channelUUID)
+        controller.requestBeginTransmitting()
+        XCTAssertEqual(begins, 0, "A lab adapter must not allow transmit before channel authorization")
+        XCTAssertEqual(tokens, 0)
+        XCTAssertFalse(controller.requestRuntimeRestoreForIncomingPush())
+        let production = ApplePushToTalkController(defaults: defaults, foregroundSimulatorRequested: false)
+        XCTAssertFalse(production.isForegroundSimulatorSession)
+    }
+    #endif
+
     func testBufferedSpeechKeepsAppleParticipantUntilActualPlayoutDrains() async throws {
         let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(), onUpdate: { _ in })
         var start = event(type: "start", sequence: 1)
