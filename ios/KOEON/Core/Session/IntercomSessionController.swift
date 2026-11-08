@@ -709,8 +709,11 @@ final class IntercomSessionController: ObservableObject {
             self?.handleRemoteMediaActivity(sessionId: senderSessionId, active: active)
         }
         room.onRemotePcm = { [weak self] timestamp in
-            guard let self, self.rxRecoveryEvent?.bufferedGenerationId == nil else { return }
-            self.rx?.handleRemotePcm(at: timestamp)
+            guard let self, self.rxRecoveryEvent?.bufferedGenerationId == nil,
+                  let rx = self.rx, let sessionId = rx.currentSnapshot().sessionId else { return }
+            guard rx.handleLiveKitRemotePcm(at: timestamp, subscriptionActive:
+                self.room.isRemoteAudioSubscriptionActive(sessionId: sessionId,
+                    generation: rx.currentSnapshot().generation)) else { return }
             self.remoteReceive?.handleRemotePcm()
             let currentRx = self.rx?.currentSnapshot() ?? RxSnapshot()
             self.applyRxSnapshot(currentRx)

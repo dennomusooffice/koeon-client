@@ -4,6 +4,34 @@ import PushToTalk
 
 @MainActor
 final class RxAudioControllerTests: XCTestCase {
+    func testRoomMixedPcmCannotCompleteUnsubscribedReceiveOrSuppressRecovery() throws {
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            clock: SuspendingClock(), onUpdate: { _ in })
+        controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        let started = try XCTUnwrap(controller.currentSnapshot().rxStartedAt)
+        XCTAssertFalse(controller.handleLiveKitRemotePcm(at: started, subscriptionActive: false))
+        XCTAssertNil(controller.currentSnapshot().rxFirstPcmAt,
+            "Unbound room-mix callbacks must not trip the no-PCM recovery early exit")
+        var consistency = RxConsistencyGuard()
+        consistency.updateValidatedRx(active: true, sessionId: "session-a",
+            generation: controller.currentSnapshot().generation, participantResolved: true,
+            trackSubscribed: false, at: started)
+        XCTAssertEqual(consistency.evaluate(at: started.addingTimeInterval(0.25)).recoveryLevel, 1)
+        XCTAssertTrue(controller.handleLiveKitRemotePcm(at: started.addingTimeInterval(0.3), subscriptionActive: true))
+        XCTAssertNotNil(controller.currentSnapshot().rxFirstPcmAt)
+    }
+
+    func testQueuedPcmFromPreviousReceiveCannotCompleteNewGeneration() throws {
+        let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            clock: SuspendingClock(), onUpdate: { _ in })
+        controller.handleControl(event(type: "start", sequence: 1), senderSessionId: "session-a")
+        let started = try XCTUnwrap(controller.currentSnapshot().rxStartedAt)
+        XCTAssertFalse(controller.handleLiveKitRemotePcm(at: started.addingTimeInterval(-0.01), subscriptionActive: true))
+        XCTAssertNil(controller.currentSnapshot().rxFirstPcmAt)
+        controller.reset()
+        XCTAssertFalse(controller.handleLiveKitRemotePcm(at: started.addingTimeInterval(1), subscriptionActive: true))
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     func testOptInForegroundSimulatorInitializesWithoutApplePttOrPushToken() async throws {
         let defaults = UserDefaults(suiteName: "koeon.simulator-init-test")!

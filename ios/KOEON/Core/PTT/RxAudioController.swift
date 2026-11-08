@@ -838,6 +838,16 @@ final class RxAudioController {
         await completeDrain(reason: "batv1_final_sequence")
     }
 
+    /// LiveKit's renderer observes the room mix, including callbacks from an
+    /// earlier playout cycle. Those callbacks cannot prove this RX is viable.
+    @discardableResult
+    func handleLiveKitRemotePcm(at timestamp: Date, subscriptionActive: Bool) -> Bool {
+        guard subscriptionActive, snapshot.state != .idle,
+              let startedAt = snapshot.rxStartedAt, timestamp >= startedAt else { return false }
+        handleRemotePcm(at: timestamp)
+        return true
+    }
+
     func handleRemotePcm(at timestamp: Date) {
         guard snapshot.state != .idle, snapshot.sessionId != nil else { return }
         snapshot.rxLastAudioAt = timestamp
