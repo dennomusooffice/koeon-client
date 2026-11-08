@@ -59,6 +59,15 @@ enum IncomingPushRuntimeAction: String, Sendable {
     case resumeImmediately = "RESUME_IMMEDIATELY"
 }
 
+func isConfirmedDeviceCredentialFailure(_ error: Error) -> Bool {
+    guard case let APIClientError.http(status, body) = error, status == 401,
+          let data = body.data(using: .utf8),
+          let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let detail = envelope["error"] as? [String: Any],
+          let code = detail["code"] as? String else { return false }
+    return ["DEVICE_CREDENTIAL_INVALID", "DEVICE_CREDENTIAL_EXPIRED"].contains(code)
+}
+
 func shouldRestoreExpiredBackendSession(
     _ error: Error, requestedSessionId: String, currentSessionId: String?, poweredOn: Bool
 ) -> Bool {
@@ -1005,17 +1014,33 @@ final class IntercomSessionController: ObservableObject {
     }
 
     func loadFixture() async {
-        if restoreTask != nil { return }
-        guard fixture == nil else { return }
+        guard restoreTask == nil, fixture == nil, !isLoading else { return }
+        guard let credential = credentialStore.read() else {
+            enrollmentRequired = true
+            operationalState = .unenrolled
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         do {
-            applyIdentity(try await api.me())
-        } catch {
-            try? credentialStore.clear()
-            enrollmentRequired = true
-            operationalState = .unenrolled
+            let identity = try await api.me()
+            guard !Task.isCancelled, credentialStore.read() == credential else { return }
+            applyIdentity(identity)
             lastError = nil
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError),
+                  credentialStore.read() == credential else { return }
+            if isConfirmedDeviceCredentialFailure(error) {
+                try? credentialStore.clear()
+                enrollmentRequired = true
+                operationalState = .unenrolled
+                lastError = nil
+            } else {
+                // Connectivity and service failures must not revoke local enrollment.
+                enrollmentRequired = false
+                operationalState = .error
+                lastError = "接続できませんでした。通信状態を確認して再試行してください。"
+            }
         }
     }
 

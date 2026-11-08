@@ -89,6 +89,14 @@ struct RootView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                 }
+            } else if session.fixture == nil {
+                if session.isLoading {
+                    ProgressView("接続を確認しています")
+                } else {
+                    Text("ユーザー情報を取得できませんでした。")
+                    Button("再試行") { Task { await session.loadFixture() } }
+                        .buttonStyle(.borderedProminent)
+                }
             } else {
             Picker("User", selection: Binding(
                 get: { session.selectedUserId ?? "" },
