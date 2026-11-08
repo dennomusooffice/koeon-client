@@ -242,3 +242,18 @@ Limitations: injected HTTP503 rather than packet loss/timeouts, one API35 emulat
 API35 uses signed private a74fc92 candidate1.0.16(17); API34/36/37 remain e7cf936 candidate1.0.16(17). Unshaped synthetic6.88s speech: API34 to35/36/37 passed3/3; reverse API35 to34/36/37 passed3/3. Full-wave correlation ranges0.192-0.207 and0.144-0.236 respectively, all ordered-segment criteria passed, gesture remained active, sender returned READY and cleanupErrors were empty. Physical OPPO/moto remained CONNECTED and recent decoded-PCM callbacks were observed (168/572ms before diagnostic capture); this is not audible or waveform-matching proof.
 
 API35 airplane-mode plus Wi-Fi-off trial observed OFFLINE/RECONNECTING; after restoration, READY/CONNECTED was observed at12s. Subsequent API34 multicast detected speech at recoveredAPI35 andAPI37, butAPI36 yielded only156588 captured samples and no match. No POWER reset: another trial still failedAPI36 (99517 samples), whileAPI37 passed (1530368 samples). All endpoints stayed alive; injection/gesture/cleanup checks passed. API36 diagnostic remained CONNECTED/READY/RX_IDLE, RX_READY publicationSUCCESS and recent decoded-PCM callbacks (876ms old). This does not establish whether app playback or emulator output capture stopped. Whole multicast trials remain failed; do not count as general recovery/audio acceptance. Next: independent AudioTrack output versus gRPC capture on the affected emulator, before any POWER reset. Related #57/#59/#56.
+
+### API36 output failure isolated outside KOEON (2026-11-09 02:34 JST)
+
+An independent AudioTrack app generated10s of660Hz PCM (48kHz mono, VOICE_COMMUNICATION/SPEECH). No microphone, human recording, network or KOEON API was used. Playback-head metadata and gRPC streamAudio capture were compared over16s; raw output was analyzed only in memory.
+
+| Condition | AudioTrack frames written/played | Captured samples | Dominant frequency | RMS (S16 units) |
+| --- | --- | --- | --- | --- |
+| AffectedAPI36, KOEON still running | 480000/480000 | 50082 | 5647Hz (not test tone) | 2.80 |
+| SameAPI36, KOEON force-stopped | 480000/480000 | 44301 | 5647Hz (not test tone) | 2.83 |
+| ControlAPI37, same probe | 480000/480000 | 768511 | 660Hz | 848.54 |
+| API36 after graceful AVD restart, data retained | 480000/480000 | 621411 | 659.43Hz | 944.59 |
+
+All probe playback heads completed in about10.2-10.4s without an Android playback error. The failure persisted without KOEON running and recovered after AVD restart, supporting an emulator output/capture runtime fault rather than attributing this event to the KOEON receive path. Exact emulator subsystem/root cause remains unknown; do not generalize this finding to unresolved product issue#57.
+
+After restoring enrollment/READY, the original KOEON synthetic-speech trial API34->API36/API37 passed2/2: each captured1530879 samples, correlations0.194/0.252, ordered speech detected, senderREADY and cleanupErrors empty. Physical devices were untouched. Latest evidence is linked from#59; natural physical Join expiry and iOS locked first reception remain pending.
