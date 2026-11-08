@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the existing internal TestFlight pipeline on a Mac with local credentials."""
+"""Run the TestFlight pipeline with an explicit distribution audience on a Mac with local credentials."""
 
 import argparse
 import json
@@ -61,6 +61,7 @@ def read_config(path):
 
 
 def validate_request(args):
+    require(getattr(args, "audience", "internal") in ("internal", "external"), "Invalid TestFlight audience.")
     if args.action in ("preflight", "candidate", "upload"):
         require(re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", args.version or ""), "Supply --version (for example 1.0.8).")
         require(re.fullmatch(r"[1-9][0-9]*", args.build or ""), "Supply an unused positive --build number.")
@@ -107,7 +108,8 @@ def execute(args, config):
             env.pop(name, None)
         env.update({name: config[name] for name in FIELDS[:4]})
         env.update(IOS_CREDENTIAL_DIR=str(credentials), MARKETING_VERSION=args.version or "",
-                   BUILD_NUMBER=args.build or "", RUNNER_TEMP=str(work))
+                   BUILD_NUMBER=args.build or "", RUNNER_TEMP=str(work),
+                   IOS_TESTFLIGHT_AUDIENCE=getattr(args, "audience", "internal"))
         fd, log_path = tempfile.mkstemp(prefix=f"{args.action}-", suffix=".log", dir=private_dir)
         print(f"Private log: {log_path}", flush=True)
         with os.fdopen(fd, "w") as log:
@@ -132,11 +134,11 @@ def execute(args, config):
                        EXPECTED_TREE_SHA=tree,
                        RELEASE_MODE="TESTFLIGHT_UPLOAD" if args.action == "upload" else "CANDIDATE_ONLY")
             print(f"Source: {sha}\nTree: {tree}\nVersion/build: {args.version} ({args.build})", flush=True)
-            run_step("Signed internal release" if args.action == "upload" else "Signed candidate",
+            run_step("Signed TestFlight release" if args.action == "upload" else "Signed candidate",
                      ["/bin/bash", str(source / "scripts/ios-public-release.sh")], env, log)
         print("Temporary credential copies, archive, and IPA removed.")
         if args.action == "upload":
-            print("Upload submitted. Check processing, compliance, and internal tester access in App Store Connect.")
+            print("Upload submitted. Check processing, compliance, beta review, and tester group access in App Store Connect.")
 
 
 def main():
@@ -147,6 +149,8 @@ def main():
     parser.add_argument("--version")
     parser.add_argument("--build")
     parser.add_argument("--confirm")
+    parser.add_argument("--audience", choices=("internal", "external"), default="internal",
+                        help="External permits beta review; it does not distribute to testers automatically.")
     args = parser.parse_args()
     try:
         validate_request(args)

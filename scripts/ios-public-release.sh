@@ -126,20 +126,8 @@ key_path="$IOS_CREDENTIAL_DIR/AuthKey.p8"
 key_id="$(cat "$IOS_CREDENTIAL_DIR/key-id")"
 issuer_id="$(cat "$IOS_CREDENTIAL_DIR/issuer-id")"
 export_options="$RUNNER_TEMP/PublicReleaseExportOptions.plist"
-cat >"$export_options" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>method</key><string>app-store-connect</string>
-  <key>destination</key><string>export</string>
-  <key>signingStyle</key><string>automatic</string>
-  <key>signingCertificate</key><string>Apple Distribution</string>
-  <key>teamID</key><string>${APPLE_TEAM_ID}</string>
-  <key>manageAppVersionAndBuildNumber</key><false/>
-  <key>testFlightInternalTestingOnly</key><true/>
-  <key>uploadSymbols</key><true/>
-</dict></plist>
-PLIST
+python3 "$INFRA_ROOT/scripts/ios-testflight-export-options.py" \
+  "${IOS_TESTFLIGHT_AUDIENCE:-internal}" "$APPLE_TEAM_ID" "$export_options"
 chmod 600 "$export_options"
 xcodebuild -exportArchive \
   -archivePath "$archive_path" -exportPath "$export_path" -exportOptionsPlist "$export_options" \
