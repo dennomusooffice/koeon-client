@@ -287,3 +287,10 @@ Implemented an alternate export on the existing Copy Field Diagnostic JSON actio
 Validation: iOS316total/314passed/2skipped, parityPASS. Signed iOS27.0 Simulator UI Copy produced schema koeon.field-diagnostic.v2, byte-for-byte equal to simctl clipboard, one saved file; returnedtest05READY. This change is not yet distributed to physical iPhone and its app-container export remains unverified there. The physical device still has2026110804.
 
 After deploying a build with this change and invoking Copy, retrieve privately with devicectl device copy from --device DEVICE --domain-type appDataContainer --domain-identifier com.dennomuso.koeon --source Library/Caches/KOEONDiagnostics/field-diagnostic-latest.json --destination PRIVATE_PATH. Check capturedAt/build/schema before use; cache may be purged and the last snapshot is not automatically refreshed by subsequent reception. Do not publish raw diagnostic contents.
+
+
+### TestFlight distribution and Android startup follow-up (2026-11-09 03:16 JST)
+
+iOS1.0(2026110901), source ffd34f620028d13f96ed55366ea0c5a7abc720fc, was locally archived/exported/uploaded successfully. IPA SHA256 c57987fc00e9fccf07c99af3fe8291744598b5c2099dace5126abcf3eaf1e0d3. App Store Connect reread confirms VALID, internal and external IN_BETA_TESTING, with the same two internal and one external groups as the preceding build. Includes diagnostic file export and the previously tested startup/session-expiry recovery changes. Physical iPhone remains on0804 at this checkpoint; distribution is not device verification. PR#55 remains unmerged.
+
+After restarting the AVDs, API34 showed enrollment despite retaining encrypted credentials. Without re-enrollment or data deletion, restarting the app restored the existing user; POWER ON then reached READY. Issue#62 records the startup error-classification defect and unresolved initiating cause. API35/36/37 also returned READY. Physical OPPO/moto sessions were preserved for natural expiry observation.
