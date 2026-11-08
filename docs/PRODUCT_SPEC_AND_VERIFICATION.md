@@ -1,5 +1,7 @@
 # KOEON 共通製品仕様・設計・検証台帳
 
+2026-11-08夜の現状: LiveKit標準音声への復帰はソース`44b6eb3cb68b508577c14fc2ff34c11ff945ed6f`からiOS 1.0 (2026110803)・Android 1.0.14 (15)へ配信済み。以下の「未配信」は当該時点の履歴。後続のiOS初回受信回復修正は未配信・実機未検証。Android14〜17の実アプリ経路・同時受信と128kbps条件の進捗は[8台試験記録](EIGHT_DEVICE_LAB_20261108.md)へ集約し、Android16初回送信無音の未確定事象を含め、全仕様受入れは未完了。
+
 2026-11-08更新（#54 / PR #55、未配信）: 利用者がリアルタイム性を優先し、多少の語頭・語尾欠けを許容すると明示。標準TXをLiveKit Opusへ復帰し、準備待ち最大500ms、track有効化後の開始音、アプリtouch UPの180ms語尾保護を採用した。完全な保持音声再送は行わない。旧BATv1受信互換、通知登録保持・背景復帰・再接続・受信監視を維持する。以下の既存配信版の記録と今回の未配信コードを区別する。
 
 2026-11-08 update (#52): iOS 1.0 (2026110801), source `75024fa4553f7a5381603e7ee37ece628d1524b2`, is now VALID / APP_STORE_ELIGIBLE, with beta review APPROVED and external IN_BETA_TESTING. The existing external public-link group has this build. Installation on the affected iPhone 16 was verified with devicectl, replacing 2026082004. SO-52C remains 1.0.13 (14), source `a6f3e10654c7931744a0303ffc9c2a1651bcf249`. Foreground SO-52C transmission was heard on both iPhones; iPhone-to-SO-52C was clear without clipped words. After about one minute locked, only iPhone 16 heard the transmission. The other iPhone recorded Apple activation followed by RUNTIME_CONNECT_FAILED, then a zero-frame BufferedAudioError on foreground recovery about 32 seconds later. Root cause remains open in #52. Device operations finished before 11:30 JST; the Android diagnostic helper was removed.
