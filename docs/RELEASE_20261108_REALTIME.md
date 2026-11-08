@@ -6,7 +6,7 @@ Authorized by the repository owner. Related: [PR #55](https://github.com/dennomu
 - Tree: `5ac546b09ccc16dbac91fd9bd476c75d3ed1805b`
 - Android **1.0.14 (15)**: [GitHub field-test prerelease](https://github.com/dennomusooffice/koeon-client/releases/tag/android-v1.0.14-15).
 - APK SHA-256: `44ed51f326b1054c8e6540da2301c6bfb211fe9c905852ba7fe7d43e8848f5f4`. APK and checksum attachments verified; signing certificate matches the 1.0.13 release.
-- iOS **1.0 (2026110803)**: signed validation and Apple upload succeeded. See Issue #54 for processing, beta review and tester-group availability updates.
+- iOS **1.0 (2026110803)**: signed validation and Apple upload succeeded. Apple processing `VALID`, audience `APP_STORE_ELIGIBLE`, beta review `APPROVED`; internal and external state `IN_BETA_TESTING`. Assigned to the existing external tester group with Japanese test notes. Distribution confirmed on 2026-11-08; see Issue #54 for subsequent field results.
 
 ## Changes and evidence
 
