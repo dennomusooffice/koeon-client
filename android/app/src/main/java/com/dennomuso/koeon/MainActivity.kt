@@ -368,6 +368,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             state.operationalState == OperationalState.RECOVERING_SESSION,
         remoteTalking = remoteTalking,
         pttState = state.ptt.state,
+        audioAvailability = state.diagnostics.audioAvailabilityState,
     )
     // Preserve the current gesture until UP, but only READY can start a new one.
     val interactionEnabled = canTransmit && (inputPressed || pttSemantic == PttSemanticState.READY)
@@ -378,7 +379,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         PttSemanticState.TALKING -> Color(0xFF16E05D)
         PttSemanticState.BUSY_REMOTE, PttSemanticState.PREPARING -> Color(0xFFFFB020)
         PttSemanticState.ERROR -> Color(0xFFE53935)
-        PttSemanticState.RECOVERING, PttSemanticState.OFFLINE, PttSemanticState.RX_ONLY -> Color(0xFF626B67)
+        PttSemanticState.INTERRUPTED, PttSemanticState.RECOVERING, PttSemanticState.OFFLINE, PttSemanticState.RX_ONLY -> Color(0xFF626B67)
     }
     Card(colors = CardDefaults.cardColors(containerColor = KoeonLcd), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {

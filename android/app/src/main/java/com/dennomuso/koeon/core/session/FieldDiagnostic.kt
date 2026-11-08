@@ -6,6 +6,7 @@ import com.dennomuso.koeon.core.livekit.IntercomConnectionState
 import com.dennomuso.koeon.core.ptt.PttSemanticState
 import com.dennomuso.koeon.core.ptt.PttState
 import com.dennomuso.koeon.core.ptt.pttSemanticState
+import com.dennomuso.koeon.core.ptt.localPttEligible
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -24,13 +25,23 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
         remoteTalking = state.currentSpeaker != null &&
             state.ptt.state !in setOf(PttState.TRANSMITTING, PttState.RELEASING),
         pttState = state.ptt.state,
+        audioAvailability = state.diagnostics.audioAvailabilityState,
     )
-    val eligible = semantic == PttSemanticState.READY
+    val eligible = semantic == PttSemanticState.READY && localPttEligible(
+        operationallyActive = state.operationalState == OperationalState.ACTIVE,
+        canPublish = state.join?.canPublish == true,
+        connected = state.connectionState == IntercomConnectionState.CONNECTED,
+        audioReady = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY,
+        remoteTalking = state.currentSpeaker != null,
+    )
     val blockReason = when {
         eligible -> null
         semantic == PttSemanticState.RX_ONLY -> "RX_ONLY"
         semantic == PttSemanticState.OFFLINE -> "OFFLINE"
+        state.diagnostics.audioAvailabilityState == AudioAvailabilityState.INTERRUPTED -> "AUDIO_INTERRUPTED"
+        state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERY_FAILED -> "AUDIO_RECOVERY_FAILED"
         semantic == PttSemanticState.RECOVERING -> "AUDIO_RECOVERING"
+        state.operationalState != OperationalState.ACTIVE -> "SESSION_NOT_ACTIVE"
         semantic == PttSemanticState.BUSY_REMOTE -> "REMOTE_BUSY"
         semantic == PttSemanticState.ERROR -> "ERROR"
         else -> "PREPARING"
@@ -115,6 +126,11 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
         })
         put("audio", buildJsonObject {
             put("route", nullable(d.audioRoute)); put("focus", nullable(d.audioFocus))
+            put("availability", JsonPrimitive(d.audioAvailabilityState.name))
+            put("interruptionStartedAt", nullable(d.interruptionStartedAt))
+            put("interruptionEndedAt", nullable(d.interruptionEndedAt))
+            put("interruptionReason", nullable(d.interruptionReason))
+            put("autoRecoveryResult", JsonPrimitive(d.autoRecoveryResult))
             put("audioBitratePreset", JsonPrimitive(d.audioBitratePreset.name))
             put("requestedAudioBitrateKbps", JsonPrimitive(d.requestedAudioBitrateKbps))
             put("effectiveAudioBitrateKbps", d.effectiveAudioBitrateKbps?.let(::JsonPrimitive) ?: JsonNull)
