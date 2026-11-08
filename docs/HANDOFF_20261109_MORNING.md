@@ -5,9 +5,10 @@ This records the authorized autonomous test window ending at **09:00 JST**. Do n
 ## Source and distribution
 
 - Branch: `codex/livekit-128kbps-investigation`, [draft PR #55](https://github.com/dennomusooffice/koeon-client/pull/55), stacked on #44, not merged into main.
-- iOS **1.0 (2026110905)**, source `0c5bb16497f7beedf7c6c0874af88ba79b636314`: signed/archive/export/upload passed; Apple VALID; internal/external IN_BETA_TESTING; two internal and one external tester groups assigned. Installed on the connected physical iPhone through TestFlight without re-enrollment.
+- Device-tested iOS **1.0 (2026110905)**, source `0c5bb16497f7beedf7c6c0874af88ba79b636314`: signed/archive/export/upload passed; Apple VALID; internal/external IN_BETA_TESTING; two internal and one external tester groups assigned. Installed on the connected physical iPhone through TestFlight without re-enrollment.
 - Android **1.0.17 (18)**, source `45176b1695047b061673de25db8db2b2867a1f80`: [public prerelease](https://github.com/dennomusooffice/koeon-client/releases/tag/android-v1.0.17-18), installed on both physical Androids and four AVDs. The enrolled iOS simulator uses its existing signed foreground test build; do not describe all eight endpoints as the same latest source.
-- Latest iOS regression: 326 executed, 324 passed, two dedicated lab tests skipped. Android release: 229 tests, Lint/build passed. Parity/diff checks passed.
+- Latest code is `e68565f46a161599659d9387cb4b99b5196ccf5c`, adding monotonic subscription generations and original-Room SDK/completion fencing. iOS **1.0 (2026110906)** upload succeeded; fresh Apple reads confirmed VALID, internal/external IN_BETA_TESTING, and two internal/one external groups assigned. Physical-device verification applies to 0905, not this additional change.
+- Latest iOS regression: 327 executed, 325 passed, two dedicated lab tests skipped. Android release: 229 tests, Lint/build passed. Parity/diff checks passed.
 
 ## Confirmed progress and boundaries
 
@@ -40,3 +41,7 @@ Detailed evidence: [eight-device lab](EIGHT_DEVICE_LAB_20261108.md), [gain verif
 ## Window-end restoration
 
 Completed at 08:46 JST: all eight endpoints were READY, USB stay-awake values were restored (OPPO/moto 0; each AVD 1), temporary probe helpers were removed, and the iPhone's original Auto-Lock Never was preserved. Enrollment, gains and the povo network were retained. No PTT gesture or test tone remains running. The four AVDs were then stopped without data deletion for final simulator-only regression; physical-device operations ended. The Android14 test AVD intentionally retains learned AUTO trim +3 dB with its original mode OFF and manual gain 0 dB restored. The second background trial retained PCM-time wake completion at 23:44:09 UTC, before foregrounding after 23:44:38 UTC. Human headset listening remains unverified.
+
+## Stop status
+
+Physical operations ended at 08:46 JST, and distribution/records were finalized before the requested 09:00 JST pause. No additional test or upload is scheduled to resume automatically. The goal remains incomplete: physical listening, vehicle routes, diagnostic retention and emulator capture limitations above are still open. The next device window requires a new user instruction.

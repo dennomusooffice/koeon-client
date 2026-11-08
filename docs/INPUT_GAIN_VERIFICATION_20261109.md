@@ -4,7 +4,7 @@ Tracking: [Issue #43](https://github.com/dennomusooffice/koeon-client/issues/43)
 
 ## Current result
 
-The owner requested Android/iOS headset gain verification after communication tests in the eight-endpoint lab. Four implementation discrepancies were reproduced and corrected. iOS fixes are included in TestFlight **1.0 (2026110905)**, source `0c5bb16497f7beedf7c6c0874af88ba79b636314`; Android fixes are included in the public **1.0.17 (18)** prerelease, source `45176b1695047b061673de25db8db2b2867a1f80`. Both remain on the unmerged PR branch.
+The owner requested Android/iOS headset gain verification after communication tests in the eight-endpoint lab. Four implementation discrepancies were reproduced and corrected. iOS fixes are included in TestFlight **1.0 (2026110905)**, source `0c5bb16497f7beedf7c6c0874af88ba79b636314`; Android fixes are included in the public **1.0.17 (18)** prerelease, source `45176b1695047b061673de25db8db2b2867a1f80`. The same gain changes are also included in externally distributed iOS **1.0 (2026110906)** (`e68565f46a161599659d9387cb4b99b5196ccf5c`), which adds subscription-order fencing. Physical gain observations below remain attributed to their actual tested builds. Both platforms remain on the unmerged PR branch.
 
 A physical Bluetooth headset was connected to the iPhone. Android physical devices used built-in microphones. Therefore Android headset acoustics and human-speech convergence on the iPhone headset are **not accepted yet**. Automated processor tests, virtual-microphone speech and a physical quiet-input trial are reported separately below.
 
