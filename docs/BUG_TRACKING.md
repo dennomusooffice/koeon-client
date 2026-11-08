@@ -50,3 +50,9 @@ Issue本文には現在の要約を維持し、経過は日付付きの追記ま
 - 実機のインストール済みビルドを確認し、配信済みビルドと同一だと推測しない。
 - 前回の結果、未検証の条件、検証時間枠を確認して次の作業を決める。
 - 最新の利用者の指示を優先する。期限終了後に端末操作を自動再開しない。
+
+## 2026-11-08 混在エミュレータ検証
+
+- [#52](https://github.com/dennomusooffice/koeon-client/issues/52): Android15/16・iOS27.0の3台で、実HTTPクライアントと受信器を使用した合成PCM試験36ケースが成功。iOSの背景接続失敗の実機原因は未確定。先頭失効時にiOSは失敗、Androidは残存4フレームを再生する既存差も記録した。
+- [#53](https://github.com/dennomusooffice/koeon-client/issues/53): AndroidのHTTP取消が通信に伝わらずtimeoutまで待つ問題を実HTTP回帰テストで再現・修正。Android194件、Lint/build、両AVDでの取消後2秒以内の次世代受信が成功。未配信・実機未検証・main未マージ。
+- [再実行手順と限界](../scripts/mixed-lab/README.md)。iOS27.2の通常回帰は300件中299成功・混在専用1件スキップ。実機は操作していない。

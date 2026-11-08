@@ -2846,6 +2846,7 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
     private(set) var beginCount = 0
     private(set) var endCount = 0
     private(set) var enqueueCount = 0
+    private(set) var receivedFrames: [Data] = []
     private(set) var shutdownCount = 0
     private var activeToken: Int?
 
@@ -2854,6 +2855,7 @@ private final class Batv1PcmPlayerMock: IOSBatv1PcmPlaying {
     func enqueue(_ data: Data, generationToken: Int) throws {
         guard activeToken == generationToken else { throw BufferedAudioError.generationMismatch }
         enqueueCount += 1
+        receivedFrames.append(data)
         if holdFrames { pendingFrames += 1 } else { completedFrames += 1 }
     }
     func completeHeldFrames() {
@@ -3231,4 +3233,58 @@ private final class SuspendedStartCue: PttCuePlaying {
     func playStart() async throws { await withCheckedContinuation { continuation = $0 } }
     func playEnd() async throws {}
     func resume() { continuation?.resume(); continuation = nil }
+}
+
+/// Opt-in, loopback-only integration test; ordinary unit suites skip this lab.
+@MainActor
+final class MixedEmulatorTransportTests: XCTestCase {
+    func testMixedNativeTransportAndRecovery() async throws {
+        guard let role = ProcessInfo.processInfo.environment["KOEON_MIXED_LAB_ROLE"] else {
+            throw XCTSkip("Run scripts/mixed-lab with an explicit virtual-device role")
+        }
+        let base = URL(string: "http://127.0.0.1:18765")!
+        let api = KOEONAPIClient(baseURL: base)
+        let scenarios = ["normal", "transient", "expired", "recovered"]
+        for scenario in scenarios {
+            let generation = role + "-" + scenario
+            let chunks = (0..<32).map { Batv1Chunk(sequence: $0,
+                payloadBase64: Data(repeating: UInt8($0), count: batv1BytesPerFrame).base64EncodedString()) }
+            _ = try await api.publishBufferedAudio(Batv1PublishRequest(
+                protocolVersion: 1, sessionId: role, generationId: generation, channelId: "lab",
+                speakerSessionId: role, speakerDeviceId: role, leaseId: "lab-lease",
+                codec: "pcm16le", sampleRate: 48000, channels: 1, frameDurationMs: 20,
+                chunks: chunks, finalSequence: 31))
+        }
+        for sender in ["android35", "android36", "ios27"] {
+            for scenario in scenarios {
+                let player = Batv1PcmPlayerMock()
+                var terminal: BufferedAudioRxSnapshot?
+                let receiver = BufferedAudioReceiver(api: api, sessionId: role,
+                    onTerminalSnapshot: { terminal = $0 }, player: player)
+                receiver.audioSessionDidActivate()
+                receiver.start(generationId: sender + "-" + scenario, senderSessionId: sender)
+                let deadline = Date().addingTimeInterval(120)
+                while terminal == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+                await receiver.shutdownAndAwait()
+                let snapshot = try XCTUnwrap(terminal, "Timed out waiting for mixed lab peer")
+                if scenario == "expired" {
+                    XCTAssertTrue(snapshot.receive.timelineLost)
+                    XCTAssertEqual(snapshot.receive.terminalReason, "timeline_head_expired")
+                    XCTAssertEqual(player.enqueueCount, 0)
+                } else {
+                    XCTAssertFalse(snapshot.receive.timelineLost)
+                    XCTAssertEqual(snapshot.receive.playbackCursor, 32)
+                    XCTAssertEqual(player.enqueueCount, 32)
+                    XCTAssertEqual(player.receivedFrames, (0..<32).map { Data(repeating: UInt8($0), count: batv1BytesPerFrame) })
+                }
+                var report = URLRequest(url: base.appendingPathComponent("lab/result"))
+                report.httpMethod = "POST"
+                report.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                report.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "role": role, "sender": sender, "scenario": scenario,
+                    "frames": player.enqueueCount, "failed": snapshot.receive.timelineLost])
+                _ = try await URLSession.shared.data(for: report)
+            }
+        }
+    }
 }

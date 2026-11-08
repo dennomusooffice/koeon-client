@@ -16,8 +16,12 @@ import com.dennomuso.koeon.core.model.Batv1PublishRequest
 import com.dennomuso.koeon.core.model.Batv1PublishResponse
 import com.dennomuso.koeon.core.model.Batv1SubscribeRequest
 import com.dennomuso.koeon.core.model.Batv1SubscribeResponse
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -124,20 +128,34 @@ class HttpKoeonApi(
         return builder
     }
 
-    private suspend inline fun <reified T> execute(request: Request): T = withContext(Dispatchers.IO) {
-        client.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val envelope = runCatching { json.decodeFromString<ApiErrorEnvelope>(body) }.getOrNull()
-                throw KoeonApiException(
-                    response.code,
-                    envelope?.error?.code,
-                    envelope?.error?.message ?: "KOEON request failed (${response.code})",
-                )
+    private suspend inline fun <reified T> execute(request: Request): T = suspendCancellableCoroutine { continuation ->
+        val call = client.newCall(request)
+        // Cancelling a receive generation must release the network operation,
+        // including a response body read, before the next generation can start.
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, error: IOException) {
+                continuation.resumeWithException(error)
             }
-            if (body.isBlank()) throw IOException("KOEON response was empty")
-            json.decodeFromString<T>(body)
-        }
+
+            override fun onResponse(call: Call, response: Response) {
+                val result = runCatching {
+                    response.use {
+                        val body = it.body?.string().orEmpty()
+                        if (!it.isSuccessful) {
+                            val envelope = runCatching { json.decodeFromString<ApiErrorEnvelope>(body) }.getOrNull()
+                            throw KoeonApiException(
+                                it.code, envelope?.error?.code,
+                                envelope?.error?.message ?: "KOEON request failed (${it.code})",
+                            )
+                        }
+                        if (body.isBlank()) throw IOException("KOEON response was empty")
+                        json.decodeFromString<T>(body)
+                    }
+                }
+                result.fold(continuation::resume, continuation::resumeWithException)
+            }
+        })
     }
 }
 
