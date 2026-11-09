@@ -289,6 +289,14 @@ class IntercomSessionManager(
     private var uptimeJob: Job? = null
     private var sessionStartedAt = 0L
     private var stoppedForReconnect = false
+    private var floorSpeaker: String? = null
+    private var floorSpeakerExpiresAt: Instant? = null
+
+    private fun resolvedSpeaker(): String? {
+        val live = room.snapshot.value
+        return remoteSpeaker(floorSpeaker, floorSpeakerExpiresAt, live.activeSpeaker, live.rx.state, Instant.now())
+    }
+
     private var previousConnectionState = IntercomConnectionState.DISCONNECTED
     private var connectionLostElapsed: Long? = null
     private var previousNetwork = "Unavailable"
@@ -401,7 +409,7 @@ class IntercomSessionManager(
                     it.copy(
                         connectionState = liveKit.connectionState,
                         participants = liveKit.participantNames,
-                        currentSpeaker = it.currentSpeaker ?: liveKit.activeSpeaker,
+                        currentSpeaker = resolvedSpeaker(),
                         diagnostics = it.diagnostics.copy(
                             reconnectCount = liveKit.reconnectCount,
                             connectionQuality = liveKit.connectionQuality,
@@ -1169,6 +1177,8 @@ class IntercomSessionManager(
 
     private fun startSessionPolling(join: JoinResponse) {
         statusJob?.cancel()
+        floorSpeaker = null
+        floorSpeakerExpiresAt = null
         statusJob = scope.launch {
             while (true) {
                 val result = runCatching { api.floorStatus(join.sessionId) }
@@ -1180,10 +1190,12 @@ class IntercomSessionManager(
                 }
                 val floor = result.getOrNull()
                 if (floor != null) {
+                    floorSpeaker = floor.owner?.name
+                    floorSpeakerExpiresAt = floor.leaseExpiresAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
                     room.reconcileRxFloor(floor)
                     _state.update {
                         it.copy(
-                            currentSpeaker = floor.owner?.name,
+                            currentSpeaker = resolvedSpeaker(),
                             diagnostics = it.diagnostics.copy(
                                 leaseExpiresAt = floor.leaseExpiresAt,
                                 maxTxExpiresAt = floor.maxTxExpiresAt,
@@ -1199,7 +1211,7 @@ class IntercomSessionManager(
             while (true) {
                 val uptime = (android.os.SystemClock.elapsedRealtime() - sessionStartedAt).coerceAtLeast(0L) / 1_000L
                 audioRouteMonitor.refresh()
-                _state.update { it.copy(diagnostics = it.diagnostics.copy(
+                _state.update { it.copy(currentSpeaker = resolvedSpeaker(), diagnostics = it.diagnostics.copy(
                     sessionUptimeSeconds = uptime,
                 )) }
                 delay(1_000)
