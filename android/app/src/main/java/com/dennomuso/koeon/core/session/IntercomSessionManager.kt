@@ -349,6 +349,9 @@ class IntercomSessionManager(
             }
         }
         fieldJournal.record("START")
+        room.onTransportDiagnostic = { reason ->
+            fieldJournal.record("TRANSPORT", mapOf("reason" to reason))
+        }
         var lastJournalRx = RxSnapshot()
         room.onFieldRxSnapshot = { rx ->
             if (rx.state != lastJournalRx.state || rx.leaseId != lastJournalRx.leaseId || rx.rxStartedAt != lastJournalRx.rxStartedAt) {
