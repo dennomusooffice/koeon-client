@@ -186,8 +186,8 @@ def main() -> int:
     )
     require(
         'applicationId = "com.dennomuso.koeon"' in gradle
-        and 'versionCode = 21' in gradle
-        and 'versionName = "1.0.20"' in gradle,
+        and 'versionCode = 22' in gradle
+        and 'versionName = "1.0.21"' in gradle,
         "ANDROID_IDENTITY_VERSION_CONTRACT",
     )
     require(

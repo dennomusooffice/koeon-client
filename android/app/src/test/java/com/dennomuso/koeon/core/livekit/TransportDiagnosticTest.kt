@@ -9,12 +9,15 @@ class TransportDiagnosticTest {
         assertEquals("SUBSCRIBER_FAILED", transportDiagnostic("onConnectionChange new state: FAILED"))
         assertEquals("ICE_UNSCOPED_CONNECTED", transportDiagnostic("onIceConnection new state: CONNECTED"))
         assertEquals("SIGNAL_PING_TIMEOUT", transportDiagnostic("Ping timeout reached for ping sent at 1234."))
-        assertEquals("SIGNAL_CLOSED", transportDiagnostic("received close event: private reason, code: 1006"))
+        assertEquals("SIGNAL_CLOSED_1006", transportDiagnostic("received close event: private reason, code: 1006"))
+        assertEquals("SERVER_LEAVE_MEDIA_FAILURE", transportDiagnostic("leave request received: reason = MEDIA_FAILURE"))
+        assertEquals("SERVER_LEAVE_DUPLICATE_IDENTITY", transportDiagnostic("leave request received: reason = DUPLICATE_IDENTITY"))
     }
     @Test fun dropsSensitivePayloadsAndUnknownStates() {
         for (message in listOf("response: token=secret", "sdp type: OFFER\ndescription: secret",
             "onIceCandidate: private-address", "onConnection new state: CONNECTED token=secret",
-            "onConnection new state: UNKNOWN", "Ping timeout reached for ping sent at secret.")) {
+            "onConnection new state: UNKNOWN", "Ping timeout reached for ping sent at secret.",
+            "leave request received: reason = SECRET_VALUE", "leave request received: reason = MEDIA_FAILURE token=secret")) {
             assertNull(message, transportDiagnostic(message))
         }
     }

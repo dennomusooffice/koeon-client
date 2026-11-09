@@ -9,3 +9,5 @@ The application replaces the SDK logger before enabling verbose SDK message gene
 TX remains cancelled on connection loss. Do not resume microphone transmission merely because connectivity returns. Version 1.0.20 is diagnostic-only until the observed reconnect trigger is established and a separate functional fix is verified.
 
 Validation: mapper tests cover publisher/subscriber discrimination, signal timeout, unknown formats and sensitive payload rejection; full Android unit suite executed before candidate build. Exact commit, build verification and reduced-device result are recorded in the linked PR/Issue. Physical-device or general stability acceptance is not implied.
+
+Follow-up internal candidate 1.0.21 (22) also records a numeric WebSocket close code and an allowlisted server LEAVE reason. This distinguishes server-directed media failure, duplicate identity and shutdown without retaining the raw close reason. The pinned 2.28.0 AAR was checked for the mapped message prefixes. Unknown reasons are discarded. Build 21 remains historical diagnostic evidence; neither build is a claimed functional fix.
