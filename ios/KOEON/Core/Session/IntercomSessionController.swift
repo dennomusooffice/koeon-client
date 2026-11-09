@@ -589,6 +589,7 @@ final class IntercomSessionController: ObservableObject {
 
     private let backgroundCleanup = BoundedBackgroundCleanup()
 
+    private var journalRxPcmGate = FieldJournalRxPcmGate()
     @Published private(set) var fieldJournalURL: URL?
     @Published private(set) var fieldJournalExporting = false
     @Published private(set) var fieldJournalStatus = ""
@@ -2466,7 +2467,9 @@ final class IntercomSessionController: ObservableObject {
             var fields: [String: Any] = ["firstPcm": snapshot.rxFirstPcmAt != nil]
             if let at = snapshot.rxFirstPcmAt { fields["pcmAtMs"] = Int64(at.timeIntervalSince1970 * 1_000) }
             if let at = snapshot.rxStartedAt { fields["rxStartedAtMs"] = Int64(at.timeIntervalSince1970 * 1_000) }
-            journal(snapshot.rxFirstPcmAt != nil && previous.rxFirstPcmAt == nil ? "RX_PCM" : "RX", fields: fields,
+            let firstPcm = snapshot.rxFirstPcmAt != nil && journalRxPcmGate.accept(
+                runtime: runtimeLiveness.generation, generation: snapshot.generation)
+            journal(firstPcm ? "RX_PCM" : "RX", fields: fields,
                 lease: snapshot.leaseId ?? previous.leaseId, speaker: snapshot.sessionId ?? previous.sessionId)
         }
         if snapshot.generation > 0, snapshot.state != .idle,

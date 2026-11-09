@@ -869,3 +869,19 @@ final class FieldJournalStoreTests: XCTestCase {
         }
     }
 }
+
+final class FieldJournalRxPcmGateTests: XCTestCase {
+    func testRepeatedAndLateSnapshotsDoNotRecountFirstPcm() {
+        var gate = FieldJournalRxPcmGate()
+        XCTAssertFalse(gate.accept(runtime: 2, generation: 0))
+        XCTAssertTrue(gate.accept(runtime: 2, generation: 13))
+        // A queued nil snapshot followed by the same first-PCM snapshot is not a new receive.
+        XCTAssertFalse(gate.accept(runtime: 2, generation: 13))
+        XCTAssertTrue(gate.accept(runtime: 2, generation: 16))
+        XCTAssertFalse(gate.accept(runtime: 2, generation: 13))
+        // A new runtime restarts RX generations; old runtime callbacks remain fenced.
+        XCTAssertTrue(gate.accept(runtime: 3, generation: 1))
+        XCTAssertFalse(gate.accept(runtime: 2, generation: 19))
+        XCTAssertFalse(gate.accept(runtime: 3, generation: 1))
+    }
+}

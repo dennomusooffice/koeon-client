@@ -1,6 +1,19 @@
 import Foundation
 import CryptoKit
 
+/// Main-actor RX observer fence: snapshot regressions must not count one PCM twice.
+struct FieldJournalRxPcmGate {
+    private var runtime = -1
+    private var generation = -1
+    mutating func accept(runtime: Int, generation: Int) -> Bool {
+        guard generation > 0, runtime >= self.runtime,
+              runtime > self.runtime || generation > self.generation else { return false }
+        self.runtime = runtime
+        self.generation = generation
+        return true
+    }
+}
+
 /// Owned by a serial writer. No audio samples, credentials or network access.
 final class FieldJournalStore: @unchecked Sendable {
     static let keys: Set<String> = ["connection", "ptt", "rx", "operational", "lifecycle", "audio", "route", "mode",
