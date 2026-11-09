@@ -343,7 +343,10 @@ class LiveKitRoomController(
         LiveKit.loggingLevel = io.livekit.android.util.LoggingLevel.VERBOSE
         val nextRoom = LiveKit.create(
             appContext,
-            overrides = LiveKitOverrides(audioOptions = AudioOptions(audioHandler = audioHandler)),
+            overrides = LiveKitOverrides(
+                audioOptions = AudioOptions(audioHandler = audioHandler),
+                okHttpClient = liveKitSignalHttpClient,
+            ),
         )
         nextRoom.localParticipant.audioTrackCaptureDefaults = audioCaptureProfile.capturePolicy.toTrackOptions()
         nextRoom.localParticipant.audioTrackPublishDefaults = audioTrackPublishDefaults(audioBitratePreset)
