@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SIM5 bounded control runner. Real devices are deliberately excluded; see STANDARD.md for mixed runs."""
+"""Bounded SIM5 or explicitly selected simulator runner. Physical devices are excluded."""
 import argparse
 import concurrent.futures
 from datetime import datetime, timezone
@@ -22,8 +22,23 @@ class EndpointNotReady(RuntimeError):
     def __init__(self, alias):
         super().__init__('PTT control unavailable'); self.alias = alias
 
+def selected_aliases(configured, only):
+    if only is None:
+        return list(configured)
+    selected = [alias.strip() for alias in only.split(',')]
+    if not selected or len(set(selected)) != len(selected) or any(alias not in configured for alias in selected):
+        raise ValueError('--only requires distinct configured simulator aliases')
+    return selected
+
+def android_memory_mb(device):
+    requested = int(device.get('memoryMb', 1536))
+    if requested <= 0:
+        raise ValueError('memoryMb must be positive')
+    # Emulator raises API37 phone RAM to 4 GiB anyway; make the budget explicit.
+    return max(requested, 4096 if device['api'] >= 37 else 1536)
+
 class Lab:
-    def __init__(self, config, output):
+    def __init__(self, config, output, only=None):
         self.c = json.loads(Path(config).read_text()); self.out = Path(output)
         self.out.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.sdk = Path(self.c['androidSdk']).expanduser()
@@ -34,11 +49,18 @@ class Lab:
             raise ValueError('SIM5 requires four distinct Android API34–37 and one iOS alias')
         for alias in self.keys:
             if not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', alias): raise ValueError('invalid alias')
+        self.keys = selected_aliases(self.keys, only)
+        saved_selection = self.out / 'selection.json'
+        if saved_selection.exists() and json.loads(saved_selection.read_text())['selectedAliases'] != self.keys:
+            raise ValueError('Selection differs from this run; repeat --only or use a new output directory')
+        self.android = {k: d for k, d in self.android.items() if k in self.keys}
+        self.ios_enabled = self.ios['alias'] in self.keys
         if not self.c['appium'].startswith('http://127.0.0.1:'): raise ValueError('Appium must be local')
         # Confirm the requested identifier belongs to a Simulator, never a physical iPhone.
-        available = json.loads(command(['xcrun', 'simctl', 'list', 'devices', 'available', '-j']))['devices']
-        if not any(d['udid'] == self.ios['udid'] for ds in available.values() for d in ds):
-            raise ValueError('iOS identifier is not an available Simulator')
+        if self.ios_enabled:
+            available = json.loads(command(['xcrun', 'simctl', 'list', 'devices', 'available', '-j']))['devices']
+            if not any(d['udid'] == self.ios['udid'] for ds in available.values() for d in ds):
+                raise ValueError('iOS identifier is not an available Simulator')
         self.session = None
     def save(self, name, value):
         (self.out / name).write_text(json.dumps(value, indent=2) + '\n')
@@ -53,6 +75,7 @@ class Lab:
         if isinstance(value, dict) and value.get('error'): raise RuntimeError(value['error'])
         return value
     def ui_session(self):
+        if not self.ios_enabled: return
         if self.session: return
         saved = self.out / 'ios-ui-session.json'
         if saved.exists():
@@ -73,13 +96,20 @@ class Lab:
         result = {'utc': datetime.now(timezone.utc).isoformat(), 'sha': command(['git', 'rev-parse', 'HEAD']),
             'dirty': bool(command(['git', 'status', '--porcelain'])), 'xcode': command(['xcodebuild', '-version']),
             'macOS': command(['sw_vers']), 'emulator': command([str(self.sdk/'emulator/emulator'), '-version']).splitlines()[:2],
-            'avds': command([str(self.sdk/'emulator/emulator'), '-list-avds']).splitlines(), 'endpoints': {}}
+            'avds': command([str(self.sdk/'emulator/emulator'), '-list-avds']).splitlines(),
+            'selectedAliases': self.keys, 'endpoints': {}}
         for k, d in self.android.items():
             try:
                 version = self.adbcall(k, 'shell', 'getprop', 'ro.build.version.sdk')
                 package = self.adbcall(k, 'shell', 'dumpsys', 'package', self.c['androidApp'])
-                result['endpoints'][k] = {'api': version, 'versions': re.findall(r'version(?:Code|Name)=[^\s]+', package)}
+                result['endpoints'][k] = {'api': version, 'versions': re.findall(r'version(?:Code|Name)=[^\s]+', package),
+                    'launchMemoryMb': android_memory_mb(d),
+                    'guestMemTotal': self.adbcall(k, 'shell', 'cat', '/proc/meminfo').splitlines()[0]}
             except Exception as error: result['endpoints'][k] = {'status': 'NOT_READY', 'error': type(error).__name__}
+        if not self.ios_enabled:
+            self.save('inventory.json', result)
+            print(json.dumps({'inventory': str(self.out / 'inventory.json')}), flush=True)
+            return
         try:
             app = Path(command(['xcrun', 'simctl', 'get_app_container', self.ios['udid'], self.c['iosApp'], 'app']))
             info = plistlib.loads((app / 'Info.plist').read_bytes())
@@ -92,18 +122,21 @@ class Lab:
         self.save('inventory.json', result)
         print(json.dumps({'inventory': str(self.out / 'inventory.json')}), flush=True)
     def boot(self):
-        command(['xcrun', 'simctl', 'boot', self.ios['udid']], check=False)
-        command(['xcrun', 'simctl', 'bootstatus', self.ios['udid'], '-b'], timeout=120)
-        command(['xcrun', 'simctl', 'launch', '--terminate-running-process', self.ios['udid'], self.c['iosApp']],
-            env=dict(os.environ, SIMCTL_CHILD_KOEON_SIMULATOR_FOREGROUND='1'))
-        self.ui_session()
+        self.save('selection.json', {'selectedAliases': self.keys,
+            'androidLaunchMemoryMb': {k: android_memory_mb(d) for k, d in self.android.items()}})
+        if self.ios_enabled:
+            command(['xcrun', 'simctl', 'boot', self.ios['udid']], check=False)
+            command(['xcrun', 'simctl', 'bootstatus', self.ios['udid'], '-b'], timeout=120)
+            command(['xcrun', 'simctl', 'launch', '--terminate-running-process', self.ios['udid'], self.c['iosApp']],
+                env=dict(os.environ, SIMCTL_CHILD_KOEON_SIMULATOR_FOREGROUND='1'))
+            self.ui_session()
         for alias, d in self.android.items():
             try: ready = self.adbcall(alias, 'shell', 'getprop', 'sys.boot_completed', timeout=10) == '1'
             except Exception: ready = False
             if not ready:
                 with (self.out / (alias + '-emulator.log')).open('a') as log:
                     proc = subprocess.Popen([str(self.sdk/'emulator/emulator'), '-avd', d['avd'], '-port', str(d['port']),
-                        '-no-window', '-no-boot-anim', '-no-snapshot', '-memory', '1536', '-cores', '2',
+                        '-no-window', '-no-boot-anim', '-no-snapshot', '-memory', str(android_memory_mb(d)), '-cores', '2',
                         '-grpc', str(d['port']+3000), '-grpc-use-token'], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                 deadline = time.monotonic() + 120
                 while time.monotonic() < deadline:
@@ -147,11 +180,11 @@ class Lab:
             try:
                 states = self.states(self.keys, 'ready-check')
                 if all(v['ptt']=='READY' and v['enabled'] for v in states.values()):
-                    self.save('ready.json', states); print('SIM5 READY', flush=True); return
+                    self.save('ready.json', states); print('READY: ' + ','.join(self.keys), flush=True); return
             except EndpointNotReady:
                 pass
             time.sleep(2)
-        raise RuntimeError('SIM5 not READY; preserve evidence and inspect, no reset performed')
+        raise RuntimeError('Selected simulators not READY; preserve evidence and inspect, no reset performed')
 
     def snapshot(self, alias, stage):
         if alias in self.android:
@@ -184,6 +217,7 @@ class Lab:
             'parameters': {'pointerType': 'touch'}, 'actions': [{'type': 'pointerMove', 'duration': 0, 'x': x, 'y': y},
             {'type': 'pointerDown', 'button': 0}, {'type': 'pause', 'duration': milliseconds}, {'type': 'pointerUp', 'button': 0}]}]})
     def controls(self, rounds, senders=None):
+        if len(self.keys) < 2: raise ValueError('Control acceptance requires at least two selected simulators')
         self.ui_session(); results = []
         senders = senders or self.keys
         if not senders or any(k not in self.keys for k in senders): raise ValueError("unknown sender alias")
@@ -220,7 +254,8 @@ class Lab:
     def shutdown(self):
         for k in self.android:
             self.adbcall(k, 'emu', 'kill', check=False)
-        command(['xcrun', 'simctl', 'shutdown', self.ios['udid']], check=False)
+        if self.ios_enabled:
+            command(['xcrun', 'simctl', 'shutdown', self.ios['udid']], check=False)
 
 
 def main():
@@ -230,8 +265,9 @@ def main():
     parser.add_argument('--output', required=True, help='private run directory (same for boot/control)')
     parser.add_argument('--rounds', type=int, choices=[1, 2, 3], default=3)
     parser.add_argument('--senders', help='optional comma-separated subset/order of configured aliases')
+    parser.add_argument('--only', help='operate only on these configured simulator aliases; use the same selection for cleanup')
     args = parser.parse_args(); os.umask(0o077)
-    lab = Lab(args.config, args.output)
+    lab = Lab(args.config, args.output, args.only)
     if args.action == 'control': raise SystemExit(0 if lab.controls(args.rounds, args.senders.split(',') if args.senders else None) else 1)
     getattr(lab, args.action)()
 

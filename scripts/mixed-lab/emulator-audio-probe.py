@@ -147,7 +147,9 @@ def main():
     microphone_states = {}
     press = None
     result = {'sender': args.sender, 'sourceSeconds': duration, 'rawReceiverAudioSaved': False,
-              'injectionCompleted': False, 'pressCoordinates': coordinates}
+              'injectionCompleted': False, 'pressCoordinates': coordinates,
+              'injectionAcknowledgementScope': 'EMULATOR_GRPC_ONLY',
+              'senderMicrophoneCaptureVerified': None}
     fmt = pb.AudioFormat(samplingRate=48000, channels=pb.AudioFormat.Mono,
                          format=pb.AudioFormat.AUD_FMT_S16, mode=pb.AudioFormat.MODE_REAL_TIME)
     hold = duration + 20  # UI dumps can stall on a busy multi-AVD host.

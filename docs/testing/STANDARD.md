@@ -19,7 +19,7 @@ Apple Silicon Mac、対応Xcode/Simulator runtime、JDK17、Android SDK platform
 
 1. `git status --short`、HEAD、APK/APP署名・ハッシュ・バージョンを記録。重いXcode/Gradleビルドは5台起動前に完了させる。
 2. iOS SimulatorとそのUIテストランナーを先に起動し、応答を確認。
-3. AVDを1台ずつ起動（1536MiB/2cores、cold boot、snapshotを使わない）。各台でboot_completed、UI応答、空き容量を確認して次へ。音声試験に`-no-audio`を使用しない。
+3. AVDを1台ずつ起動（API34–36は1536MiB、API37は最低4096MiB、各2cores、cold boot、snapshotを使わない）。各台でboot_completed、UI応答、空き容量を確認して次へ。音声試験に`-no-audio`を使用しない。負荷切り分けでは[ランナーの`--only`](../../scripts/test-lab/README.md)でAndroid2台から比較し、縮小構成をSIM5と呼ばない。重いビルドと音声受入れは同時実行しない。
 4. 署名を検証して既存アプリを上書き更新する。署名不一致でuninstallしない。iOS Simulatorも既存のKeychainアクセス可能な署名で更新する。
 5. 設定原本を保存: stay-awake、自動ロック、音量、ゲイン、音質、ネットワーク、権限。実機PINを記録/無効化しない。OPPOのpovo LTEは試験条件として維持する。
 6. 全台が同一試験チャンネルのREADY・PTT有効・参加人数一致になったら開始。1台でも不足ならrunは`ENV_BLOCKED`。
