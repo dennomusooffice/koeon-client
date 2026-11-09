@@ -8,7 +8,6 @@ import com.dennomuso.koeon.core.audio.TonePttCuePlayer
 import com.dennomuso.koeon.core.audio.CueRole
 import com.dennomuso.koeon.core.audio.InputGainProcessor
 import com.dennomuso.koeon.core.audio.AudioBitratePreset
-import com.dennomuso.koeon.core.audio.Batv1CaptureBuffer
 import com.dennomuso.koeon.core.ptt.PTT_CONTROL_TOPIC
 import com.dennomuso.koeon.core.ptt.PTT_CONTROL_FAST_START_TOPIC
 import com.dennomuso.koeon.core.ptt.PttControlEvent
@@ -230,7 +229,6 @@ class LiveKitRoomController(
     context: Context,
     private val scope: CoroutineScope,
     private val inputGainProcessor: InputGainProcessor? = null,
-    private val batv1CaptureBuffer: Batv1CaptureBuffer? = null,
     private val onAudioFocusEvent: (AudioFocusEvent) -> Unit = {},
 ) : MicrophoneGateway, PttControlGateway {
     private var audioCaptureProfile = productionAudioCaptureProfile
@@ -288,24 +286,6 @@ class LiveKitRoomController(
     }
 
     private var prewarmedTrack: io.livekit.android.room.track.LocalAudioTrack? = null
-    private val batv1TrackSink = object : AudioTrackSink {
-        override fun onData(
-            audioData: ByteBuffer,
-            bitsPerSample: Int,
-            sampleRate: Int,
-            numberOfChannels: Int,
-            numberOfFrames: Int,
-            absoluteCaptureTimestampMs: Long,
-        ) {
-            batv1CaptureBuffer?.appendLiveKitPcm(
-                audioData,
-                bitsPerSample,
-                sampleRate,
-                numberOfChannels,
-                numberOfFrames,
-            )
-        }
-    }
     private var microphoneEnabled = false
     private var channelId: String? = null
     private var userId: String? = null
@@ -321,24 +301,9 @@ class LiveKitRoomController(
     private var rxReadyPublishGeneration = 0L
     private var rxReadyPublishLeaseId: String? = null
     private var rxReadyStartLeaseId: String? = null
-    var onBufferedAudioStart: (String) -> Unit = {}
-    var onBufferedAudioEnd: () -> Unit = {}
-    var onBufferedAudioEndCue: () -> Unit = {}
 
     private val _snapshot = MutableStateFlow(LiveKitSnapshot())
     val snapshot: StateFlow<LiveKitSnapshot> = _snapshot.asStateFlow()
-
-    /** BATv1 owns media playout for its generation; Control END only begins RX drain. */
-    fun handleBufferedAudioActivity(active: Boolean) {
-        scope.launch { rxAudio?.handleRemoteAudioActivity(senderSessionId = null, active = active) }
-    }
-
-    suspend fun completeBufferedAudioTimelineDrain() {
-        withContext(Dispatchers.Main.immediate) {
-            rxAudio?.handleRemoteAudioActivity(senderSessionId = null, active = false)
-            rxAudio?.completeBufferedTimelineDrain()
-        }
-    }
 
     suspend fun connect(
         url: String,
@@ -361,8 +326,7 @@ class LiveKitRoomController(
             scope = scope,
             channelId = channelId,
             cuePlayer = TonePttCuePlayer(appContext, CueRole.RX),
-            onValidatedEnd = { cancelReceiverReadyPublication(); onBufferedAudioEnd() },
-            onEndCueCompleted = { onBufferedAudioEndCue() },
+            onValidatedEnd = { cancelReceiverReadyPublication() },
             onSnapshot = { rx -> onFieldRxSnapshot(rx); _snapshot.value = _snapshot.value.copy(rx = rx) },
         )
         val nextRoom = LiveKit.create(
@@ -371,9 +335,8 @@ class LiveKitRoomController(
         )
         nextRoom.localParticipant.audioTrackCaptureDefaults = audioCaptureProfile.capturePolicy.toTrackOptions()
         nextRoom.localParticipant.audioTrackPublishDefaults = audioTrackPublishDefaults(audioBitratePreset)
-        // BATv1 has its own PCM16 gain/meter path. Its AudioRecord sink is before
-        // APM; attaching a second processor here would double-count/double-trim.
-        inputGainProcessor?.takeIf { batv1CaptureBuffer == null || deviceId.isNullOrBlank() }?.let {
+        // Apply gain exactly once, after WebRTC audio processing.
+        inputGainProcessor?.let {
             nextRoom.audioProcessingController.capturePostProcessor = it
             nextRoom.audioProcessingController.bypassCapturePostProcessing = false
         }
@@ -400,10 +363,9 @@ class LiveKitRoomController(
             nextRoom.connect(url, token)
             if (canPublish) {
                 // Prepare capture without publishing. The first actual publish occurs only
-                // after the floor grant and start cue have completed.
+                // after the floor grant; the app start cue follows publication.
                 prewarmedTrack = nextRoom.localParticipant.getOrCreateDefaultAudioTrack().also {
                     it.prewarm()
-                    it.addSink(batv1TrackSink)
                 }
                 _snapshot.value = _snapshot.value.copy(microphoneTrackState = "prepared_muted")
             }
@@ -464,9 +426,6 @@ class LiveKitRoomController(
     }
 
     override suspend fun publishStart(leaseId: String): Result<Unit> = publishControl("start", leaseId)
-
-    override suspend fun publishBufferedStart(leaseId: String, generationId: String): Result<Unit> =
-        publishControl("start", leaseId, generationId)
 
     override suspend fun publishEnd(leaseId: String): Result<Unit> = publishControl("end", leaseId)
 
@@ -560,7 +519,7 @@ class LiveKitRoomController(
         rxAudio?.reconcileFloor(floor)
     }
 
-    private suspend fun publishControl(type: String, leaseId: String, bufferedGenerationId: String? = null): Result<Unit> {
+    private suspend fun publishControl(type: String, leaseId: String): Result<Unit> {
         val currentRoom = room ?: return Result.failure(IllegalStateException("LiveKit Room is unavailable"))
         val currentChannel = channelId ?: return Result.failure(IllegalStateException("Channel is unavailable"))
         val currentUser = userId ?: return Result.failure(IllegalStateException("User is unavailable"))
@@ -573,7 +532,6 @@ class LiveKitRoomController(
             leaseId = leaseId,
             sequence = ++controlSequence,
             sentAt = System.currentTimeMillis(),
-            bufferedGenerationId = bufferedGenerationId,
         )
         val data = pttControlJson.encodeToString(event).encodeToByteArray()
         if (type == "start") {
@@ -596,7 +554,6 @@ class LiveKitRoomController(
         remotePcmSinks.keys.toList().forEach(::stopObservingRemotePcm)
         remotePcmDiagnostics.reset()
         cancelReceiverReadyPublication()
-        runCatching { prewarmedTrack?.removeSink(batv1TrackSink) }
         runCatching { prewarmedTrack?.stopPrewarm() }
         prewarmedTrack = null
         microphoneEnabled = false
@@ -713,7 +670,6 @@ class LiveKitRoomController(
                                 }
                             }
                             val startArmed = participantIdentity != null && rxAudio?.handleControl(control, participantIdentity) == true
-                            if (startArmed && control.type == "start") control.bufferedGenerationId?.let(onBufferedAudioStart)
                             if (startArmed) {
                                 _snapshot.value = _snapshot.value.copy(rxReadyStartArmedAt = Instant.now())
                                 publishReceiverReady(control, participantIdentity)

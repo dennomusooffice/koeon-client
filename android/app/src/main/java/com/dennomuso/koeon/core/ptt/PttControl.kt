@@ -17,6 +17,7 @@ data class PttControlEvent(
     val leaseId: String,
     val sequence: Long,
     val sentAt: Long,
+    // Decode-only retirement marker: reject old audio controls, never publish a value.
     val bufferedGenerationId: String? = null,
 )
 
@@ -25,7 +26,6 @@ interface PttControlGateway {
     fun prepareRxReady(leaseId: String, expectedSessionIds: List<String>, expectedDeviceIds: List<String>) =
         prepareRxReady(leaseId, expectedSessionIds)
     suspend fun publishStart(leaseId: String): Result<Unit>
-    suspend fun publishBufferedStart(leaseId: String, generationId: String): Result<Unit> = publishStart(leaseId)
     suspend fun awaitRxReady(leaseId: String): RxReadyResult = RxReadyResult(
         reason = RxReadyReason.NO_EXPECTATIONS,
         expectedCount = 0,

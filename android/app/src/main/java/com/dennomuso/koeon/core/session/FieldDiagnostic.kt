@@ -52,26 +52,6 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
     val rx = d.rx
     val gain = d.inputGain
     val value = buildJsonObject {
-        put("lastBufferedReceive", d.lastBufferedReceive?.let { snapshot ->
-            val receive = snapshot.receive
-            buildJsonObject {
-                fun time(value: Long?) = nullable(value?.let { Instant.ofEpochMilli(it).toString() })
-                put("capturedAt", time(snapshot.capturedAtEpochMs))
-                put("build", JsonPrimitive("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"))
-                put("outcome", JsonPrimitive(if (receive.timelineLost) "failed" else "completed"))
-                put("terminalReason", nullable(receive.terminalReason))
-                put("playbackCursor", JsonPrimitive(receive.playbackCursor))
-                put("latestSequence", JsonPrimitive(receive.latestSequence))
-                put("finalSequence", receive.finalSequence?.let(::JsonPrimitive) ?: JsonNull)
-                put("missingSequenceCount", JsonPrimitive(receive.missingSequenceCount))
-                put("duplicateSequenceCount", JsonPrimitive(receive.duplicateSequenceCount))
-                put("playerDrainCompletedAt", time(receive.playerDrainCompletedAtEpochMs))
-                put("endCueAt", time(receive.endCueAtEpochMs))
-                // These output observations are not measured by the Android player yet.
-                for (key in listOf("lastEnqueueOutput", "lastCompletionOutput", "engineStartFailures",
-                    "lastErrorCode", "inputRmsDbfs", "inputPeakDbfs")) put(key, JsonNull)
-            }
-        } ?: JsonNull)
         put("schema", JsonPrimitive(FIELD_DIAGNOSTIC_SCHEMA)); put("capturedAt", JsonPrimitive(capturedAt)); put("platform", JsonPrimitive("android"))
         put("standardAudioTransport", JsonPrimitive("LIVEKIT_OPUS_RTP"))
         put("settings", buildJsonObject { put("headsetPttMode", JsonPrimitive(d.headsetPttMode.name)); put("hardwareVolumePttMode", JsonPrimitive(d.hardwareVolumePttMode.name)) })
@@ -135,8 +115,7 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             put("requestedAudioBitrateKbps", JsonPrimitive(d.requestedAudioBitrateKbps))
             put("effectiveAudioBitrateKbps", d.effectiveAudioBitrateKbps?.let(::JsonPrimitive) ?: JsonNull)
             put("processing", buildJsonObject {
-                put("scope", JsonPrimitive("WEBRTC_OPTIONS_NOT_PROOF_OF_BATV1_PROCESSING"))
-                put("batv1InputGain", JsonPrimitive("KOEON_PCM16_BEFORE_CANONICAL_FRAMING"))
+                put("scope", JsonPrimitive("WEBRTC_CONFIGURATION_NOT_MEASURED_AUDIO"))
                 put("echoCancellation", JsonPrimitive("WEBRTC")); put("noiseSuppression", JsonPrimitive("WEBRTC"))
                 put("profile", JsonPrimitive(d.audioCaptureProfile.name))
                 put("autoGainControl", if (d.audioCaptureProfile.webRtcAgcEnabled) JsonPrimitive("WEBRTC") else JsonPrimitive("OFF")); put("highPassFilter", JsonPrimitive("WEBRTC"))
@@ -144,68 +123,10 @@ fun buildAndroidFieldDiagnostic(state: IntercomUiState, capturedAt: String = Ins
             })
         })
         put("audioGain", buildJsonObject { put("meterSource", JsonPrimitive(gain.meterSource)); put("meterSampleCount", JsonPrimitive(gain.meterSampleCount)); put("mode", JsonPrimitive(gain.mode.name)); put("effectiveDb", JsonPrimitive(gain.effectiveGainDb)); put("preKoeonRmsDbfs", gain.inputRmsDbfs?.let(::JsonPrimitive) ?: JsonNull); put("preKoeonPeakDbfs", gain.inputPeakDbfs?.let(::JsonPrimitive) ?: JsonNull); put("postKoeonRmsDbfs", gain.postKoeonRmsDbfs?.let(::JsonPrimitive) ?: JsonNull); put("postKoeonPeakDbfs", gain.postKoeonPeakDbfs?.let(::JsonPrimitive) ?: JsonNull); put("limiterHits", JsonPrimitive(gain.limiterHitCount)) })
-        put("bufferedAudio", buildJsonObject {
-            val tx = d.bufferedAudioTx
-            val bufferedRx = d.bufferedAudioRx
-            put("protocolVersion", JsonPrimitive(1))
-            put("txGenerationPresent", JsonPrimitive(tx.generationId != null))
-            put("txCaptureSource", JsonPrimitive(tx.captureSource))
-            put("txCaptureState", JsonPrimitive(tx.captureState))
-            put("txCaptureArmedAt", nullable(tx.captureArmedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txFirstPcmAt", nullable(tx.firstPcmAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txCaptureConfirmedAt", nullable(tx.captureConfirmedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txCaptureConfirmMs", nullable(tx.captureConfirmMs))
-            put("txPreFloorNetworkEgressFrames", JsonPrimitive(tx.preFloorAudioNetworkEgressFrames))
-            put("txCanonicalFramesSent", JsonPrimitive(tx.canonicalFramesSent))
-            put("txCanonicalLastSequence", JsonPrimitive(tx.canonicalLastSequence))
-            put("txDroppedFrames", JsonPrimitive(tx.canonicalDroppedFrames))
-            put("txLastErrorCode", nullable(tx.lastErrorCode))
-            put("txLastHttpStatus", nullable(tx.lastHttpStatus?.toLong()))
-            put("txLastApiErrorCode", nullable(tx.lastApiErrorCode))
-            put("txPttUpAt", nullable(tx.pttUpAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txHangoverStartedAt", nullable(tx.hangoverStartedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txHangoverCompletedAt", nullable(tx.hangoverCompletedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txHangoverMs", nullable(tx.hangoverMs))
-            put("txFramesAcceptedAfterPttUp", JsonPrimitive(tx.framesAcceptedAfterPttUp))
-            put("txLastAudioSequence", JsonPrimitive(tx.lastAudioSequence))
-            put("txFinalMarkerSequence", nullable(tx.finalMarkerSequence?.toLong()))
-            put("txFinalMarkerAt", nullable(tx.finalMarkerAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txReleaseState", JsonPrimitive(state.ptt.release.state))
-            put("txReleaseEnteredAt", nullable(state.ptt.release.enteredAt?.toString()))
-            put("txReleaseCompletedAt", nullable(state.ptt.release.completedAt?.toString()))
-            put("txReleaseElapsedMs", nullable(state.ptt.release.elapsedMs))
-            put("txReleaseExitReason", nullable(state.ptt.release.exitReason))
-            put("txFloorRenewDuringReleaseCount", JsonPrimitive(state.ptt.release.floorRenewDuringReleaseCount))
-            put("txFloorLastRenewAt", nullable(state.ptt.release.floorLastRenewAt?.toString()))
-            put("txCaptureForwardingStoppedAt", nullable(tx.captureForwardingStoppedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txPendingFramesAtPttUp", JsonPrimitive(tx.pendingFramesAtPttUp))
-            put("txPendingFramesBeforeFinalMarker", JsonPrimitive(tx.pendingFramesBeforeFinalMarker))
-            put("txFinalMarkerAttemptedAt", nullable(tx.finalMarkerAttemptedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txFinalMarkerAcceptedAt", nullable(tx.finalMarkerAcceptedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("txFinalMarkerResult", JsonPrimitive(tx.finalMarkerResult))
-            put("txControlEndAttemptedAt", nullable(state.ptt.release.controlEndAttemptedAt?.toString()))
-            put("txControlEndPublishedAt", nullable(state.ptt.release.controlEndPublishedAt?.toString()))
-            put("txFloorReleaseRequestedAt", nullable(state.ptt.release.floorReleaseRequestedAt?.toString()))
-            put("txFloorReleaseCompletedAt", nullable(state.ptt.release.floorReleaseCompletedAt?.toString()))
-            put("txTerminalRecoveryResult", JsonPrimitive(state.ptt.release.terminalRecoveryResult))
-            put("rxGenerationPresent", JsonPrimitive(bufferedRx.generationId != null))
-            put("rxPlaybackCursor", JsonPrimitive(bufferedRx.playbackCursor))
-            put("rxLatestSequence", JsonPrimitive(bufferedRx.latestSequence))
-            put("rxBacklogMs", JsonPrimitive(bufferedRx.backlogMs))
-            put("rxPlaybackRate", JsonPrimitive(bufferedRx.playbackRate))
-            put("rxTimelineLost", JsonPrimitive(bufferedRx.timelineLost))
-            put("rxFinalSequenceObservedAt", nullable(bufferedRx.finalSequenceObservedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("rxFinalSequence", nullable(bufferedRx.finalSequence?.toLong()))
-            put("rxCursorAtFinalObservation", nullable(bufferedRx.cursorAtFinalObservation?.toLong()))
-            put("rxFinalFrameWrittenAt", nullable(bufferedRx.finalFrameWrittenAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("rxPlayerDrainCompletedAt", nullable(bufferedRx.playerDrainCompletedAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("rxEndCueAt", nullable(bufferedRx.endCueAtEpochMs?.let(Instant::ofEpochMilli)?.toString()))
-            put("controlSenderIdentityResolution", JsonPrimitive(d.controlSenderIdentityResolution))
-        })
         put("crashBreadcrumbs", buildJsonObject {
-            put("previousRunTermination", JsonPrimitive(com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.previousRunTermination().name))
+            put("previousRunTermination", JsonPrimitive(com.dennomuso.koeon.core.audio.AudioLifecycleBreadcrumbs.previousRunTermination().name))
             put("events", buildJsonArray {
-                com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.snapshot().forEach { event ->
+                com.dennomuso.koeon.core.audio.AudioLifecycleBreadcrumbs.snapshot().forEach { event ->
                     add(buildJsonObject {
                         put("timestampEpochMs", JsonPrimitive(event.timestampEpochMs))
                         put("platform", JsonPrimitive(event.platform))

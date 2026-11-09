@@ -34,7 +34,7 @@
 		A0010000000000000000001A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001C /* Assets.xcassets */; };
 		A0010000000000000000001B /* InviteQRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001D /* InviteQRScannerView.swift */; };
 		A0010000000000000000001C /* RuntimeRestorePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001E /* RuntimeRestorePipelineTests.swift */; };
-		A0010000000000000000001D /* BufferedAudioTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001F /* BufferedAudioTimeline.swift */; };
+		A0010000000000000000001D /* AudioLifecycleBreadcrumbs.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0010000000000000000001F /* AudioLifecycleBreadcrumbs.swift */; };
 		A00100000000000000000030 /* FieldJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000030; };
 /* End PBXBuildFile section */
 
@@ -79,7 +79,7 @@
 		B0010000000000000000001C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B0010000000000000000001D /* InviteQRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteQRScannerView.swift; sourceTree = "<group>"; };
 		B0010000000000000000001E /* RuntimeRestorePipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeRestorePipelineTests.swift; sourceTree = "<group>"; };
-		B0010000000000000000001F /* BufferedAudioTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BufferedAudioTimeline.swift; sourceTree = "<group>"; };
+		B0010000000000000000001F /* AudioLifecycleBreadcrumbs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLifecycleBreadcrumbs.swift; sourceTree = "<group>"; };
 		B00100000000000000000030 /* FieldJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldJournal.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 

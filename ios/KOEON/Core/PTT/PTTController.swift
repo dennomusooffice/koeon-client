@@ -19,7 +19,6 @@ actor PTTController {
     private let microphone: any MicrophoneControlling
     private let cuePlayer: any PttCuePlaying
     private let control: any PttControlPublishing
-    private let bufferedAudio: (any BufferedAudioTransmitting)?
     private let rtpReleaseHangoverMilliseconds: Int
     private let clock: any PTTClock
     private let onUpdate: @Sendable (PTTSnapshot) -> Void
@@ -32,10 +31,6 @@ actor PTTController {
     private var localCueEnabled = true
     private var preparedResponse: FloorResponse?
     private var preparedOperation: Int?
-    private var activeBufferedGenerationId: String?
-    private var bufferedReadyTask: Task<PttRxReadyWaitResult, Never>?
-    private var bufferedReadyOperation: Int?
-    private var frozenReleaseOperation: Int?
     private var acquisitionInFlight = false
     private var terminalTask: Task<Void, Never>?
     private var ownedLeaseId: String?
@@ -47,7 +42,6 @@ actor PTTController {
         microphone: any MicrophoneControlling,
         cuePlayer: any PttCuePlaying,
         control: any PttControlPublishing,
-        bufferedAudio: (any BufferedAudioTransmitting)? = nil,
         rtpReleaseHangoverMilliseconds: Int = 0,
         clock: any PTTClock = SystemPTTClock(),
         onUpdate: @escaping @Sendable (PTTSnapshot) -> Void
@@ -57,7 +51,6 @@ actor PTTController {
         self.microphone = microphone
         self.cuePlayer = cuePlayer
         self.control = control
-        self.bufferedAudio = bufferedAudio
         self.rtpReleaseHangoverMilliseconds = min(250, max(0, rtpReleaseHangoverMilliseconds))
         self.clock = clock
         self.onUpdate = onUpdate
@@ -115,11 +108,7 @@ actor PTTController {
         snapshot.pttDownAt = clock.now
         snapshot.localUiFeedbackAt = clock.now
         snapshot.floorRequestAt = clock.now
-        if bufferedAudio != nil {
-            let bufferedGenerationId = UUID().uuidString.lowercased()
-            activeBufferedGenerationId = bufferedGenerationId
-            await bufferedAudio?.prepare(generationId: bufferedGenerationId)
-        }
+
         publish()
 
         do {
@@ -134,7 +123,6 @@ actor PTTController {
                 return false
             }
             guard response.outcome == .granted, let leaseId = response.leaseId else {
-                await discardActiveBuffered()
                 snapshot.state = .busy
                 snapshot.ownerName = response.owner?.name
                 publish()
@@ -152,16 +140,7 @@ actor PTTController {
                 await abortBeforeTransmission(reason: "PTT attempt cancelled")
                 return false
             }
-            // BATv1 on Apple PushToTalk must wait for Apple's didActivate before
-            // local recording, cue boundary, START, and RX_READY. Floor ownership
-            // is retained, but no audio or START is published from this pre-arm.
-            if deferMicrophoneUntilAppleActivation, activeBufferedGenerationId != nil {
-                preparedResponse = response
-                preparedOperation = operation
-                snapshot.startCueResult = .skipped("Awaiting Apple PushToTalk audio activation")
-                publish()
-                return true
-            }
+
             let expected = response.rxReadyExpectedSessionIds ?? []
             let expectedDevices = response.rxReadyExpectedDeviceIds ?? []
             snapshot.wakeRecipientCount = response.wakeRecipientCount ?? expectedDevices.count
@@ -180,15 +159,7 @@ actor PTTController {
                 return false
             }
             do {
-                let timing: PttStartPublishDiagnostics
-                if let bufferedGenerationId = activeBufferedGenerationId {
-                    timing = try await control.publishBufferedStart(
-                        leaseId: leaseId,
-                        generationId: bufferedGenerationId
-                    )
-                } else {
-                    timing = try await control.publishStart(leaseId: leaseId)
-                }
+                let timing = try await control.publishStart(leaseId: leaseId)
                 guard operation == generation, isPressed, snapshot.attemptGeneration == operation else {
                     try? await control.publishEnd(leaseId: leaseId)
                     await abortBeforeTransmission(reason: "PTT attempt cancelled")
@@ -245,22 +216,17 @@ actor PTTController {
             }
 
             // Publish before the app cue: speech after the cue enters an already-live track.
-            if activeBufferedGenerationId == nil {
-                try await microphone.setMicrophoneEnabled(true)
-                snapshot.trackEnabledAt = clock.now
-                guard operation == generation, isPressed else {
-                    try? await microphone.setMicrophoneEnabled(false)
-                    await abortBeforeTransmission(reason: "PTT cancelled during publication")
-                    return false
-                }
+
+            try await microphone.setMicrophoneEnabled(true)
+            snapshot.trackEnabledAt = clock.now
+            guard operation == generation, isPressed else {
+                try? await microphone.setMicrophoneEnabled(false)
+                await abortBeforeTransmission(reason: "PTT cancelled during publication")
+                return false
             }
+
             snapshot.cueStartAt = clock.now
 
-            if let bufferedGenerationId = activeBufferedGenerationId {
-                guard await bufferedAudio?.awaitCaptureAndMarkCueBoundary(generationId: bufferedGenerationId) == true else {
-                    throw BufferedAudioError.captureNotConfirmed
-                }
-            }
 
             if playReadyCue {
                 do {
@@ -280,11 +246,8 @@ actor PTTController {
                 return false
             }
 
-            if let bufferedGenerationId = activeBufferedGenerationId {
-                try await bufferedAudio?.authorize(leaseId: leaseId, generationId: bufferedGenerationId)
-            }
+
             guard operation == generation, isPressed else {
-                await discardActiveBuffered()
                 try? await microphone.setMicrophoneEnabled(false)
                 await abortBeforeTransmission(reason: "PTT attempt cancelled")
                 return false
@@ -302,66 +265,31 @@ actor PTTController {
     }
 
     /// Called only after Apple's didActivate. Cue and receiver readiness share
-    /// one preparation task so a short release can preserve confirmed PCM.
+    /// the already prepared LiveKit path; released attempts never replay PCM.
     func activatePrearmedTransmission() async {
         guard isPressed,
               snapshot.state == .requestingFloor,
               let leaseId = snapshot.leaseId,
-              let response = preparedResponse,
+              preparedResponse != nil,
               let operation = preparedOperation,
               operation == generation else { return }
         do {
-            if let bufferedGenerationId = activeBufferedGenerationId {
-                guard await bufferedAudio?.awaitCaptureAndMarkCueBoundary(generationId: bufferedGenerationId) == true else {
-                    throw BufferedAudioError.captureNotConfirmed
-                }
-                guard operation == generation, isPressed else { return }
-                let readiness = Task {
-                    await prepareBufferedReadiness(response: response, leaseId: leaseId,
-                        bufferedGenerationId: bufferedGenerationId, operation: operation)
-                }
-                bufferedReadyTask = readiness
-                bufferedReadyOperation = operation
-                let ready = await readiness.value
-                if bufferedReadyOperation == operation {
-                    bufferedReadyTask = nil
-                    bufferedReadyOperation = nil
-                }
-                guard operation == generation, isPressed else { return }
-                guard !ready.cancelled else {
-                    await stopForSafety(reason: "RX_READY cancelled")
-                    return
-                }
-                snapshot.rxReadyExpectedCount = ready.expectedCount
-                snapshot.rxReadyReceivedCount = ready.receivedCount
-                snapshot.rxReadyLateCount = ready.lateCount
-                snapshot.rxReadyWaitMilliseconds = ready.waitMilliseconds
-                snapshot.rxReadyTimedOut = ready.timedOut
-                snapshot.readyBarrierResult = ready.timedOut
-                    ? "READY_TIMEOUT"
-                    : ready.expectedCount == 0 ? "NO_EXPECTATIONS" : "READY_ACKNOWLEDGED"
-                snapshot.rxReadyFirstAt = ready.firstReadyAt
-                snapshot.rxReadyAllAt = ready.allReadyAt
-                snapshot.readyBarrierCompletedAt = clock.now
-                guard isPressed, operation == generation else { throw BufferedAudioError.generationMismatch }
-                try await bufferedAudio?.authorize(leaseId: leaseId, generationId: bufferedGenerationId)
-            } else {
-                try await microphone.setMicrophoneEnabled(true)
-                snapshot.trackEnabledAt = clock.now
-                guard operation == generation, isPressed else {
-                    try? await microphone.setMicrophoneEnabled(false)
-                    return
-                }
-                snapshot.cueStartAt = clock.now
-                do {
-                    try await cuePlayer.playStart()
-                    snapshot.startCueResult = .success
-                } catch { snapshot.startCueResult = .failure(Self.safeMessage(error)) }
-                snapshot.cueEndAt = clock.now
+
+            try await microphone.setMicrophoneEnabled(true)
+            snapshot.trackEnabledAt = clock.now
+            guard operation == generation, isPressed else {
+                try? await microphone.setMicrophoneEnabled(false)
+                return
             }
+            snapshot.cueStartAt = clock.now
+            do {
+                try await cuePlayer.playStart()
+                snapshot.startCueResult = .success
+            } catch { snapshot.startCueResult = .failure(Self.safeMessage(error)) }
+            snapshot.cueEndAt = clock.now
+
             guard isPressed, operation == generation else {
                 guard operation == generation else { return }
-                await discardActiveBuffered()
                 try? await microphone.setMicrophoneEnabled(false)
                 return
             }
@@ -377,112 +305,25 @@ actor PTTController {
         }
     }
 
-    private func canContinueBufferedPreparation(operation: Int, leaseId: String) -> Bool {
-        generation == operation && ownedLeaseId == leaseId && terminalTask == nil &&
-            (isPressed || frozenReleaseOperation == operation) && !Task.isCancelled
-    }
-
-    private func prepareBufferedReadiness(
-        response: FloorResponse, leaseId: String, bufferedGenerationId: String, operation: Int
-    ) async -> PttRxReadyWaitResult {
-        let cancelled = PttRxReadyWaitResult(expectedCount: 0, receivedCount: 0, lateCount: 0,
-            waitMilliseconds: 0, timedOut: false, firstReadyAt: nil, allReadyAt: nil, cancelled: true)
-        guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
-        do {
-            snapshot.cueStartAt = clock.now
-            do {
-                try await cuePlayer.playStart()
-                guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
-                snapshot.startCueResult = .success
-            } catch {
-                guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
-                snapshot.startCueResult = .failure(Self.safeMessage(error))
-            }
-            snapshot.cueEndAt = clock.now
-            let expected = response.rxReadyExpectedSessionIds ?? []
-            let expectedDevices = response.rxReadyExpectedDeviceIds ?? []
-            snapshot.wakeRecipientCount = response.wakeRecipientCount ?? expectedDevices.count
-            snapshot.coldWakeBarrierRequired = snapshot.wakeRecipientCount > 0
-            snapshot.rxReadyExpectedCount = Set(expectedDevices.isEmpty ? expected : expectedDevices).count
-            snapshot.rxReadyWaitStartedAt = clock.now
-            snapshot.readyBarrierStartedAt = clock.now
-            await control.prepareRxReady(
-                leaseId: leaseId,
-                expectedSessionIds: expected,
-                expectedDeviceIds: expectedDevices
-            )
-            guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
-            let timing = try await control.publishBufferedStart(
-                leaseId: leaseId,
-                generationId: bufferedGenerationId
-            )
-            guard canContinueBufferedPreparation(operation: operation, leaseId: leaseId) else { return cancelled }
-            snapshot.controlStartSentAt = clock.now
-            snapshot.controlStartResult = "Published"
-            snapshot.controlPublishFastStartedAt = timing.fastStartedAt
-            snapshot.controlPublishFastCompletedAt = timing.fastCompletedAt
-            snapshot.controlPublishFastMilliseconds = timing.fastMilliseconds
-            snapshot.controlPublishReliableStartedAt = timing.reliableStartedAt
-            snapshot.controlPublishReliableCompletedAt = timing.reliableCompletedAt
-            snapshot.controlPublishReliableMilliseconds = timing.reliableMilliseconds
-            return await control.awaitRxReady(leaseId: leaseId, maximumWaitMilliseconds: nil)
-        } catch {
-            if generation == operation {
-                await stopForSafety(reason: "TX activation failed: \(Self.safeMessage(error))")
-            }
-            return cancelled
-        }
-    }
 
     /// Apple PushToTalk is the audio-session authority. Capture is armed only
     /// after its didActivate callback and never before activation.
-    func appleAudioSessionDidActivate() async {
-        guard isPressed, activeBufferedGenerationId != nil else { return }
-        let operation = generation
-        do {
-            try await bufferedAudio?.audioSessionDidActivate()
-        } catch {
-            guard operation == generation else { return }
-            await stopForSafety(reason: "BATv1 local recording start failed: \(Self.safeMessage(error))")
-        }
-    }
+
 
     func pttUp(playEndCue: Bool = true) async {
         guard isPressed else { return }
         snapshot.pttUpAt = clock.now
         isPressed = false
         let operation = generation
-        if snapshot.state == .requestingFloor, let leaseId = ownedLeaseId,
-           let bufferedGenerationId = activeBufferedGenerationId,
-           let readiness = bufferedReadyTask, bufferedReadyOperation == operation {
-            frozenReleaseOperation = operation
-            let frozen = (try? await bufferedAudio?.freezePendingCapture(generationId: bufferedGenerationId)) == true
-            guard operation == generation, ownedLeaseId == leaseId else { return }
-            if frozen, frozenReleaseOperation == operation, terminalTask == nil {
-                snapshot.lastStopReason = "user_release_waiting_ready"
-                enterReleasing()
-                await finishFrozenRelease(
-                    readiness: readiness, operation: operation,
-                    leaseId: leaseId, bufferedGenerationId: bufferedGenerationId
-                )
-                return
-            }
-            if frozenReleaseOperation == operation { frozenReleaseOperation = nil }
-        }
+
 
         if let leaseId = snapshot.leaseId { await control.cancelRxReady(leaseId: leaseId) }
         guard operation == generation else { return }
         if snapshot.state == .transmitting, let leaseId = snapshot.leaseId {
             snapshot.lastStopReason = "user_release"
             enterReleasing()
-            if let bufferedGenerationId = activeBufferedGenerationId {
-                let completed = await bufferedAudio?.performReleaseHangover(generationId: bufferedGenerationId) == true
-                if !completed {
-                    snapshot.lastError = "BATv1 release hangover was interrupted."
-                    snapshot.txErrorRecoverable = true
-                }
-            }
-            if activeBufferedGenerationId == nil, playEndCue, rtpReleaseHangoverMilliseconds > 0 {
+
+            if playEndCue, rtpReleaseHangoverMilliseconds > 0 {
                 // Only the app-owned release waits. System/headset deactivation stays authoritative.
                 try? await clock.sleep(milliseconds: rtpReleaseHangoverMilliseconds)
                 guard operation == generation, ownedLeaseId == leaseId, terminalTask == nil else { return }
@@ -492,7 +333,6 @@ actor PTTController {
             await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .idle, error: nil)
         } else if snapshot.state == .requestingFloor {
             generation += 1
-            await discardActiveBuffered()
             clearLease(nextState: .idle)
         } else if snapshot.state == .busy {
             generation += 1
@@ -502,46 +342,8 @@ actor PTTController {
         }
     }
 
-    private func finishFrozenRelease(
-        readiness: Task<PttRxReadyWaitResult, Never>, operation: Int,
-        leaseId: String, bufferedGenerationId: String
-    ) async {
-        defer { if frozenReleaseOperation == operation { frozenReleaseOperation = nil } }
-        let ready = await readiness.value
-        guard !ready.cancelled, generation == operation, frozenReleaseOperation == operation,
-              ownedLeaseId == leaseId, terminalTask == nil else {
-            // Safety cleanup can cancel readiness before creating its terminal
-            // task. Join (or start) the common cleanup, never authorize here.
-            if ownedLeaseId == leaseId {
-                await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .idle, error: snapshot.lastError)
-            }
-            return
-        }
-        snapshot.rxReadyExpectedCount = ready.expectedCount
-        snapshot.rxReadyReceivedCount = ready.receivedCount
-        snapshot.rxReadyLateCount = ready.lateCount
-        snapshot.rxReadyWaitMilliseconds = ready.waitMilliseconds
-        snapshot.rxReadyTimedOut = ready.timedOut
-        snapshot.readyBarrierResult = ready.timedOut ? "READY_TIMEOUT" :
-            ready.expectedCount == 0 ? "NO_EXPECTATIONS" : "READY_ACKNOWLEDGED"
-        snapshot.rxReadyFirstAt = ready.firstReadyAt
-        snapshot.rxReadyAllAt = ready.allReadyAt
-        snapshot.readyBarrierCompletedAt = clock.now
-        do {
-            try await bufferedAudio?.authorize(leaseId: leaseId, generationId: bufferedGenerationId)
-            guard generation == operation, frozenReleaseOperation == operation,
-                  ownedLeaseId == leaseId, terminalTask == nil else { return }
-            snapshot.trackEnabledAt = snapshot.trackEnabledAt ?? clock.now
-            snapshot.talkingAt = snapshot.trackEnabledAt
-            await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .idle, error: nil)
-        } catch {
-            guard ownedLeaseId == leaseId else { return }
-            await stopForSafety(reason: "Buffered release failed: \(Self.safeMessage(error))")
-        }
-    }
 
     func stopForSafety(reason: String) async {
-        frozenReleaseOperation = nil
         if let terminalTask { await terminalTask.value; return }
         snapshot.lastStopReason = reason
         isPressed = false
@@ -550,7 +352,6 @@ actor PTTController {
             await finishTransmission(leaseId: leaseId, playEndCue: false, nextState: .error, error: reason)
         } else {
             generation += 1
-            await discardActiveBuffered()
             do {
                 try await microphone.setMicrophoneEnabled(false)
                 snapshot.txTerminalCleanupComplete = !acquisitionInFlight
@@ -597,7 +398,6 @@ actor PTTController {
             snapshot.leaseId = leaseId
             await abortBeforeTransmission(reason: "OWN_STALE_FLOOR")
         } else if (status.outcome == .available || status.outcome == .released), ownedLeaseId != nil {
-            await discardActiveBuffered()
             do { try await microphone.setMicrophoneEnabled(false) } catch { return }
             ownedLeaseId = nil
             snapshot.floorReleaseCompletedAt = clock.now
@@ -616,7 +416,6 @@ actor PTTController {
             await finishTransmission(leaseId: leaseId, playEndCue: false,
                 nextState: snapshot.pttUpAt != nil ? .idle : .error, error: reason)
         } else {
-            await discardActiveBuffered()
             snapshot.state = .error
             snapshot.lastError = reason
             snapshot.txTerminalCleanupComplete = true
@@ -685,15 +484,7 @@ actor PTTController {
             snapshot.floorLastRenewResult = "failed"
             snapshot.floorLastRenewError = Self.safeMessage(error)
             snapshot.lastStopReason = "floor_renew_failed"
-            if frozenReleaseOperation == operation {
-                frozenReleaseOperation = nil
-                generation += 1
-                await control.cancelRxReady(leaseId: leaseId)
-                await finishTransmission(
-                    leaseId: leaseId, playEndCue: false, nextState: .error,
-                    error: "Floor renew failed before buffered publication: \(Self.safeMessage(error))"
-                )
-            } else if snapshot.state == .releasing {
+            if snapshot.state == .releasing {
                 snapshot.lastError = "Floor renew failed during release: \(Self.safeMessage(error))"
                 snapshot.txErrorRecoverable = true
                 publish()
@@ -732,51 +523,33 @@ actor PTTController {
     ) async {
         if let terminalTask { await terminalTask.value; return }
         guard ownedLeaseId == leaseId else { return }
-        let needsFinalMarker = snapshot.talkingAt != nil
         terminalTask = Task { [weak self] in
             await self?.performTerminalCleanup(leaseId: leaseId, playEndCue: playEndCue,
-                nextState: nextState, error: error, needsFinalMarker: needsFinalMarker)
+                nextState: nextState, error: error)
         }
         await terminalTask?.value
         terminalTask = nil
     }
 
     private func performTerminalCleanup(
-        leaseId: String, playEndCue: Bool, nextState: PTTState, error: String?, needsFinalMarker: Bool
+        leaseId: String, playEndCue: Bool, nextState: PTTState, error: String?
     ) async {
         cancelMaxTxTimer()
         if snapshot.state != .releasing { enterReleasing() }
         var microphoneIsOff = false
-        let wasBuffered = activeBufferedGenerationId != nil
         var terminalError = error
         do {
-            if !needsFinalMarker {
-                await discardActiveBuffered()
-                try await microphone.setMicrophoneEnabled(false)
-                snapshot.txReleasePhase = "PREAUTH_BUFFER_DISCARDED"
-            } else if let bufferedGenerationId = activeBufferedGenerationId {
-                snapshot.txReleasePhase = "FINALIZING_BUFFERED_AUDIO"
-                publish()
-                try await bufferedAudio?.finish(generationId: bufferedGenerationId)
-                activeBufferedGenerationId = nil
-                snapshot.txFinalMarkerAcceptedSequence = nextReleaseSequence()
-                snapshot.txReleasePhase = "FINAL_MARKER_ACCEPTED"
-            } else {
-                try await microphone.setMicrophoneEnabled(false)
-            }
+            try await microphone.setMicrophoneEnabled(false)
             microphoneIsOff = true
             snapshot.microphoneMutedAt = clock.now
         } catch {
-            if wasBuffered {
-                await discardActiveBuffered()
-                microphoneIsOff = true
-            }
+
             snapshot.lastError = "TX OFF failed: \(Self.safeMessage(error))"
             terminalError = snapshot.lastError
             snapshot.txErrorRecoverable = microphoneIsOff
         }
 
-        // Terminal authority order is strict: final marker, control END, then Floor release.
+        // Terminal authority order is strict: microphone mute, control END, then Floor release.
         if microphoneIsOff {
             snapshot.txReleasePhase = "PUBLISHING_CONTROL_END"
             do {
@@ -838,7 +611,6 @@ actor PTTController {
         snapshot.txReleaseAttemptGeneration = generation
         snapshot.txReleaseEnteredSequence = nextReleaseSequence()
         snapshot.txFloorRenewDuringReleaseCount = 0
-        snapshot.txFinalMarkerAcceptedSequence = nil
         snapshot.txControlEndPublishedSequence = nil
         snapshot.txFloorReleaseRequestedSequence = nil
         snapshot.txFloorReleaseCompletedSequence = nil
@@ -867,11 +639,6 @@ actor PTTController {
         publish()
     }
 
-    private func discardActiveBuffered() async {
-        guard let generationId = activeBufferedGenerationId else { return }
-        await bufferedAudio?.discard(generationId: generationId)
-        activeBufferedGenerationId = nil
-    }
 
     private func clearLeaseIfCurrentSnapshot(operation: Int, nextState: PTTState) {
         guard generation == operation,

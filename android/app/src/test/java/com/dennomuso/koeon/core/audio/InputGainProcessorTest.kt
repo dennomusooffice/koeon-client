@@ -71,59 +71,6 @@ class InputGainProcessorTest {
         assertEquals(0f, gain.snapshot().autoTrimDb, 0f)
     }
 
-    @Test
-    fun `capture owns pre roll meters and trains only after successful completion`() {
-        val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
-        val capture = Batv1CaptureBuffer(inputGain = gain)
-        capture.arm("short")
-        capture.appendLiveKitPcm(samples(*IntArray(960) { 32_000 }), 16, 48_000, 1, 960)
-        capture.markCueBoundary()
-        capture.appendLiveKitPcm(samples(*IntArray(9_600) { 2_000 }), 16, 48_000, 1, 9_600)
-        assertTrue(capture.freeze("short"))
-        capture.startForwarding { }
-        val before = gain.snapshot()
-        assertEquals(9_600L, before.meterSampleCount)
-        assertEquals(0f, before.autoTrimDb, 0f)
-        capture.appendLiveKitPcm(samples(*IntArray(960) { 32_000 }), 16, 48_000, 1, 960)
-        assertEquals(before, gain.snapshot())
-        capture.discard(learnFromCapture = true)
-        assertEquals(1f, gain.snapshot().autoTrimDb, 0f)
-        assertEquals(9_600L, gain.snapshot().meterSampleCount)
-        capture.discard(learnFromCapture = true)
-        assertEquals(1f, gain.snapshot().autoTrimDb, 0f)
-    }
-
-    @Test
-    fun `cancelled capture never trains AUTO`() {
-        val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
-        val capture = Batv1CaptureBuffer(inputGain = gain)
-        capture.arm("cancelled")
-        capture.appendLiveKitPcm(samples(*IntArray(9_600) { 2_000 }), 16, 48_000, 1, 9_600)
-        capture.discard()
-        assertEquals(0f, gain.snapshot().autoTrimDb, 0f)
-    }
-
-    @Test
-    fun `capture gain stays fixed from pre roll through release tail`() {
-        val gain = InputGainProcessor(initialMode = InputGainMode.MANUAL)
-        gain.setManualGainDb(6f)
-        val capture = Batv1CaptureBuffer(inputGain = gain)
-        capture.arm("normal")
-        capture.markCueBoundary()
-        capture.appendLiveKitPcm(samples(*IntArray(960) { 2_000 }), 16, 48_000, 1, 960)
-        gain.setManualGainDb(12f)
-        val outputs = mutableListOf<ByteArray>()
-        capture.startForwarding { outputs.add(it) }
-        capture.appendLiveKitPcm(samples(*IntArray(960) { 2_000 }), 16, 48_000, 1, 960)
-        capture.stopForwarding()
-        capture.appendLiveKitPcm(samples(*IntArray(960) { 32_000 }), 16, 48_000, 1, 960)
-        assertEquals(2, outputs.size)
-        assertTrue(outputs.all { ByteBuffer.wrap(it).order(ByteOrder.nativeOrder()).short.toInt() == 3_990 })
-        assertEquals(1_920L, gain.snapshot().meterSampleCount)
-        capture.discard(learnFromCapture = true)
-        capture.arm("next")
-        assertEquals(12f, gain.snapshot().effectiveGainDb, 0f)
-    }
 
     @Test
     fun `auto converges to the output target instead of accumulating input error`() {

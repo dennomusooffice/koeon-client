@@ -13,3 +13,5 @@
 標準ツール: [SIM5ランナー](../../scripts/test-lab/README.md)、[診断回収・突合](../../scripts/field-diagnostics/README.md)。今回の結果は [RESULTS_20261109.md](RESULTS_20261109.md)。
 
 車載のOS割込み試験用に [有限AudioFocus helper](../../scripts/test-lab/android-focus-probe/README.md) を用意。CarPlay/Autoの投影・車載音響とは別判定とする。
+
+- [BATv1退役版の配信・本番反映・SIM5記録（2026-11-09）](RESULTS_20261109_BATV1_RETIREMENT.md)

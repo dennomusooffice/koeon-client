@@ -70,7 +70,7 @@ class RxAudioController(
     fun handleControl(event: PttControlEvent, senderSessionId: String?): Boolean {
         if (
             event.version != PTT_CONTROL_VERSION ||
-            event.channelId != channelId ||
+            event.bufferedGenerationId != null || event.channelId != channelId ||
             event.type !in setOf("start", "end") ||
             event.sequence < 0 ||
             (event.type == "start" && senderSessionId == null) ||
@@ -118,16 +118,6 @@ class RxAudioController(
         }
     }
 
-    /** BATv1 finalSequence is media truth. The player has already drained here. */
-    suspend fun completeBufferedTimelineDrain() {
-        val sessionId = snapshot.sessionId ?: return
-        val leaseId = snapshot.leaseId ?: return
-        if (snapshot.state == RxState.RX_IDLE) return
-        if (snapshot.state != RxState.RX_DRAINING) {
-            beginDrain("batv1_final_sequence", sessionId, leaseId)
-        }
-        completeDrain("batv1_final_sequence")
-    }
 
     /** Reconciles a missed END against Backend Floor truth without bypassing drain safety. */
     fun reconcileFloor(floor: FloorResponse) {

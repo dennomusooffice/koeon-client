@@ -74,32 +74,6 @@ class FieldDiagnosticTest {
         assertEquals(kotlinx.serialization.json.JsonNull, value("1.13.11", IntercomConnectionState.DISCONNECTED))
     }
 
-    @Test fun retainedReceiveIsSeparateFromCurrentAndDoesNotInventUnmeasuredOutput() {
-        val snapshot = com.dennomuso.koeon.core.audio.BufferedAudioRxSnapshot.capture(
-            com.dennomuso.koeon.core.audio.BufferedAudioRxDiagnostics(
-                generationId = "private-generation", playbackCursor = 42, latestSequence = 41,
-                finalSequence = 41, terminalReason = "final_sequence", playerDrainCompletedAtEpochMs = 1000,
-            ),
-        )
-        val state = IntercomUiState(diagnostics = SessionDiagnostics(lastBufferedReceive = snapshot))
-        val json = buildAndroidFieldDiagnostic(state)
-        val root = Json.parseToJsonElement(json).jsonObject
-        val retained = root.getValue("lastBufferedReceive").jsonObject
-        assertEquals(setOf("capturedAt", "build", "outcome", "terminalReason", "playbackCursor",
-            "latestSequence", "finalSequence", "missingSequenceCount", "duplicateSequenceCount",
-            "playerDrainCompletedAt", "endCueAt", "lastEnqueueOutput", "lastCompletionOutput",
-            "engineStartFailures", "lastErrorCode", "inputRmsDbfs", "inputPeakDbfs"), retained.keys)
-        assertEquals("42", retained.getValue("playbackCursor").jsonPrimitive.content)
-        assertEquals("completed", retained.getValue("outcome").jsonPrimitive.content)
-        assertEquals("1970-01-01T00:00:01Z", retained.getValue("playerDrainCompletedAt").jsonPrimitive.content)
-        assertEquals("0", root.getValue("bufferedAudio").jsonObject.getValue("rxPlaybackCursor").jsonPrimitive.content)
-        for (key in listOf("lastEnqueueOutput", "lastCompletionOutput", "engineStartFailures", "inputRmsDbfs", "inputPeakDbfs")) {
-            assertEquals(kotlinx.serialization.json.JsonNull, retained.getValue(key))
-        }
-        assertFalse(json.contains("private-generation"))
-        assertEquals(kotlinx.serialization.json.JsonNull,
-            Json.parseToJsonElement(buildAndroidFieldDiagnostic(IntercomUiState())).jsonObject.getValue("lastBufferedReceive"))
-    }
 
     @Test fun sessionMismatchDiagnosticContainsOnlyCategoryCounts() {
         val state = IntercomUiState(diagnostics = SessionDiagnostics(

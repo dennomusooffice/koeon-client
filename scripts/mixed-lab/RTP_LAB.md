@@ -4,7 +4,7 @@ Tracking: [Issue #54](https://github.com/dennomusooffice/koeon-client/issues/54)
 
 ## Status
 
-The user subsequently prioritized real-time communication and explicitly allowed some leading/trailing clipping. The current product session constructors now select LiveKit Opus TX; old BATv1 RX compatibility remains. Readiness is capped at 500ms, the app cue follows track enablement, and app touch release has a 180ms tail. System/headset/OS shutdown remains authoritative. No buffered speech is replayed after release/reconnect.
+The user subsequently prioritized real-time communication and explicitly allowed some leading/trailing clipping. The current product session constructors now select LiveKit Opus TX; BATv1 RX compatibility is removed by Issue #66. Readiness is capped at 500ms, the app cue follows track enablement, and app touch release has a 180ms tail. System/headset/OS shutdown remains authoritative. No buffered speech is replayed after release/reconnect.
 
 No build/version has been released by this work. Prototype base: `e786f0de06645f457bc13cfb9f8580ba33a24e66`; first transport probes: `0ff52527fe52985df83ad0d7f97a48ecd3896073`.
 
@@ -78,7 +78,7 @@ For iOS, build-for-testing `KOEONTests/LiveKitRtpLabTests`, set `KOEON_RTP_LAB=1
 
 ## Superseded strict-preservation investigation (historical)
 
-1. Wire the bounded FIFO to both production capture pipelines and make standard START advertise RTP, while retaining old BATv1 receive compatibility during migration.
+1. Wire the bounded FIFO to both production capture pipelines and make standard START advertise RTP, without restoring the retired BATv1 transport.
 2. Preserve floor/RX_READY authorization and exact generation ownership on cancellation/reconnect. Add endpoint failure propagation, not just FIFO tests.
 3. Fix iOS release ownership before switching. Current app touch release issues Apple stop while floor cleanup is still draining; pending short-press HTTP frames can currently send after local recording stops. RTP injection relies on active SDK capture callbacks. System/headset release can end Apple's session independently. Merely replacing the HTTP transmitter loses this protection.
 4. Resolve RTP end/control ordering and late receiver behavior; a drained capture FIFO is **not** remote playback completion.

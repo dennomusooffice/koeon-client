@@ -28,7 +28,8 @@ class FieldJournalStoreTest {
         second.append("START", emptyMap(), emptyMap(), 2001, 0)
         val records = read(second, dir, 2001).getValue("records").jsonArray
         assertEquals(2, records.size)
-        assertEquals("RX_PCM", records[0].jsonObject.getValue("event").jsonPrimitive.content)
+        // Export is segmented; the Mac correlator orders by time, not file mtime.
+        assertEquals(setOf("RX_PCM", "START"), records.map { it.jsonObject.getValue("event").jsonPrimitive.content }.toSet())
         assertNotEquals(records[0].jsonObject["runId"], records[1].jsonObject["runId"])
         second.append("TX", emptyMap(), emptyMap(), 2002, 1)
         assertEquals(2, read(second, dir, 2002).getValue("records").jsonArray.size)

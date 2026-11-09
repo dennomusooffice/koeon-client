@@ -25,25 +25,9 @@ protocol KOEONAPIClientProtocol: Sendable {
     func floorStatus(sessionId: String) async throws -> FloorResponse
     func registerPttToken(sessionId: String, channelId: String, token: String) async throws
     func unregisterPttToken(sessionId: String) async throws
-    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse
-    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse
-    func resolveBufferedAudio(_ request: Batv1ResolveRequest) async throws -> Batv1ResolveResponse
     func logout() async throws
 }
 
-extension KOEONAPIClientProtocol {
-    func resolveBufferedAudio(_ request: Batv1ResolveRequest) async throws -> Batv1ResolveResponse {
-        throw APIClientError.invalidResponse
-    }
-
-    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
-        throw APIClientError.invalidResponse
-    }
-
-    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
-        throw APIClientError.invalidResponse
-    }
-}
 
 enum RuntimeConfiguration {
     static let apiBaseURLInfoKey = "KOEONAPIBaseURL"
@@ -188,25 +172,6 @@ final class KOEONAPIClient: KOEONAPIClientProtocol, @unchecked Sendable {
         )
     }
 
-    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse {
-        try await send(
-            path: "/api/audio/batv1/publish",
-            method: "POST",
-            body: try encoder.encode(request)
-        )
-    }
-
-    func resolveBufferedAudio(_ request: Batv1ResolveRequest) async throws -> Batv1ResolveResponse {
-        try await send(path: "/api/audio/batv1/resolve", method: "POST", body: try encoder.encode(request), timeout: 1)
-    }
-
-    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse {
-        try await send(
-            path: "/api/audio/batv1/subscribe",
-            method: "POST",
-            body: try encoder.encode(request)
-        )
-    }
 
     func logout() async throws {
         let _: EmptyResponse = try await send(

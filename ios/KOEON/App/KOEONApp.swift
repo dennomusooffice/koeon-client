@@ -8,7 +8,7 @@ struct KOEONApp: App {
     init() {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
-        Batv1CrashBreadcrumbStore.shared.startRun(build: "\(version) (\(build))")
+        AudioLifecycleBreadcrumbStore.shared.startRun(build: "\(version) (\(build))")
     }
 
     var body: some Scene {
@@ -26,7 +26,7 @@ struct KOEONApp: App {
                     case .background: "background"
                     @unknown default: "unknown"
                     }
-                    Batv1CrashBreadcrumbStore.shared.recordAppLifecycle(lifecycleState)
+                    AudioLifecycleBreadcrumbStore.shared.recordAppLifecycle(lifecycleState)
                     intercomSession.appLifecycleDidChange(lifecycleState)
                 }
         }

@@ -130,7 +130,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (isFinishing) {
-            com.dennomuso.koeon.core.audio.Batv1CrashBreadcrumbs.markCleanExit()
+            com.dennomuso.koeon.core.audio.AudioLifecycleBreadcrumbs.markCleanExit()
         }
         super.onDestroy()
     }

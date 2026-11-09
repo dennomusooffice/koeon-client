@@ -16,6 +16,18 @@ import com.dennomuso.koeon.core.model.FloorResponse
 @OptIn(ExperimentalCoroutinesApi::class)
 class RxAudioControllerTest {
     @Test
+    fun `retired control cannot arm or end LiveKit receive or consume sequence`() = runTest {
+        val harness = Harness(testScheduler, suspendStartCue = true)
+        val start = harness.event("start", 1)
+        assertEquals(false, harness.controller.handleControl(start.copy(bufferedGenerationId = "retired"), "session-a"))
+        assertEquals(RxState.RX_IDLE, harness.controller.current().state)
+        assertTrue(harness.controller.handleControl(start, "session-a"))
+        val state = harness.controller.current().state
+        assertEquals(false, harness.controller.handleControl(harness.event("end", 2).copy(bufferedGenerationId = "retired"), "session-a"))
+        assertEquals(state, harness.controller.current().state)
+    }
+
+    @Test
     fun `validated START arms readiness before PCM and duplicate cannot publish twice`() = runTest {
         val harness = Harness(testScheduler, suspendStartCue = true)
 
