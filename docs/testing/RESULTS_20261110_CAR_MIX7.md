@@ -60,3 +60,17 @@ Android Autoの共有同意とMacのロック解除が可能な枠で、停車�
 iPhone809件（今回run175件）、OPPO632件（今回run181件）のjournalを保存。iPhoneの今回runにはRX_PCM12件があるが、これを実機聴取の代用にはしない。生診断・識別子は保護領域に保存し、公開しない。
 
 利用枠は直近確認で残量40%、残量不足による終了ではない。実行可能な試験を終え、車載ツールの同意・認証待ちの項目は未実施として引き継ぐ。#57と一時切断の原因調査も残る。
+
+## 04:14 JST以降の再開（途中経過）
+
+利用者がMac/motoの解除とAndroid Auto初回共有を明示許可したため、同じ07:00までの枠で再開。車載実機は未接続で模擬環境を使う。motoを加えたMIX8。motoはUSB給電時の常時点灯、OPPOは30分消灯、MacはAC時消灯・スクリーンセーバーを一時停止。元値を保護領域へ保存し、終了時に復元する。Macのパスワード要求は変更しない。
+
+- DHUの投影画面を確認。OPPOの通信音声経路は本体スピーカーのままで、投影は車載音響の証明ではない。
+- DHU接続中、OPPOとmoto各送信で7受信側BUSY、全8台READYを確認。iPhone送信ではOPPOのみREADYの失敗。35秒の有限PTTで再試行すると7台BUSYだったが、終了後Android15が一時OFFLINE。失敗を残し、全行列成功とはしない。
+- DHUのfocus audio offでOPPOはINTERRUPTED・送信不可。onだけでは再開せず、明示的な音声再接続でREADY。focus nav off/onはREADY継続。DHU切断でもINTERRUPTEDとなり、明示再接続した。実車通話・車載マイク切断の試験ではない。
+- focus復旧後のOPPO送信で、04:31:55.997 REQUESTING_FLOOR、04:32:03.415 TRANSMITTING、04:32:03.518 RELEASING、04:32:03.795 IDLEを記録。診断にはFloor lease renewal failedも存在する。制御通信の失敗としてfocusとは分離し、期限切れFloorの送信継続は許可しない。
+- Mac解除後もCarPlay SimulatorはConnectingからDisconnected。Apple側ログはCoreDevice.ActionError 5のMobileGestalt問い合わせ失敗、およびremote-iapサービス作成でCoreDeviceError 4000 / POSIX 83。投影前に失敗し、KOEON音声経路の成否は判定できない。OS互換性が根因とは未確定。
+- 04:40頃にホストのQEMUプロセスがSIGSEGVで終了し、Android14がADB一覧から消えた。混在試験はpreflightで停止しPTTを発行していない。アプリ不具合とは分類しない。重いビルドと混在受入れは時間を分ける。
+- 別途、iOSのキャッシュ済みセッション復帰で送信制御番号が巻き戻るコード上の不具合を実クラスの再現テストで確定。[#74](https://github.com/dennomusooffice/koeon-client/issues/74)・[PR #75](https://github.com/dennomusooffice/koeon-client/pull/75)、修正ecb19a4527ddfcd2d42571b1acf82f397982441c。全iOS257件中256成功・専用SFU1skip。実機の今回の失敗との因果関係は未確定。内部TestFlight 2026111002の作成を開始したが、この段落の時点で配信・実機確認は未完了。
+
+この節は途中経過で、復元・終了の記録は後続追記を確認する。
