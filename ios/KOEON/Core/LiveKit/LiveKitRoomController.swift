@@ -189,7 +189,6 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         deviceId = nil
         deployment = "UNKNOWN"
         endpointHost = nil
-        controlSequence = 0
         controlSenderIdentityResolution = .rejected
         remoteAudioSubscriptionGate.reset()
     }
@@ -343,12 +342,18 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         return true
     }
 
+    func nextControlSequence() -> Int64 {
+        // FAST_COLD_RECONNECT may reuse the backend session. Peers keep that
+        // session's replay watermark, so transport teardown must not reset it.
+        controlSequence += 1
+        return controlSequence
+    }
+
     private func publishControl(type: String, leaseId: String) async throws {
         guard let room, room.connectionState == .connected,
               let channelId, let userId, let sessionId else {
             throw LiveKitRoomError.notConnected
         }
-        controlSequence += 1
         let event = PttControlEvent(
             version: pttControlVersion,
             type: type,
@@ -356,7 +361,7 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
             speakerUserId: userId,
             sessionId: sessionId,
             leaseId: leaseId,
-            sequence: controlSequence,
+            sequence: nextControlSequence(),
             sentAt: Int64(Date().timeIntervalSince1970 * 1_000),
             bufferedGenerationId: nil
         )
@@ -370,11 +375,10 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     private func publishStartControl(leaseId: String) async throws -> PttStartPublishDiagnostics {
         guard let room, room.connectionState == .connected,
               let channelId, let userId, let sessionId else { throw LiveKitRoomError.notConnected }
-        controlSequence += 1
         let event = PttControlEvent(
             version: pttControlVersion, type: "start", channelId: channelId,
             speakerUserId: userId, sessionId: sessionId, leaseId: leaseId,
-            sequence: controlSequence, sentAt: Int64(Date().timeIntervalSince1970 * 1_000),
+            sequence: nextControlSequence(), sentAt: Int64(Date().timeIntervalSince1970 * 1_000),
             bufferedGenerationId: nil
         )
         let data = try JSONEncoder().encode(event)
