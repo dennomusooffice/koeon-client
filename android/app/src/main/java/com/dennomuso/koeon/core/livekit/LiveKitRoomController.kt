@@ -293,6 +293,7 @@ class LiveKitRoomController(
     private var deviceId: String? = null
     private var controlSequence = 0L
     var onFieldRxSnapshot: (com.dennomuso.koeon.core.ptt.RxSnapshot) -> Unit = {}
+    var onTransportDiagnostic: (String) -> Unit = {}
     private var rxAudio: RxAudioController? = null
     private var rxReadyBarrier: RxReadyBarrier? = null
     private var rxReadyReconcileJob: Job? = null
@@ -329,6 +330,17 @@ class LiveKitRoomController(
             onValidatedEnd = { cancelReceiverReadyPublication() },
             onSnapshot = { rx -> onFieldRxSnapshot(rx); _snapshot.value = _snapshot.value.copy(rx = rx) },
         )
+        // Replace the SDK logger before enabling it: raw SDK logs include credentials/SDP.
+        // KOEON owns one Room; only allowlisted transport categories reach the journal.
+        LiveKit.logger = object : io.livekit.android.util.LKLog.Logger {
+            override fun log(priority: io.livekit.android.util.LoggingLevel, t: Throwable?, message: String) {
+                transportDiagnostic(message)?.let { reason ->
+                    android.util.Log.i("KOEONTransport", reason)
+                    onTransportDiagnostic(reason)
+                }
+            }
+        }
+        LiveKit.loggingLevel = io.livekit.android.util.LoggingLevel.VERBOSE
         val nextRoom = LiveKit.create(
             appContext,
             overrides = LiveKitOverrides(audioOptions = AudioOptions(audioHandler = audioHandler)),
