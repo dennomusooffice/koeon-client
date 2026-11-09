@@ -122,6 +122,37 @@ class Lab:
                     if attempt == 4: raise
                     time.sleep(2)
             print(alias + ' booted; enrollment/power preserved', flush=True)
+    def ready(self):
+        """POWER ON only on enrolled Simulator screens; never enter credentials."""
+        self.ui_session()
+        for alias in self.keys:
+            if alias in self.android:
+                self.adbcall(alias, 'shell', 'uiautomator', 'dump', '/sdcard/koeon-test-lab.xml')
+                xml = self.adbcall(alias, 'exec-out', 'cat', '/sdcard/koeon-test-lab.xml')
+                nodes = list(ET.fromstring(xml).iter('node'))
+                button = next((n for n in nodes if n.get('text', '').startswith('POWER ON')), None)
+                if button is not None:
+                    bounds = list(map(int, re.findall(r'\d+', button.get('bounds'))))
+                    self.adbcall(alias, 'shell', 'input', 'tap', str((bounds[0]+bounds[2])//2), str((bounds[1]+bounds[3])//2))
+            else:
+                path = '/session/' + self.session
+                xml = self.api(path + '/source')
+                if any(n.get('name') == 'POWER ON · START' for n in ET.fromstring(xml).iter()):
+                    element = self.api(path + '/element', {'using': 'accessibility id', 'value': 'POWER ON · START'})
+                    identifier = element.get('element-6066-11e4-a52e-4f735466cecf') or element['ELEMENT']
+                    self.api(path + '/element/' + identifier + '/click', {})
+            (self.out / ('ready-entry-' + alias + '.xml')).write_text(xml)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                states = self.states(self.keys, 'ready-check')
+                if all(v['ptt']=='READY' and v['enabled'] for v in states.values()):
+                    self.save('ready.json', states); print('SIM5 READY', flush=True); return
+            except EndpointNotReady:
+                pass
+            time.sleep(2)
+        raise RuntimeError('SIM5 not READY; preserve evidence and inspect, no reset performed')
+
     def snapshot(self, alias, stage):
         if alias in self.android:
             self.adbcall(alias, 'shell', 'uiautomator', 'dump', '/sdcard/koeon-test-lab.xml')
@@ -152,11 +183,13 @@ class Lab:
         return self.api('/session/' + self.session + '/actions', {'actions': [{'type': 'pointer', 'id': 'finger',
             'parameters': {'pointerType': 'touch'}, 'actions': [{'type': 'pointerMove', 'duration': 0, 'x': x, 'y': y},
             {'type': 'pointerDown', 'button': 0}, {'type': 'pause', 'duration': milliseconds}, {'type': 'pointerUp', 'button': 0}]}]})
-    def controls(self, rounds):
+    def controls(self, rounds, senders=None):
         self.ui_session(); results = []
+        senders = senders or self.keys
+        if not senders or any(k not in self.keys for k in senders): raise ValueError("unknown sender alias")
         try:
             for round_ in range(1, rounds+1):
-                for sender in self.keys:
+                for sender in senders:
                     case = f'CTRL-{round_}-{sender}'
                     row = {'case': case, 'sender': sender, 'startedAt': datetime.now(timezone.utc).isoformat(), 'audioInjected': False, 'startedMonotonicMs': int(time.monotonic()*1000)}
                     try:
@@ -189,13 +222,14 @@ class Lab:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['inventory', 'boot', 'control', 'shutdown'])
+    parser.add_argument('action', choices=['inventory', 'boot', 'ready', 'control', 'shutdown'])
     parser.add_argument('--config', default='.secret/test-lab/config.json')
     parser.add_argument('--output', required=True, help='private run directory (same for boot/control)')
     parser.add_argument('--rounds', type=int, choices=[1, 2, 3], default=3)
+    parser.add_argument('--senders', help='optional comma-separated subset/order of configured aliases')
     args = parser.parse_args(); os.umask(0o077)
     lab = Lab(args.config, args.output)
-    if args.action == 'control': raise SystemExit(0 if lab.controls(args.rounds) else 1)
+    if args.action == 'control': raise SystemExit(0 if lab.controls(args.rounds, args.senders.split(',') if args.senders else None) else 1)
     getattr(lab, args.action)()
 
 if __name__ == '__main__': main()

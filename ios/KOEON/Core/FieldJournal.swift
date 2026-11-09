@@ -6,7 +6,7 @@ final class FieldJournalStore: @unchecked Sendable {
     static let keys: Set<String> = ["connection", "ptt", "rx", "operational", "lifecycle", "audio", "route", "mode",
         "runtimeGeneration", "receiveGeneration", "firstPcm", "pcmCallbacks", "pcmFrames", "pcmAtMs",
         "rxStartedAtMs", "txDownAtMs", "gainDb", "gainSamples", "gainDecision", "recoveryLevel", "restoring",
-        "trackSubscribed", "participants", "readyExpected", "readyReceived", "readyTimedOut", "clockDiscontinuity"]
+        "trackSubscribed", "participants", "readyExpected", "readyReceived", "readyTimedOut", "clockDiscontinuity", "reason"]
     private let root: URL
     private let platform: String
     private let build: String

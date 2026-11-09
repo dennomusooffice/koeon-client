@@ -282,9 +282,19 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
         return subscribed && remoteAudioSubscriptionGate.isActive(sessionId: sessionId, generation: generation)
     }
 
-    /// Flushes a completed generation only after Apple confirms that the active
-    /// remote participant was cleared. The false -> true transition discards old
-    /// decoder media, then leaves the publication warm for the next RX. Returns
+    /// Normal END closes only our receive-generation fence. Keep the RTP track
+    /// subscribed: SDK unsubscribe clears RemoteTrack immediately, while a
+    /// subsequent subscribe only requests asynchronous renegotiation. Repeating
+    /// that cycle after every utterance delays or loses the next initial PCM.
+    /// Apple participant clearing and RX drain still own audible completion.
+    @discardableResult
+    func completeRemoteAudioGeneration(sessionId: String, generation: Int) -> Bool {
+        remoteAudioSubscriptionGate.completeDiscard(sessionId: sessionId, generation: generation)
+    }
+
+    /// Explicit recovery/error-only flush. The false -> true transition clears
+    /// the SDK track and requests a replacement asynchronously. Never use this
+    /// after a normal END; the next RX would have to wait for renegotiation. Returns
     /// false when a newer generation replaces this operation while suspended.
     func discardRemoteAudioSubscription(sessionId: String, generation: Int) async throws -> Bool {
         guard let sourceRoom = room,

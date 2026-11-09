@@ -35,7 +35,7 @@ class FieldJournalStore(
         val keys = setOf("connection", "ptt", "rx", "operational", "lifecycle", "audio", "route", "mode",
             "runtimeGeneration", "receiveGeneration", "firstPcm", "pcmCallbacks", "pcmFrames", "pcmAtMs",
             "rxStartedAtMs", "txDownAtMs", "gainDb", "gainSamples", "gainDecision", "recoveryLevel", "restoring",
-            "trackSubscribed", "participants", "readyExpected", "readyReceived", "readyTimedOut", "clockDiscontinuity")
+            "trackSubscribed", "participants", "readyExpected", "readyReceived", "readyTimedOut", "clockDiscontinuity", "reason")
         fun hash(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
         fun safeFields(data: Map<String, Any?>): JsonObject = buildJsonObject {

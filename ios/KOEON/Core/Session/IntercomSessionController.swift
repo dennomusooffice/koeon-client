@@ -1186,15 +1186,8 @@ final class IntercomSessionController: ObservableObject {
                     )
                 },
                 onClearCompleted: { [weak self, weak room] context in
-                    Task { [weak self, weak room] in
-                        do {
-                            _ = try await room?.discardRemoteAudioSubscription(
-                                sessionId: context.sessionId, generation: context.generation
-                            )
-                        } catch {
-                            self?.lastError = "Remote audio flush failed: \(self?.safeMessage(error) ?? "Unavailable")"
-                        }
-                    }
+                    guard self?.runtimeLiveness.generation == runtimeGeneration else { return }
+                    _ = room?.completeRemoteAudioGeneration(sessionId: context.sessionId, generation: context.generation)
                 }
             ) { [weak self] snapshot in
                 Task { @MainActor in
@@ -1986,15 +1979,8 @@ final class IntercomSessionController: ObservableObject {
                 )
             },
             onClearCompleted: { [weak self, weak room] context in
-                Task { [weak self, weak room] in
-                    do {
-                        _ = try await room?.discardRemoteAudioSubscription(
-                            sessionId: context.sessionId, generation: context.generation
-                        )
-                    } catch {
-                        self?.lastError = "Remote audio flush failed: \(self?.safeMessage(error) ?? "Unavailable")"
-                    }
-                }
+                guard self?.runtimeLiveness.generation == runtimeGeneration else { return }
+                _ = room?.completeRemoteAudioGeneration(sessionId: context.sessionId, generation: context.generation)
             }
         ) { [weak self] snapshot in
             Task { @MainActor in
@@ -2597,6 +2583,9 @@ final class IntercomSessionController: ObservableObject {
         elapsedMilliseconds: Int,
         state: RxConsistencySnapshot
     ) {
+        journal("RESTORE", fields: ["recoveryLevel": state.recoveryLevel,
+            "reason": event.uppercased(), "trackSubscribed": state.trackSubscribed,
+            "firstPcm": state.remotePcmObserved])
         let baseEligible = isPoweredOn && !isStoppingRuntime && operationalState == .active && isJoined && joinedSession?.canPublish == true &&
             room.connectionState == .connected && audio.interruption.state == .ready
         let sessionId = state.validatedRxSessionId ?? state.remoteMediaSpeakerSessionId

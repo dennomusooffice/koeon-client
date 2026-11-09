@@ -14,7 +14,7 @@ MAX_INPUT = 64 * 1024 * 1024
 HASH = re.compile(r'^[0-9a-f]{64}$')
 ENUM = re.compile(r'^[A-Z][A-Z0-9_]{0,63}$')
 LABEL = re.compile(r'^[a-zA-Z0-9_-]{1,48}$')
-KEYS = set('connection ptt rx operational lifecycle audio route mode runtimeGeneration receiveGeneration firstPcm pcmCallbacks pcmFrames pcmAtMs rxStartedAtMs txDownAtMs gainDb gainSamples gainDecision recoveryLevel restoring trackSubscribed participants readyExpected readyReceived readyTimedOut clockDiscontinuity'.split())
+KEYS = set('connection ptt rx operational lifecycle audio route mode runtimeGeneration receiveGeneration firstPcm pcmCallbacks pcmFrames pcmAtMs rxStartedAtMs txDownAtMs gainDb gainSamples gainDecision recoveryLevel restoring trackSubscribed participants readyExpected readyReceived readyTimedOut clockDiscontinuity reason'.split())
 CORRELATIONS = ('sessionHash', 'speakerSessionHash', 'leaseHash', 'channelHash')
 
 def digest(value):
