@@ -1,7 +1,5 @@
 package com.dennomuso.koeon.core.api
 
-import com.dennomuso.koeon.core.model.Batv1Chunk
-import com.dennomuso.koeon.core.model.Batv1PublishRequest
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.launch
 import okio.buffer
@@ -55,11 +53,10 @@ class HttpKoeonApiTest {
                 }).build()
             }.build()
         val cancellableApi = HttpKoeonApi(server.url("/").toString(), client = client)
-        server.enqueue(jsonResponse("""{"outcome":"accepted","acceptedChunks":0,"latestSequence":-1}""")
+        server.enqueue(jsonResponse("""{"outcome":"available"}""")
             .setBodyDelay(3, java.util.concurrent.TimeUnit.SECONDS))
         val pending = launch(kotlinx.coroutines.Dispatchers.IO) {
-            cancellableApi.publishBufferedAudio(Batv1PublishRequest(1, "slow-body", "lab", "lab", "lab",
-                "lease", "pcm16le", 48000, 1, 20, "lab", emptyList(), null))
+            cancellableApi.floorStatus("lab")
         }
         assertTrue(readingBody.await(2, java.util.concurrent.TimeUnit.SECONDS))
         val started = System.nanoTime()
@@ -74,7 +71,7 @@ class HttpKoeonApiTest {
         val cancellableApi = HttpKoeonApi(server.url("/").toString(), client = client)
         server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
         val pending = launch(kotlinx.coroutines.Dispatchers.IO) {
-            cancellableApi.subscribeBufferedAudio(com.dennomuso.koeon.core.model.Batv1SubscribeRequest("lab", "stalled", 0))
+            cancellableApi.floorStatus("lab")
         }
         org.junit.Assert.assertNotNull(server.takeRequest(2, java.util.concurrent.TimeUnit.SECONDS))
         val started = System.nanoTime()
@@ -82,11 +79,10 @@ class HttpKoeonApiTest {
         pending.join()
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
         assertTrue("Cancellation held transport for $elapsedMs ms", elapsedMs < 1500)
-        server.enqueue(jsonResponse("""{"outcome":"accepted","acceptedChunks":0,"latestSequence":-1}"""))
+        server.enqueue(jsonResponse("""{"outcome":"available"}"""))
         // A cancelled subscription must not poison the shared HTTP client's next request.
-        val response = cancellableApi.publishBufferedAudio(Batv1PublishRequest(1, "next", "lab", "lab", "lab",
-            "lease", "pcm16le", 48000, 1, 20, "lab", emptyList(), null))
-        assertEquals("accepted", response.outcome)
+        val response = cancellableApi.floorStatus("lab")
+        assertEquals("available", response.outcome)
     }
 
     @Test
@@ -220,34 +216,6 @@ class HttpKoeonApiTest {
         assertEquals(emptySet<String>(), Json.parseToJsonElement(request.body.readUtf8()).jsonObject.keys)
     }
 
-    @Test
-    fun `BATv1 publish wire includes every required immutable format field`() = runTest {
-        server.enqueue(jsonResponse("""{"outcome":"accepted","acceptedChunks":1,"latestSequence":0}"""))
-
-        api.publishBufferedAudio(
-            Batv1PublishRequest(
-                protocolVersion = 1,
-                generationId = "generation-1",
-                channelId = "channel-1",
-                speakerSessionId = "session-1",
-                speakerDeviceId = "device-1",
-                leaseId = "lease-1",
-                codec = "pcm16le",
-                sampleRate = 48_000,
-                channels = 1,
-                frameDurationMs = 20,
-                sessionId = "session-1",
-                chunks = listOf(Batv1Chunk(sequence = 0, payloadBase64 = "AA==")),
-            ),
-        )
-
-        val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
-        assertEquals("1", body["protocolVersion"]?.jsonPrimitive?.content)
-        assertEquals("pcm16le", body["codec"]?.jsonPrimitive?.content)
-        assertEquals("48000", body["sampleRate"]?.jsonPrimitive?.content)
-        assertEquals("1", body["channels"]?.jsonPrimitive?.content)
-        assertEquals("20", body["frameDurationMs"]?.jsonPrimitive?.content)
-    }
 
     private fun jsonResponse(body: String) = MockResponse()
         .setResponseCode(200)

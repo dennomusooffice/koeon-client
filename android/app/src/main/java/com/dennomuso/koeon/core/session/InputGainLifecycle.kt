@@ -4,7 +4,7 @@ import com.dennomuso.koeon.core.audio.InputGainProcessor
 import com.dennomuso.koeon.core.ptt.PttSnapshot
 import com.dennomuso.koeon.core.ptt.PttState
 
-/** Gain measurement for the standard LiveKit path; buffered capture owns its own lifecycle. */
+/** Gain measurement for the standard LiveKit path. */
 internal fun InputGainProcessor.onLiveKitPttSnapshot(previous: PttState, snapshot: PttSnapshot) {
     fun PttState.isCapturing() = this == PttState.TRANSMITTING || this == PttState.RELEASING
     if (snapshot.state.isCapturing() && !previous.isCapturing()) {

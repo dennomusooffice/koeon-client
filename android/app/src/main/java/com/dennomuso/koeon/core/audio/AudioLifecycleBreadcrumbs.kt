@@ -4,7 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-const val BATV1_BREADCRUMB_MAX_EVENTS = 64
+const val AUDIO_BREADCRUMB_MAX_EVENTS = 64
 
 enum class PreviousRunTermination {
     CLEAN,
@@ -12,7 +12,7 @@ enum class PreviousRunTermination {
     UNKNOWN,
 }
 
-data class Batv1CrashBreadcrumb(
+data class AudioLifecycleBreadcrumb(
     val timestampEpochMs: Long,
     val platform: String,
     val build: String,
@@ -23,17 +23,17 @@ data class Batv1CrashBreadcrumb(
     val resultClass: String,
 )
 
-internal class Batv1BreadcrumbRing(private val capacity: Int = BATV1_BREADCRUMB_MAX_EVENTS) {
-    private val events = ArrayDeque<Batv1CrashBreadcrumb>()
+internal class AudioLifecycleBreadcrumbRing(private val capacity: Int = AUDIO_BREADCRUMB_MAX_EVENTS) {
+    private val events = ArrayDeque<AudioLifecycleBreadcrumb>()
     // Full generation IDs are retained only in this bounded in-memory window.
     private val recordedPolls = LinkedHashSet<Pair<String, String>>()
 
-    fun append(event: Batv1CrashBreadcrumb, generationId: String? = null): Boolean {
+    fun append(event: AudioLifecycleBreadcrumb, generationId: String? = null): Boolean {
         if (event.role == "RX" && event.resultClass == "OK" && generationId != null &&
             event.stage in setOf("RX_SUBSCRIBE_BEGIN", "RX_SUBSCRIBE_END")) {
             val key = generationId to event.stage
             if (key in recordedPolls) return false
-            if (recordedPolls.size >= BATV1_BREADCRUMB_MAX_EVENTS) {
+            if (recordedPolls.size >= AUDIO_BREADCRUMB_MAX_EVENTS) {
                 recordedPolls.remove(recordedPolls.first())
             }
             recordedPolls.add(key)
@@ -43,13 +43,13 @@ internal class Batv1BreadcrumbRing(private val capacity: Int = BATV1_BREADCRUMB_
         return true
     }
 
-    fun replace(values: List<Batv1CrashBreadcrumb>) {
+    fun replace(values: List<AudioLifecycleBreadcrumb>) {
         events.clear()
         recordedPolls.clear()
         values.takeLast(capacity).forEach { append(it) }
     }
 
-    fun snapshot(): List<Batv1CrashBreadcrumb> = events.toList()
+    fun snapshot(): List<AudioLifecycleBreadcrumb> = events.toList()
 }
 
 /**
@@ -57,13 +57,14 @@ internal class Batv1BreadcrumbRing(private val capacity: Int = BATV1_BREADCRUMB_
  * restricted to lifecycle classifications. PCM and credentials are never stored;
  * full generation IDs are used only for bounded in-memory coalescing.
  */
-object Batv1CrashBreadcrumbs {
+object AudioLifecycleBreadcrumbs {
+    // Preserve diagnostic history across upgrades; this storage key is not a transport.
     private const val preferencesName = "koeon_batv1_crash_breadcrumbs"
     private const val eventsKey = "events_v1"
     private const val runKnownKey = "run_known"
     private const val cleanExitKey = "clean_exit"
     private val lock = Any()
-    private val ring = Batv1BreadcrumbRing()
+    private val ring = AudioLifecycleBreadcrumbRing()
     private var initialized = false
     private var build = "unknown"
     private var previousRun = PreviousRunTermination.UNKNOWN
@@ -97,7 +98,7 @@ object Batv1CrashBreadcrumbs {
         synchronized(lock) {
             if (!initialized) return
             if (!ring.append(
-                Batv1CrashBreadcrumb(
+                AudioLifecycleBreadcrumb(
                     timestampEpochMs = System.currentTimeMillis(),
                     platform = "android",
                     build = build,
@@ -122,9 +123,9 @@ object Batv1CrashBreadcrumbs {
     }
 
     fun previousRunTermination(): PreviousRunTermination = synchronized(lock) { previousRun }
-    fun snapshot(): List<Batv1CrashBreadcrumb> = synchronized(lock) { ring.snapshot() }
+    fun snapshot(): List<AudioLifecycleBreadcrumb> = synchronized(lock) { ring.snapshot() }
 
-    private fun encode(events: List<Batv1CrashBreadcrumb>): String = JSONArray().also { array ->
+    private fun encode(events: List<AudioLifecycleBreadcrumb>): String = JSONArray().also { array ->
         events.forEach { event ->
             array.put(JSONObject().apply {
                 put("timestamp", event.timestampEpochMs)
@@ -139,13 +140,13 @@ object Batv1CrashBreadcrumbs {
         }
     }.toString()
 
-    private fun decode(raw: String?): List<Batv1CrashBreadcrumb> = runCatching {
+    private fun decode(raw: String?): List<AudioLifecycleBreadcrumb> = runCatching {
         val array = JSONArray(raw ?: "[]")
         buildList {
             for (index in 0 until array.length()) {
                 val value = array.getJSONObject(index)
                 add(
-                    Batv1CrashBreadcrumb(
+                    AudioLifecycleBreadcrumb(
                         timestampEpochMs = value.optLong("timestamp"),
                         platform = value.optString("platform", "android"),
                         build = value.optString("build", "unknown"),

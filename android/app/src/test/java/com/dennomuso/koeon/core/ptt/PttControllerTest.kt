@@ -2,8 +2,6 @@ package com.dennomuso.koeon.core.ptt
 
 import com.dennomuso.koeon.core.model.FloorOwner
 import com.dennomuso.koeon.core.model.FloorResponse
-import com.dennomuso.koeon.core.audio.BufferedAudioTxDiagnostics
-import com.dennomuso.koeon.core.audio.BufferedAudioTxGateway
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.advanceTimeBy
@@ -99,146 +97,6 @@ class PttControllerTest {
         assertEquals(TX_RELEASE_HANG_MS + TX_POST_MUTE_FLUSH_MS, harness.controlEndAt)
     }
 
-    @Test
-    fun `buffered UP during cue retains audio until floor grant but busy discards`() = runTest {
-        for (busy in listOf(false, true)) {
-            val events = mutableListOf<String>()
-            val harness = Harness(testScheduler, externalEvents = events,
-                bufferedGateway = BufferedGateway(events), cueDelayMs = 300,
-                acquire = if (busy) FloorResponse("busy", FloorOwner("other", "Other"))
-                    else FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1"))
-            val down = launch { harness.controller.pressDown(true) }
-            runCurrent()
-            assertTrue(events.contains("start-cue"))
-            assertFalse(events.contains("acquire"))
-            val up = launch { harness.controller.pressUp() }
-            runCurrent()
-            assertTrue(events.contains("capture-frozen"))
-            assertFalse(events.contains("authorized"))
-            advanceTimeBy(1_000); runCurrent()
-            down.join(); up.join()
-            assertEquals(!busy, events.contains("authorized"))
-            if (!busy) {
-                assertTrue(events.indexOf("acquire") < events.indexOf("authorized"))
-                assertTrue(events.indexOf("final-marker") < events.indexOf("release"))
-            }
-            assertFalse(events.contains("hangover-begin"))
-        }
-    }
-
-    @Test
-    fun `cue phase frozen speech is discarded on safety missing lease or acquisition failure`() = runTest {
-        for (failure in listOf("safety", "missing-lease", "acquire-failed")) {
-            val events = mutableListOf<String>()
-            val harness = Harness(testScheduler, externalEvents = events,
-                bufferedGateway = BufferedGateway(events), cueDelayMs = 300,
-                acquireFailure = failure == "acquire-failed",
-                acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"),
-                    if (failure == "missing-lease") null else "lease-1"))
-            val down = launch { harness.controller.pressDown(true) }
-            runCurrent()
-            val up = launch { harness.controller.pressUp() }
-            runCurrent()
-            val safety = if (failure == "safety") launch { harness.controller.stopForSafety("disconnected") } else null
-            runCurrent()
-            advanceTimeBy(1_000); runCurrent()
-            down.join(); up.join(); safety?.join()
-            assertTrue(events.contains("capture-frozen"))
-            assertTrue(events.contains("abort"))
-            assertFalse(events.contains("authorized"))
-            assertFalse(events.contains("final-marker"))
-        }
-    }
-
-    @Test
-    fun `buffered UP during READY wait freezes capture and delivers after ACK`() = runTest {
-        val events = mutableListOf<String>()
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
-            acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1",
-                rxReadyExpectedSessionIds = listOf("receiver-a")))
-        val down = backgroundScope.launch { harness.controller.pressDown(true) }
-        runCurrent()
-        advanceTimeBy(500)
-        val up = backgroundScope.launch { harness.controller.pressUp() }
-        runCurrent()
-        assertTrue(events.contains("capture-frozen"))
-        assertFalse(events.contains("authorized"))
-        assertFalse(events.contains("release"))
-        advanceTimeBy(2_300)
-        harness.ack("receiver-a")
-        runCurrent()
-        down.join(); up.join()
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-        assertTrue(events.contains("authorized"))
-        assertTrue(events.contains("final-marker"))
-        assertFalse(events.contains("hangover-begin"))
-        assertTrue(events.indexOf("capture-frozen") < events.indexOf("authorized"))
-        assertTrue(events.indexOf("final-marker") < events.indexOf("control-end"))
-        assertTrue(events.indexOf("control-end") < events.indexOf("release"))
-    }
-
-    @Test
-    fun `safety cancels a frozen short utterance before receiver ACK`() = runTest {
-        val events = mutableListOf<String>()
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
-            acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1",
-                rxReadyExpectedSessionIds = listOf("receiver-a")))
-        val down = backgroundScope.launch { harness.controller.pressDown(true) }
-        runCurrent()
-        val up = backgroundScope.launch { harness.controller.pressUp() }
-        runCurrent()
-        assertTrue(events.contains("capture-frozen"))
-        harness.controller.stopForSafety("disconnected")
-        runCurrent()
-        harness.ack("receiver-a")
-        runCurrent()
-        down.join(); up.join()
-        assertFalse(events.contains("authorized"))
-        assertFalse(events.contains("final-marker"))
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-    }
-
-    @Test
-    fun `failed lease renewal aborts a frozen short utterance before ACK`() = runTest {
-        val events = mutableListOf<String>()
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
-            failRenewAt = 1,
-            acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1",
-                rxReadyExpectedSessionIds = listOf("receiver-a")))
-        val down = backgroundScope.launch { harness.controller.pressDown(true) }
-        runCurrent()
-        val up = backgroundScope.launch { harness.controller.pressUp() }
-        runCurrent()
-        advanceTimeBy(1_001)
-        runCurrent()
-        harness.ack("receiver-a")
-        runCurrent()
-        down.join(); up.join()
-        assertFalse(events.contains("authorized"))
-        assertFalse(events.contains("final-marker"))
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-    }
-
-    @Test
-    fun `buffered short utterance preserves four second READY timeout`() = runTest {
-        val events = mutableListOf<String>()
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = BufferedGateway(events),
-            acquire = FloorResponse("granted", FloorOwner("staff-a", "Staff A"), "lease-1",
-                rxReadyExpectedSessionIds = listOf("receiver-a")))
-        val down = backgroundScope.launch { harness.controller.pressDown(true) }
-        runCurrent()
-        val up = backgroundScope.launch { harness.controller.pressUp() }
-        runCurrent()
-        advanceTimeBy(3_999)
-        runCurrent()
-        assertFalse(events.contains("authorized"))
-        advanceTimeBy(2)
-        runCurrent()
-        down.join(); up.join()
-        assertTrue(events.contains("final-marker"))
-        assertTrue(harness.controller.current().rxReadyTimedOut)
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-    }
 
     @Test
     fun `UP during RX Ready wait cancels arm and never enables microphone`() = runTest {
@@ -429,105 +287,6 @@ class PttControllerTest {
         assertTrue(harness.controller.current().endCueResult.startsWith("Skipped:"))
     }
 
-    @Test
-    fun `buffered normal release orders final marker before control END and floor release`() = runTest {
-        val events = mutableListOf<String>()
-        val buffered = BufferedGateway(events)
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = buffered)
-        harness.controller.pressDown(true)
-        events.clear()
-        harness.controller.pressUp()
-
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-        assertTrue(events.indexOf("hangover-complete") < events.indexOf("final-marker"))
-        assertTrue(events.indexOf("final-marker") < events.indexOf("control-end"))
-        assertTrue(events.indexOf("control-end") < events.indexOf("release"))
-        assertEquals("NORMAL_COMPLETE", harness.controller.current().release.terminalRecoveryResult)
-    }
-
-    @Test
-    fun `release longer than floor TTL keeps renewal until final marker accepted`() = runTest {
-        val events = mutableListOf<String>()
-        val buffered = BufferedGateway(events, finishDelayMs = 4_500)
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = buffered)
-        harness.controller.pressDown(true)
-        val release = backgroundScope.launch { harness.controller.pressUp() }
-        runCurrent()
-        assertEquals(PttState.RELEASING, harness.controller.current().state)
-        advanceTimeBy(4_800)
-        runCurrent()
-        release.join()
-
-        assertTrue(harness.renewCount >= 4)
-        assertTrue(harness.controller.current().release.floorRenewDuringReleaseCount >= 4)
-        assertTrue(events.indexOf("final-marker") < events.indexOf("release"))
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-    }
-
-    @Test
-    fun `safety during buffered hangover performs bounded abort cleanup`() = runTest {
-        val events = mutableListOf<String>()
-        val buffered = BufferedGateway(events)
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = buffered)
-        harness.controller.pressDown(true)
-        backgroundScope.launch { harness.controller.pressUp() }
-        runCurrent()
-        harness.controller.stopForSafety("route loss")
-        runCurrent()
-
-        assertTrue(buffered.abortCount >= 1)
-        assertTrue(events.contains("control-end"))
-        assertTrue(events.contains("release"))
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-    }
-
-    @Test
-    fun `safety during buffered pending flush performs bounded abort cleanup`() = runTest {
-        val events = mutableListOf<String>()
-        val buffered = BufferedGateway(events, finishDelayMs = 4_500)
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = buffered)
-        harness.controller.pressDown(true)
-        backgroundScope.launch { harness.controller.pressUp() }
-        advanceTimeBy(TX_RELEASE_HANG_MS + 1)
-        runCurrent()
-        assertTrue(events.contains("flush-begin"))
-        harness.controller.stopForSafety("audio interruption")
-        runCurrent()
-
-        assertTrue(buffered.abortCount >= 1)
-        assertTrue(events.contains("release"))
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-    }
-
-    @Test
-    fun `final marker failure releases lease and next PTT remains possible`() = runTest {
-        val events = mutableListOf<String>()
-        val buffered = BufferedGateway(events, failFinalMarker = true)
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = buffered)
-        harness.controller.pressDown(true)
-        harness.controller.pressUp()
-
-        assertEquals(PttState.IDLE, harness.controller.current().state)
-        assertTrue(events.contains("release"))
-        assertEquals("BOUNDED_ABORT_COMPLETE", harness.controller.current().release.terminalRecoveryResult)
-        harness.controller.pressDown(true)
-        assertEquals(PttState.TRANSMITTING, harness.controller.current().state)
-    }
-
-    @Test
-    fun `one hundred buffered releases leave no lease renew or forwarding leak`() = runTest {
-        val events = mutableListOf<String>()
-        val buffered = BufferedGateway(events)
-        val harness = Harness(testScheduler, externalEvents = events, bufferedGateway = buffered)
-        repeat(100) {
-            harness.controller.pressDown(true)
-            harness.controller.pressUp()
-            assertEquals(PttState.IDLE, harness.controller.current().state)
-        }
-        assertEquals(100, events.count { it == "release" })
-        assertEquals(100, events.count { it == "final-marker" })
-        assertFalse(buffered.forwarding)
-    }
 
     private class Harness(
         scheduler: TestCoroutineScheduler,
@@ -542,7 +301,6 @@ class PttControllerTest {
         private val microphoneOffSucceeds: Boolean = true,
         private val acquireFailure: Boolean = false,
         externalEvents: MutableList<String>? = null,
-        bufferedGateway: BufferedAudioTxGateway? = null,
         onSnapshot: (PttSnapshot) -> Unit = {},
     ) {
         val events = externalEvents ?: mutableListOf()
@@ -643,7 +401,6 @@ class PttControllerTest {
             microphone = microphone,
             cuePlayer = cue,
             control = control,
-            bufferedAudio = bufferedGateway,
             clock = clock,
             onSnapshot = onSnapshot,
         )
@@ -662,60 +419,5 @@ class PttControllerTest {
         }
     }
 
-    private class BufferedGateway(
-        private val events: MutableList<String>,
-        private val finishDelayMs: Long = 0,
-        private val failFinalMarker: Boolean = false,
-    ) : BufferedAudioTxGateway {
-        var forwarding = false
-        var abortCount = 0
-        private var generation: String? = null
 
-        override suspend fun armAndConfirmCapture(generationId: String): Boolean {
-            generation = generationId
-            events += "capture-armed"
-            return true
-        }
-        override fun markCueBoundary(generationId: String): Boolean = generation == generationId
-        override fun freezePendingCapture(generationId: String): Boolean {
-            if (generation != generationId || forwarding) return false
-            events += "capture-frozen"
-            return true
-        }
-        override suspend fun authorize(leaseId: String, generationId: String): Boolean {
-            forwarding = generation == generationId
-            events += "authorized"
-            return forwarding
-        }
-        override fun beginReleaseHangover(generationId: String, atEpochMs: Long): Boolean {
-            events += "hangover-begin"
-            return forwarding && generation == generationId
-        }
-        override fun completeReleaseHangover(generationId: String, atEpochMs: Long): Boolean {
-            events += "hangover-complete"
-            return forwarding && generation == generationId
-        }
-        override suspend fun finish(generationId: String): Boolean {
-            events += "flush-begin"
-            if (finishDelayMs > 0) delay(finishDelayMs)
-            forwarding = false
-            if (failFinalMarker) {
-                events += "final-marker-failed"
-                return false
-            }
-            events += "final-marker"
-            return true
-        }
-        override fun discard(generationId: String) {
-            forwarding = false
-            generation = null
-            abortCount += 1
-            events += "abort"
-        }
-        override suspend fun abortAndAwait(generationId: String): Boolean {
-            discard(generationId)
-            return true
-        }
-        override fun diagnostics() = BufferedAudioTxDiagnostics(generationId = generation)
-    }
 }

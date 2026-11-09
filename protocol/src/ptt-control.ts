@@ -28,7 +28,8 @@ export function decodePttControlEvent(data: Uint8Array): PttControlEvent | null 
     if (!value || typeof value !== "object") return null;
     const event = value as Partial<PttControlEvent>;
     if (
-      event.version !== PTT_CONTROL_VERSION
+      ("bufferedGenerationId" in event && event.bufferedGenerationId != null)
+      || event.version !== PTT_CONTROL_VERSION
       || (event.type !== "start" && event.type !== "end")
       || !nonEmpty(event.channelId)
       || !nonEmpty(event.speakerUserId)

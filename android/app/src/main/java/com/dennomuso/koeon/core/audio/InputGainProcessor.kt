@@ -204,19 +204,18 @@ class InputGainProcessor(
     @Synchronized
     override fun processAudio(numBands: Int, numFrames: Int, buffer: ByteBuffer) {
         // WebRTC APM exposes FloatS16 (float values on the signed-16-bit scale),
-        // not packed PCM16. This path is for legacy RTP publication only.
+        // not packed PCM16. This is the LiveKit publication gain path.
         processSamples(buffer, pcm16 = false, maximumSamples = numFrames)
     }
 
     @Synchronized
     fun processPcm16(buffer: ByteBuffer) {
-        // BATv1 reads the prewarmed AudioRecord sink before the APM callback.
-        // Process only our owned copy; never mutate the SDK's shared samples.
+        // Packed PCM utility for gain calibration; production uses FloatS16 above.
         processSamples(buffer, pcm16 = true, maximumSamples = buffer.remaining() / 2)
     }
 
     private fun processSamples(buffer: ByteBuffer, pcm16: Boolean, maximumSamples: Int) {
-        meterSource = if (pcm16) "BATV1_PCM16" else "WEBRTC_APM_FLOAT_S16"
+        meterSource = if (pcm16) "PCM16_GAIN_PROCESSOR" else "WEBRTC_APM_FLOAT_S16"
         val gainDb = if (transmissionActive) fixedTransmissionGainDb else effectiveGainDb()
         val multiplier = 10.0.pow(gainDb / 20.0).toFloat()
         val processingEnabled = mode != InputGainMode.OFF
@@ -340,8 +339,7 @@ class InputGainProcessor(
             inputPeakDbfs: Float,
             limiterRatio: Double,
         ): Float {
-            // BATv1 taps AudioRecord before APM: software WebRTC AGC is not
-            // guaranteed here. Pull down on overload regardless of pipeline.
+            // Pull down on overload regardless of upstream AGC behavior.
             if (inputPeakDbfs >= -0.5f || limiterRatio >= 0.01) {
                 val boundedCurrent = current.takeIf { it.isFinite() }?.coerceIn(-6f, 12f) ?: 0f
                 return (boundedCurrent - 1f).coerceAtLeast(-6f)

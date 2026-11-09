@@ -184,7 +184,7 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         XCTAssertTrue(intent.beginRestore())
         let result = try await performFreshRuntimeRestore(
             requestFreshSession: { "fresh" },
-            onFreshSessionReceived: { _ in },
+            onFreshSessionReceived: { (_: String) in },
             teardownStaleRuntime: { session = nil },
             establishFreshRuntime: { _ in false })
         XCTAssertFalse(result)
@@ -193,7 +193,7 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         XCTAssertEqual(intent.nextRetryDelay(isForeground: true), 1)
         XCTAssertTrue(intent.beginRestore())
         let recovered = try await performFreshRuntimeRestore(
-            requestFreshSession: { "retry" }, onFreshSessionReceived: { _ in },
+            requestFreshSession: { "retry" }, onFreshSessionReceived: { (_: String) in },
             teardownStaleRuntime: {}, establishFreshRuntime: { session = $0; return true })
         XCTAssertTrue(recovered)
         intent.powerOn()
@@ -244,7 +244,7 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         let task = Task { @MainActor in
             try await performFreshRuntimeRestore(
                 requestFreshSession: { await withCheckedContinuation { continuation = $0 } },
-                onFreshSessionReceived: { _ in },
+                onFreshSessionReceived: { (_: String) in },
                 teardownStaleRuntime: { teardownCalled = true },
                 establishFreshRuntime: { _ in established = true; return true },
                 discardFreshSession: { discarded = $0 })
@@ -270,7 +270,7 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         var discarded = false
         let task = Task { @MainActor in
             try await performFreshRuntimeRestore(
-                requestFreshSession: { "fresh" }, onFreshSessionReceived: { _ in },
+                requestFreshSession: { "fresh" }, onFreshSessionReceived: { (_: String) in },
                 teardownStaleRuntime: { await withCheckedContinuation { continuation = $0 } },
                 establishFreshRuntime: { _ in established = true; return true },
                 discardFreshSession: { _ in discarded = true })
@@ -337,21 +337,21 @@ final class RuntimeRestorePipelineTests: XCTestCase {
             var stages: [String] = []
             let result = try await performFreshRuntimeRestore(
                 requestFreshSession: { stages.append("resume"); return "new-local-session" },
-                onFreshSessionReceived: { _ in },
+                onFreshSessionReceived: { (_: String) in },
                 teardownStaleRuntime: {
                     stages.append("teardown")
                     liveness.beginRuntime()
                     consistency.reset()
                 },
                 establishFreshRuntime: { _ in
-                    stages.append("bind-current-timeline")
+                    stages.append("bind-current-track")
                     consistency.updateValidatedRx(active: true, sessionId: "remote", generation: 2,
-                        participantResolved: true, trackSubscribed: false, batv1TimelineActive: true, at: start)
+                        participantResolved: true, trackSubscribed: true, at: start)
                     liveness.validate(bindingsReady: true)
                     return true
                 })
             XCTAssertTrue(result)
-            XCTAssertEqual(stages, ["resume", "teardown", "bind-current-timeline"])
+            XCTAssertEqual(stages, ["resume", "teardown", "bind-current-track"])
             XCTAssertNotEqual(oldRuntime, liveness.generation)
             XCTAssertEqual(consistency.handleRemotePcm(sessionId: "remote", generation: 1, at: start), .rejected)
             XCTAssertEqual(consistency.handleRemotePcm(sessionId: "remote", generation: 2, at: start), .observed)
@@ -441,7 +441,7 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         do {
             _ = try await performFreshRuntimeRestore(
                 requestFreshSession: failingRequest,
-                onFreshSessionReceived: { _ in },
+                onFreshSessionReceived: { (_: String) in },
                 teardownStaleRuntime: {},
                 establishFreshRuntime: { _ in true }
             )
@@ -474,7 +474,7 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         var incomingEventAppliedToFreshRuntime = false
         _ = try await performFreshRuntimeRestore(
             requestFreshSession: { "fresh" },
-            onFreshSessionReceived: { _ in },
+            onFreshSessionReceived: { (_: String) in },
             teardownStaleRuntime: {},
             establishFreshRuntime: { _ in
                 incomingEventAppliedToFreshRuntime = true
@@ -773,8 +773,6 @@ private final class ResumeCleanupAPIStub: KOEONAPIClientProtocol, @unchecked Sen
     func releaseFloor(sessionId: String, leaseId: String) async throws -> FloorReleaseResponse { throw APIClientError.invalidResponse }
     func floorStatus(sessionId: String) async throws -> FloorResponse { throw APIClientError.invalidResponse }
     func registerPttToken(sessionId: String, channelId: String, token: String) async throws { throw APIClientError.invalidResponse }
-    func publishBufferedAudio(_ request: Batv1PublishRequest) async throws -> Batv1PublishResponse { throw APIClientError.invalidResponse }
-    func subscribeBufferedAudio(_ request: Batv1SubscribeRequest) async throws -> Batv1SubscribeResponse { throw APIClientError.invalidResponse }
     func logout() async throws { throw APIClientError.invalidResponse }
 }
 
