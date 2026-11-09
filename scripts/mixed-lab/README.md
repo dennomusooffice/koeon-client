@@ -84,3 +84,9 @@ read-timeout exception instead of prompt cancellation. The fix connects coroutin
 cancellation to OkHttp Call.cancel and closes response bodies in all paths.
 Final post-fix run passed all 36 cases and both Android cancellation-to-next-generation tests. Android unit tests: 194 passed; Lint and Debug/test APK builds passed. A subsequent Android15 test startup ANR was captured under high CPU/I/O pressure; preparation was separated from simultaneous execution, and the clean rerun passed. Use `LAB_PREPARED=1` only when the exact current APKs have already been installed; otherwise the runner prepares them first. Full evidence is recorded in #53; neither a release nor physical-device
 verification follows automatically from these tests.
+
+## Current standard
+
+The authoritative multi-device operating procedure is now
+[docs/testing/README.md](../../docs/testing/README.md). This older fixture lab
+remains useful for HTTP compatibility but is not the five-device product test.
