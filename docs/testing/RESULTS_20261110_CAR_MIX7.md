@@ -74,3 +74,25 @@ iPhone809件（今回run175件）、OPPO632件（今回run181件）のjournalを
 - 別途、iOSのキャッシュ済みセッション復帰で送信制御番号が巻き戻るコード上の不具合を実クラスの再現テストで確定。[#74](https://github.com/dennomusooffice/koeon-client/issues/74)・[PR #75](https://github.com/dennomusooffice/koeon-client/pull/75)、修正ecb19a4527ddfcd2d42571b1acf82f397982441c。全iOS257件中256成功・専用SFU1skip。実機の今回の失敗との因果関係は未確定。内部TestFlight 2026111002の作成を開始したが、この段落の時点で配信・実機確認は未完了。
 
 この節は途中経過で、復元・終了の記録は後続追記を確認する。
+
+## 再開後の最終結果
+
+車載機を外した比較ではOPPO・moto・Android14各送信で7台BUSY、全8台READYを確認した。その後Android15送信で途中終了を再現。journalは04:55:04.740 TRANSMITTING、04:55:11.116 RECONNECTINGとRELEASING、04:55:11.237 IDLE、04:55:12.077 CONNECTEDを記録する。後半に採取した受信側READYは、STARTを一度も受け取れなかった証拠ではない。接続異常時の安全停止は維持し、接続異常を起こす根因は未確定。新規PTTで復旧確認する手順とともに[#56](https://github.com/dennomusooffice/koeon-client/issues/56#issuecomment-6750030669)へ記録した。
+
+iPhoneをTestFlightから1.0（2026111002）へ更新し、端末アプリ一覧でも同番号を確認。ソース`ecb19a4527ddfcd2d42571b1acf82f397982441c`、署名IPA SHA256 `2430b8f9d3351b608b06ec9b2057f6a64cd1e84fdb48cee29cb468dd44b0e7d7`。VALID / INTERNAL_ONLY / IN_BETA_TESTING、内部2グループ・外部0。登録・POWER ONを保持して起動した。iOS Simulatorは1001、Androidはb35d6d5の内部候補1.0.19（20）のまま。
+
+更新後のiPhone・再接続後Android15・Android16・Android17・iOS Simulatorの5送信で、それぞれ7台BUSY、全8台READYを確認した。前段の3送信と合わせて全8送信元を確認したが、途中にiPhone更新と再接続があるため、単一条件の連続行列成功とは扱わない。iOSのキャッシュ済みセッション復帰をこの実機試験で通ったことは未確認で、#74は閉じない。
+
+音声測定はAndroid14→15/16で失敗。Android16は99,110サンプル、15は99,075サンプルで既知音声を検出できなかった。Android15の04:55のlogcatに、emulatorのranchu音声HALのpcm_readi I/O error 106件、pcm_writei I/O error 573件を確認。アプリ例外ではなく試験基盤の異常を含むため、[#57](https://github.com/dennomusooffice/koeon-client/issues/57#issuecomment-6750060728)へ分離して記録した。これだけで無音や再接続の根因と断定しない。
+
+Android15シミュレーターだけを登録保持で再起動し、新規POWER ON後に同じ送信元・合成音声で再測定すると1,530,660サンプル、既知音声と区間順序の一致を検出した。注入完了・送信後READY・cleanup errorなし。これは環境復旧の証拠で、アプリ修正の効果ではない。受信音声は保存していない。Android16の音声再検証と環境異常の根因特定は残る。
+
+Android15のクリップボード採取は古い値だったため2回とも新規証拠として不採用。送信時系列には24時間journalを用いた。iPhone1,509件、OPPO1,270件、moto717件のjournalを保護領域へ保存した。実音声の聴取、車載音響、車載経路切断の実callback、CarPlay投影は未完了。
+
+## 05:11 JSTの終了・復元
+
+実機操作を05:11に終了。OPPO/motoの消灯30秒・USB常時点灯OFFを元値と照合、OPPOヘッドセットPTTを元のONへ復元。povo/LTEとWi-Fi OFFは維持した。iPhoneの自動ロックは元から「なし」、ヘッドセットPTTは元からOFFで保持。MacはAC消灯10分・スクリーンセーバー20分へUIで復元し、バッテリー消灯2分・即時パスワード要求は変更していない。自分のcaffeinateを終了した。
+
+DHUは終了、切断済みCarPlay Simulatorのウィンドウも閉じた。今回のAppiumセッション、OPPO/Android15の診断補助アプリ、SIM5を終了・削除し、実機のKOEON登録と候補アプリは保持した。単体テスト用iOS Simulatorも停止済み。利用枠は最後の確認で32%残っており、残量不足による停止ではない。
+
+実行できた範囲の結果と障害を保存して終了した。次回はCarPlayのApple側接続問題、実車音響・経路切断、#56の再接続原因、#57の音声HALとSDK受信の切り分け、#74の実機キャッシュ済み復帰受入れを継続する。mainマージ・Android公開APKの差し替え・外部TestFlight配信は行っていない。
