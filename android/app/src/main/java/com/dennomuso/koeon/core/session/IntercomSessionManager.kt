@@ -63,8 +63,6 @@ import com.dennomuso.koeon.service.IntercomForegroundService
 import com.dennomuso.koeon.service.HeadsetPttAction
 import com.dennomuso.koeon.service.HeadsetPttEligibility
 import com.dennomuso.koeon.service.HeadsetPttMode
-import com.dennomuso.koeon.service.RouteLossPttAction
-import com.dennomuso.koeon.service.routeLossPttAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -337,6 +335,19 @@ class IntercomSessionManager(
     )
 
     init {
+        audioRouteMonitor.onExternalRouteLost = {
+            val controller = pttController
+            if (controller != null && shouldStopPttForSafety(controller.current().state)) {
+                scope.launch {
+                    if (pttController === controller) {
+                        stopPttForSafetyIfActive("External audio route lost; TX stopped before microphone fallback")
+                        if (pttController === controller) {
+                            _state.update { it.copy(error = "External audio route changed during TX; press PTT again to use the new route") }
+                        }
+                    }
+                }
+            }
+        }
         fieldJournal.record("START")
         var lastJournalRx = RxSnapshot()
         room.onFieldRxSnapshot = { rx ->
@@ -508,11 +519,7 @@ class IntercomSessionManager(
                         audioRouteChangedAt = Instant.now().toString(),
                     ))
                 }
-                val active = shouldStopPttForSafety(pttController?.current()?.state ?: PttState.IDLE)
-                if (routeLossPttAction(event.lostExternalInputRoute, active) == RouteLossPttAction.STOP_TX) {
-                    stopPttForSafetyIfActive("Headset route lost; TX stopped before microphone fallback")
-                    _state.update { it.copy(error = "Headset disconnected during TX; press PTT again to use the new route") }
-                }
+                // Safety is delivered directly, even when this diagnostic stream is full.
                 // RX deliberately stays connected; LiveKit AudioSwitch remains routing owner.
             }
         }

@@ -405,7 +405,7 @@ final class AudioSessionController: ObservableObject {
             try activatedSession.setCategory(
                 .playAndRecord,
                 mode: .voiceChat,
-                options: [.allowBluetoothHFP, .defaultToSpeaker]
+                options: Self.pushToTalkCategoryOptions(for: Self.mapRoute(activatedSession.currentRoute))
             )
             try AudioManager.shared.setEngineAvailability(.default)
             pushToTalkAudioSessionActive = true
@@ -600,8 +600,17 @@ final class AudioSessionController: ObservableObject {
     }
 
     static func speakerOutputPreferred(for route: AudioRouteKind) -> Bool {
-        // Never force built-in speaker over an actively selected HFP route.
-        route != .bluetooth
+        // Keep the selected external route, including CarPlay and USB audio.
+        switch route {
+        case .bluetooth, .wired, .usb, .car: false
+        default: true
+        }
+    }
+
+    static func pushToTalkCategoryOptions(for route: AudioRouteKind) -> AVAudioSession.CategoryOptions {
+        var options: AVAudioSession.CategoryOptions = [.allowBluetoothHFP]
+        if speakerOutputPreferred(for: route) { options.insert(.defaultToSpeaker) }
+        return options
     }
 
     private func applyLiveKitOutputPreference() {
