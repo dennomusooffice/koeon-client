@@ -21,6 +21,7 @@ const val FLOOR_RENEW_INTERVAL_MS = 1_000L
 const val MAX_CONTINUOUS_TX_MS = 60_000L
 const val TX_RELEASE_HANG_MS = 180L
 const val TX_POST_MUTE_FLUSH_MS = 80L
+const val TX_CONTROL_END_TIMEOUT_MS = 500L
 const val TX_TERMINAL_FINALIZATION_TIMEOUT_MS = 6_000L
 
 enum class PttState {
@@ -263,7 +264,7 @@ class PttController(
             ))
             if (ready.reason == RxReadyReason.CANCELLED || !canContinueStart(requestGeneration)) {
                 cancelTimers()
-                runCatching { control.publishEnd(leaseId) }
+                runCatching { publishEndBounded(leaseId) }
                 runCatching { floor.release(leaseId) }
                 update(snapshot.copy(state = PttState.IDLE, leaseId = null, currentSpeaker = null))
                 return
@@ -367,7 +368,7 @@ class PttController(
             }
             if (leaseId != null) {
                 update(snapshot.copy(release = snapshot.release.copy(controlEndAttemptedAt = clock.now())))
-                val controlResult = control.publishEnd(leaseId)
+                val controlResult = publishEndBounded(leaseId)
                 controlEndPublished = controlResult.isSuccess
                 update(snapshot.copy(
                     controlEndResult = controlResult.fold(
@@ -396,7 +397,7 @@ class PttController(
                     runCatching { microphone.setEnabled(false) }
                     if (leaseId != null && !controlEndPublished) {
                         update(snapshot.copy(release = snapshot.release.copy(controlEndAttemptedAt = clock.now())))
-                        val result = runCatching { control.publishEnd(leaseId) }
+                        val result = runCatching { publishEndBounded(leaseId) }
                             .getOrElse { Result.failure(it) }
                         controlEndPublished = result.isSuccess
                         update(snapshot.copy(
@@ -440,6 +441,12 @@ class PttController(
             }
         }
     }
+
+    // Muting is authoritative. A reconnecting data channel must not retain Floor
+    // for the SDK's connection timeout; receivers can reconcile released Floor.
+    private suspend fun publishEndBounded(leaseId: String): Result<Unit> =
+        withTimeoutOrNull(TX_CONTROL_END_TIMEOUT_MS) { control.publishEnd(leaseId) }
+            ?: Result.failure(IllegalStateException("CONTROL_END_TIMEOUT"))
 
     private class ReleaseInterruptedException(val reason: String) : IllegalStateException(reason)
 
@@ -536,7 +543,7 @@ class PttController(
         runCatching { microphone.setEnabled(false) }
         if (leaseId != null) {
             update(snapshot.copy(release = snapshot.release.copy(controlEndAttemptedAt = clock.now())))
-            val controlResult = runCatching { control.publishEnd(leaseId) }.getOrElse { Result.failure(it) }
+            val controlResult = runCatching { publishEndBounded(leaseId) }.getOrElse { Result.failure(it) }
             update(snapshot.copy(
                 controlEndResult = controlResult.fold(
                     { "Sent (abort)" },

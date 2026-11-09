@@ -23,6 +23,20 @@ import com.dennomuso.koeon.core.session.onLiveKitPttSnapshot
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PttControllerTest {
+    @Test fun `stalled END cannot retain Floor after microphone mute`() = runTest {
+        val harness = Harness(testScheduler, endDelayMs = 20_000)
+        harness.controller.pressDown(true)
+        val releasedAt = testScheduler.currentTime
+        harness.controller.pressUp()
+        assertFalse(harness.microphoneEnabled)
+        assertTrue(harness.events.contains("release"))
+        assertTrue("END must not retain Floor for SDK connection timeout", testScheduler.currentTime - releasedAt < 1_500)
+        assertEquals(PttState.IDLE, harness.controller.current().state)
+        harness.controller.pressDown(true)
+        assertEquals(PttState.TRANSMITTING, harness.controller.current().state)
+        harness.controller.stopForSafety("test cleanup")
+    }
+
     @Test fun `LiveKit AUTO learns only normal release not safety or microphone failure`() = runTest {
         for (outcome in listOf("normal", "safety", "mic-failure")) {
             val gain = InputGainProcessor(initialMode = InputGainMode.AUTO)
@@ -298,6 +312,7 @@ class PttControllerTest {
         private val failRenewAt: Int? = null,
         cueFailure: Boolean = false,
         cueDelayMs: Long = 0,
+        private val endDelayMs: Long = 0,
         private val microphoneOffSucceeds: Boolean = true,
         private val acquireFailure: Boolean = false,
         externalEvents: MutableList<String>? = null,
@@ -361,6 +376,7 @@ class PttControllerTest {
 
             override suspend fun publishEnd(leaseId: String): Result<Unit> {
                 events += "control-end"
+                if (endDelayMs > 0) delay(endDelayMs)
                 controlEndAt = scheduler.currentTime
                 return Result.success(Unit)
             }
