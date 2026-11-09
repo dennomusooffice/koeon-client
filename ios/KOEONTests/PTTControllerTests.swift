@@ -190,6 +190,21 @@ final class PttInitializationGateTests: XCTestCase {
 
 @MainActor
 final class PTTControllerTests: XCTestCase {
+    func testControlSequenceSurvivesCachedSessionDisconnect() async {
+        let sender = LiveKitRoomController()
+        let start = sender.nextControlSequence()
+        let end = sender.nextControlSequence()
+        XCTAssertGreaterThan(end, start)
+
+        // FAST_COLD_RECONNECT can reuse the backend session while its peers
+        // keep the old session's anti-replay high-water mark.
+        await sender.disconnect()
+        let reconnectedStart = sender.nextControlSequence()
+        XCTAssertGreaterThan(reconnectedStart, end)
+        await sender.disconnect()
+        XCTAssertGreaterThan(sender.nextControlSequence(), reconnectedStart)
+    }
+
     func testRtpTailKeepsMicUntilBoundedReleaseAndSafetyCanInterrupt() async throws {
         for interrupt in [false, true] {
             let events = EventLog()

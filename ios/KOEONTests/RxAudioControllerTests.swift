@@ -4,6 +4,25 @@ import PushToTalk
 
 @MainActor
 final class RxAudioControllerTests: XCTestCase {
+    func testConnectedReceiverAcceptsNewLeaseAfterSenderCachedSessionDisconnect() async {
+        let sender = LiveKitRoomController()
+        let receiver = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
+            clock: SuspendingClock(), onUpdate: { _ in })
+        receiver.handleControl(event(type: "start", sequence: sender.nextControlSequence()),
+            senderSessionId: "session-a")
+        receiver.handleControl(event(type: "end", sequence: sender.nextControlSequence()),
+            senderSessionId: "session-a")
+        let oldGeneration = receiver.currentSnapshot().generation
+
+        await sender.disconnect()
+        let next = event(type: "start", lease: "lease-after-reconnect",
+            sequence: sender.nextControlSequence())
+        receiver.handleControl(next, senderSessionId: "session-a")
+        XCTAssertEqual(receiver.currentSnapshot().leaseId, "lease-after-reconnect")
+        XCTAssertGreaterThan(receiver.currentSnapshot().generation, oldGeneration)
+        XCTAssertEqual(receiver.currentSnapshot().staleIgnored, 0)
+    }
+
     func testRetiredControlCannotArmOrEndLiveKitReceive() {
         let controller = RxAudioController(channelId: "stage", cuePlayer: ImmediateCue(),
             clock: SuspendingClock(), onUpdate: { _ in })
