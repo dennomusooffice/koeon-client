@@ -4,6 +4,8 @@ import argparse
 import concurrent.futures
 from datetime import datetime, timezone
 import json
+import plistlib
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -13,8 +15,12 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 
-def command(args, timeout=45, check=True):
-    return subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=check).stdout.strip()
+def command(args, timeout=45, check=True, env=None):
+    return subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=check, env=env).stdout.strip()
+
+class EndpointNotReady(RuntimeError):
+    def __init__(self, alias):
+        super().__init__('PTT control unavailable'); self.alias = alias
 
 class Lab:
     def __init__(self, config, output):
@@ -74,12 +80,22 @@ class Lab:
                 package = self.adbcall(k, 'shell', 'dumpsys', 'package', self.c['androidApp'])
                 result['endpoints'][k] = {'api': version, 'versions': re.findall(r'version(?:Code|Name)=[^\s]+', package)}
             except Exception as error: result['endpoints'][k] = {'status': 'NOT_READY', 'error': type(error).__name__}
+        try:
+            app = Path(command(['xcrun', 'simctl', 'get_app_container', self.ios['udid'], self.c['iosApp'], 'app']))
+            info = plistlib.loads((app / 'Info.plist').read_bytes())
+            binary = app / info['CFBundleExecutable']
+            result['endpoints'][self.ios['alias']] = {'version': info['CFBundleShortVersionString'],
+                'build': info['CFBundleVersion'], 'executableSha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+                'linkedEntitlements': '__entitlements' in command(['otool', '-l', str(binary)])}
+        except Exception as error:
+            result['endpoints'][self.ios['alias']] = {'status': 'NOT_READY', 'error': type(error).__name__}
         self.save('inventory.json', result)
         print(json.dumps({'inventory': str(self.out / 'inventory.json')}), flush=True)
     def boot(self):
         command(['xcrun', 'simctl', 'boot', self.ios['udid']], check=False)
         command(['xcrun', 'simctl', 'bootstatus', self.ios['udid'], '-b'], timeout=120)
-        command(['xcrun', 'simctl', 'launch', self.ios['udid'], self.c['iosApp']])
+        command(['xcrun', 'simctl', 'launch', '--terminate-running-process', self.ios['udid'], self.c['iosApp']],
+            env=dict(os.environ, SIMCTL_CHILD_KOEON_SIMULATOR_FOREGROUND='1'))
         self.ui_session()
         for alias, d in self.android.items():
             try: ready = self.adbcall(alias, 'shell', 'getprop', 'sys.boot_completed', timeout=10) == '1'
@@ -111,13 +127,17 @@ class Lab:
             self.adbcall(alias, 'shell', 'uiautomator', 'dump', '/sdcard/koeon-test-lab.xml')
             xml = self.adbcall(alias, 'exec-out', 'cat', '/sdcard/koeon-test-lab.xml')
             nodes = ET.fromstring(xml).iter('node')
-            node = next(n for n in nodes if n.get('content-desc', '').startswith('Push to talk,'))
+            (self.out / (stage + '-' + alias + '.xml')).write_text(xml)
+            node = next((n for n in nodes if n.get('content-desc', '').startswith('Push to talk,')), None)
+            if node is None: raise EndpointNotReady(alias)
             bounds = list(map(int, re.findall(r'\d+', node.get('bounds'))))
             value = {'ptt': node.get('content-desc').split(', ', 1)[1].replace(' ', '_'),
                 'enabled': node.get('enabled') == 'true', 'x': (bounds[0]+bounds[2])//2, 'y': (bounds[1]+bounds[3])//2}
         else:
             xml = self.api('/session/' + self.session + '/source')
-            node = next(n for n in ET.fromstring(xml).iter() if n.get('name') == 'Push to talk')
+            (self.out / (stage + '-' + alias + '.xml')).write_text(xml)
+            node = next((n for n in ET.fromstring(xml).iter() if n.get('name') == 'Push to talk'), None)
+            if node is None: raise EndpointNotReady(alias)
             value = {'ptt': node.get('value'), 'enabled': node.get('enabled') == 'true',
                 'x': int(float(node.get('x'))+float(node.get('width'))/2), 'y': int(float(node.get('y'))+float(node.get('height'))/2)}
         (self.out / (stage + '-' + alias + '.xml')).write_text(xml)
@@ -138,7 +158,7 @@ class Lab:
             for round_ in range(1, rounds+1):
                 for sender in self.keys:
                     case = f'CTRL-{round_}-{sender}'
-                    row = {'case': case, 'sender': sender, 'startedAt': datetime.now(timezone.utc).isoformat(), 'audioInjected': False}
+                    row = {'case': case, 'sender': sender, 'startedAt': datetime.now(timezone.utc).isoformat(), 'audioInjected': False, 'startedMonotonicMs': int(time.monotonic()*1000)}
                     try:
                         row['before'] = self.states(self.keys, case+'-before')
                         if not all(v['ptt']=='READY' and v['enabled'] for v in row['before'].values()):
@@ -150,8 +170,10 @@ class Lab:
                         time.sleep(2); row['after'] = self.states(self.keys, case+'-after')
                         row['status'] = 'PASS' if active and all(v['ptt']=='BUSY_REMOTE' for v in row['during'].values()) and all(v['ptt']=='READY' for v in row['after'].values()) else 'PRODUCT_FAIL'
                     except Exception as error:
-                        row.setdefault('status', 'ENV_FAIL'); row['errorClass'] = type(error).__name__
-                    row['endedAt'] = datetime.now(timezone.utc).isoformat(); results.append(row)
+                        row.setdefault('status', 'BLOCKED' if isinstance(error, EndpointNotReady) else 'ENV_FAIL')
+                        row['errorClass'] = type(error).__name__
+                        if isinstance(error, EndpointNotReady): row['failedEndpoint'] = error.alias
+                    row['endedAt'] = datetime.now(timezone.utc).isoformat(); row['endedMonotonicMs'] = int(time.monotonic()*1000); results.append(row)
                     self.save('control-results.json', results); print(case, row['status'], flush=True)
                     if row['status'] != 'PASS': return False
         finally:

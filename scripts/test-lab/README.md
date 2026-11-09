@@ -17,3 +17,5 @@ controlは各送信元の有限20秒PTT、他4台のBUSY_REMOTE、終了後5台R
 対象はAPI34–37のemulator-serialとsimctl一覧で検証したiOS Simulatorだけ。MIX7/8やNEW6は本書の端末別手順を組み合わせ、実機操作枠・復元記録を別に用意する。自動runnerへ実機serialを紛れ込ませない。
 
 音声・帯域・復旧: [EMULATOR_AUDIO.md](../mixed-lab/EMULATOR_AUDIO.md)、`emulator-audio-probe.py --help`、`emulator-network-recovery.py --help`。制御runnerと同じprivate runディレクトリへ保存し、capture基盤を先に検証。これらは任意の環境で無条件に全行列を自動実行するものではない。
+
+iOSの起動には既存のDebug Simulator専用 `SIMCTL_CHILD_KOEON_SIMULATOR_FOREGROUND=1` を渡す（bootに組込み済み）。Apple PTChannelManagerはSimulatorでは生成できず、無指定だと`pushtotalk.instantiation error 1`になる。画面の専用モード表示を確認する。これは実バックエンド/LiveKitの前面通信を通すアダプターで、実機APNs/PTTの背景wake試験ではない。bootはこの環境変数を反映するため対象SimulatorのKOEONプロセスを再起動する。試験途中の証拠採取にbootを使わない。

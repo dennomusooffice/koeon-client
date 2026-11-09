@@ -69,3 +69,9 @@ AppleはXcodeのiOS Simulator外部CarPlay画面と、Additional ToolsのCarPlay
 ## 終了・復元
 
 PTT/tone停止→ログexport→状態/失敗を保存→ネットワーク・ゲイン・音量・画面設定を原本へ復元→自分で導入したprobeだけ削除→自分が起動したAVD/Simulator/runnerのみ停止。登録/Keychain/アプリデータは消さない。復元できない項目と実機期限をhandoffに明記。ハング時は全MacプロセスをkillせずPID/AVDを照合する。
+
+### 登録済みiOS Simulatorの署名とXcode27の注意
+
+単体回帰では署名無効のbuildを使用できるが、登録済みラボへの導入候補は `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=<既存team>` と既存endpointを指定して**リンク時から署名を有効**にする。unsigned buildへの後付けcodesignや「adhoc」の文字列確認だけではKeychain利用を保証しない。実行ファイルの`__entitlements` sectionを確認し、更新後に既存登録が戻ることを確認する。登録画面になった場合も招待の再発行やデータ消去を先に行わない。
+
+Xcode27.2/Device HubではCarPlayはUSB実機接続のみで、iOS Simulatorは非対応（[公式既知問題](https://developer.apple.com/documentation/xcode-release-notes/xcode-27_2-release-notes)、179494052）。旧SimulatorのExternal Displays手順を現行環境へそのまま適用しない。Auto packageの存在だけでも不十分で、stub版ではなく公式Auto本体とHead Unit serverの準備を確認する。
