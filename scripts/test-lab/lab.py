@@ -192,10 +192,12 @@ class Lab:
                 for sender in senders:
                     case = f'CTRL-{round_}-{sender}'
                     row = {'case': case, 'sender': sender, 'startedAt': datetime.now(timezone.utc).isoformat(), 'audioInjected': False, 'startedMonotonicMs': int(time.monotonic()*1000)}
+                    phase = 'preflight'
                     try:
                         row['before'] = self.states(self.keys, case+'-before')
                         if not all(v['ptt']=='READY' and v['enabled'] for v in row['before'].values()):
                             row['status'] = 'BLOCKED'; raise RuntimeError('preflight not READY')
+                        phase = 'transmission'
                         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                             sending = pool.submit(self.press, sender, row['before'][sender]); time.sleep(3)
                             row['during'] = self.states([k for k in self.keys if k != sender], case+'-during')
@@ -203,7 +205,8 @@ class Lab:
                         time.sleep(2); row['after'] = self.states(self.keys, case+'-after')
                         row['status'] = 'PASS' if active and all(v['ptt']=='BUSY_REMOTE' for v in row['during'].values()) and all(v['ptt']=='READY' for v in row['after'].values()) else 'PRODUCT_FAIL'
                     except Exception as error:
-                        row.setdefault('status', 'BLOCKED' if isinstance(error, EndpointNotReady) else 'ENV_FAIL')
+                        row['failurePhase'] = phase
+                        row.setdefault('status', ('BLOCKED' if phase == 'preflight' else 'PRODUCT_FAIL') if isinstance(error, EndpointNotReady) else 'ENV_FAIL')
                         row['errorClass'] = type(error).__name__
                         if isinstance(error, EndpointNotReady): row['failedEndpoint'] = error.alias
                     row['endedAt'] = datetime.now(timezone.utc).isoformat(); row['endedMonotonicMs'] = int(time.monotonic()*1000); results.append(row)
