@@ -26,11 +26,11 @@
 
 端末のsessionHashは自端末join session、受信/送信eventではspeaker sessionとleaseも記録する。同一leaseHashを相関の第一キーにする。ハッシュは匿名化の補助であり公開してよいという意味ではない。サーバーログの生IDはMac側で同じSHA256へ変換して照合し、生値を結合結果へ残さない。
 
-記録ポイント: 起動、状態遷移、TX開始/終端、受信世代開始/最初の有効PCM/終端、push、接続復帰の各段階、音声focus/route/可用性、入力ゲインの学習判断、30秒heartbeat。iOS背景wakeでは新世代のPCMかを確認してからRX_PCMを記録。全ての段階を保存できないOS停止はgapとして残り、可聴成功には変換しない。
+記録ポイント: 起動、状態遷移、TX開始/終端、RX開始/終端、接続・音声状態、ゲイン値/モード、30秒heartbeat。iOSはpush/restoreと受信世代の最初の有効PCMも保存する。AndroidのPCM値はRoom集計であり、受信世代ごとのRX_PCM証拠は現時点で提供しない。入力ゲインの内部学習理由や復旧の全substageは今後の追加対象で、状態値だけから断定しない。OS停止中の記録欠落を可聴成功には変換しない。
 
 ## Export / Mac回収
 
-UIに `Export 24-hour diagnostic log` を追加。exportはwriter完了を待つ別作業として実行し、メイン/UI/audio threadで長時間ファイル走査しない。export物はmanifest＋対象JSONLレコードを持つJSON bundle (`koeon.field-journal-export.v1`)。manifestには範囲、対象件数、容量/queue/破損による欠落、buildを含む。
+UIに `Export 24-hour Field Journal` を追加。exportはwriter完了を待つ別作業として実行し、メイン/UI/audio threadで長時間ファイル走査しない。export物はmanifest＋対象レコードを持つJSON bundle (`koeon.field-journal-export.v1`)。manifestには範囲、対象件数、容量/破損/IOによる欠落を含む。buildは各record、queue超過は各recordのdroppedBeforeに記載する。exportファイルは32MiBの履歴上限とは別に一時/完成コピーを作るため、空き容量を確保する。
 
 - iOS: export後の共有/Files保存。Macから開発接続可能な場合は app container のexportファイルを`devicectl device copy from`で回収できる。自動最新snapshotと履歴exportを混同しない。
 - Android: Storage Access Frameworkでユーザーが保存先を選ぶ。署名releaseアプリのprivate filesは`adb run-as`で読めると仮定しない。debug/emulatorのみrun-as回収可。公開ContentProviderやrootを導入しない。

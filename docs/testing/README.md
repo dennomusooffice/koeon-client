@@ -8,3 +8,5 @@
 - [過去の8台試験と限界](../EIGHT_DEVICE_LAB_20261108.md)
 
 現在の基点: iOS 0906/source e68565f、Android 1.0.17(18)/source45176b。新規実装のビルド/検証状態は結果記録を参照する。シミュレーターのプロファイル名は実メーカーのファームウェア・マイク特性を再現しない。
+
+標準ツール: [SIM5ランナー](../../scripts/test-lab/README.md)、[診断回収・突合](../../scripts/field-diagnostics/README.md)。今回の結果は [RESULTS_20261109.md](RESULTS_20261109.md)。

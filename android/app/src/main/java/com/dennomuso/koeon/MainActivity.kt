@@ -43,6 +43,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -632,6 +636,24 @@ private fun AudioCaptureProfile.profileLabel(): String = when (this) {
 @Composable
 private fun Diagnostics(state: IntercomUiState) {
     val context = LocalContext.current
+    val journalScope = rememberCoroutineScope()
+    var journalBusy by remember { mutableStateOf(false) }
+    var journalStatus by remember { mutableStateOf("") }
+    val saveJournal = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri == null) journalBusy = false
+        else journalScope.launch {
+            try {
+                val journal = (context.applicationContext as KoeonApplication).intercomSession.fieldJournal
+                journal.record("EXPORT")
+                val file = journal.export()
+                withContext(Dispatchers.IO) {
+                    requireNotNull(context.contentResolver.openOutputStream(uri)).use { out -> file.inputStream().use { it.copyTo(out) } }
+                }
+                journalStatus = "Saved (up to 24 hours)"
+            } catch (_: Exception) { journalStatus = "Export failed; retry when storage is available" }
+            finally { journalBusy = false }
+        }
+    }
     Card(colors = CardDefaults.cardColors(containerColor = KoeonPanel), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Diagnostics", color = KoeonGreen, fontWeight = FontWeight.Bold)
@@ -639,6 +661,11 @@ private fun Diagnostics(state: IntercomUiState) {
                 val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 clipboard.setPrimaryClip(android.content.ClipData.newPlainText("KOEON Field Diagnostic", (context.applicationContext as KoeonApplication).intercomSession.fieldDiagnosticJson()))
             }) { Text("Copy Field Diagnostic JSON") }
+            Button(enabled = !journalBusy, onClick = {
+                journalBusy = true
+                saveJournal.launch("KOEON-field-journal-${System.currentTimeMillis()}.json")
+            }) { Text("Export 24-hour Field Journal") }
+            if (journalStatus.isNotEmpty()) Text(journalStatus)
             DiagnosticRow("Connection", state.connectionState.name)
             DiagnosticRow("Room", state.join?.roomName ?: "Unavailable")
             DiagnosticRow("User", state.join?.user?.name ?: "Unavailable")

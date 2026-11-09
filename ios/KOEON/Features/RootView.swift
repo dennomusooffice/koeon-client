@@ -375,6 +375,10 @@ private struct DiagnosticsView: View {
                     row("Last observed", format(session.audio.outputVolumeObservedAt))
                     Button("Copy Field Diagnostic JSON") { session.copyFieldDiagnosticJSON() }
                     row("Copy result", session.fieldDiagnosticCopyResult)
+                    Button("Export 24-hour Field Journal") { session.exportFieldJournal() }
+                        .disabled(session.fieldJournalExporting)
+                    if let url = session.fieldJournalURL { ShareLink("Share Field Journal", item: url) }
+                    if !session.fieldJournalStatus.isEmpty { Text(session.fieldJournalStatus) }
                 }
                 Section("Input Gain · TASK003G6") {
                     let gain = session.inputGain.snapshot()

@@ -1,0 +1,13 @@
+{
+  "androidSdk": "~/Library/Android/sdk",
+  "appium": "http://127.0.0.1:4723",
+  "androidApp": "com.dennomuso.koeon",
+  "iosApp": "org.example.koeon",
+  "android": [
+    {"alias": "a14", "api": 34, "avd": "KOEON_Lab_API34", "port": 5558},
+    {"alias": "a15", "api": 35, "avd": "KOEON_Lab_API35", "port": 5554},
+    {"alias": "a16", "api": 36, "avd": "KOEON_Lab_API36", "port": 5556},
+    {"alias": "a17", "api": 37, "avd": "KOEON_Lab_API37", "port": 5560}
+  ],
+  "ios": {"alias": "ios", "udid": "REPLACE_WITH_ENROLLED_SIMULATOR_UDID", "wdaPort": 8104}
+}

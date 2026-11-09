@@ -319,7 +319,61 @@ class IntercomSessionManager(
     private val _state = MutableStateFlow(IntercomUiState())
     val state: StateFlow<IntercomUiState> = _state.asStateFlow()
 
+    val fieldJournal = FieldJournal(appContext)
+
+    private fun journalFields(value: IntercomUiState): Map<String, Any?> = mapOf(
+        "connection" to value.connectionState.name, "ptt" to value.ptt.state.name,
+        "rx" to value.diagnostics.rx.state.name, "operational" to value.operationalState.name,
+        "lifecycle" to value.diagnostics.activityVisibility.uppercase(),
+        "audio" to value.diagnostics.audioAvailabilityState.name,
+        "route" to value.diagnostics.inputGain.route.substringBefore(':').uppercase().replace('-', '_').replace(' ', '_'),
+        "mode" to value.diagnostics.inputGain.mode.name, "gainDb" to value.diagnostics.inputGain.effectiveGainDb,
+        "readyExpected" to value.diagnostics.rxReadyExpectedCount, "readyReceived" to value.diagnostics.rxReadyReceivedCount,
+    )
+    private fun journalIds(value: IntercomUiState, previous: IntercomUiState? = null) = mapOf(
+        "sessionHash" to value.join?.sessionId, "channelHash" to value.join?.channel?.id,
+        "speakerSessionHash" to (value.diagnostics.rx.sessionId ?: previous?.diagnostics?.rx?.sessionId),
+        "leaseHash" to (value.ptt.leaseId ?: value.diagnostics.rx.leaseId ?: previous?.ptt?.leaseId ?: previous?.diagnostics?.rx?.leaseId),
+    )
+
     init {
+        fieldJournal.record("START")
+        var lastJournalRx = RxSnapshot()
+        room.onFieldRxSnapshot = { rx ->
+            if (rx.state != lastJournalRx.state || rx.leaseId != lastJournalRx.leaseId || rx.rxStartedAt != lastJournalRx.rxStartedAt) {
+                val value = state.value
+                val next = value.copy(diagnostics = value.diagnostics.copy(rx = rx))
+                val prior = value.copy(diagnostics = value.diagnostics.copy(rx = lastJournalRx))
+                fieldJournal.record("RX", journalFields(next) + mapOf("rxStartedAtMs" to rx.rxStartedAt?.toEpochMilli()), journalIds(next, prior))
+            }
+            lastJournalRx = rx
+        }
+        scope.launch {
+            var previous: IntercomUiState? = null
+            var signature: Map<String, Any?>? = null
+            state.collect { value ->
+                val fields = journalFields(value)
+                if (fields != signature || value.ptt.leaseId != previous?.ptt?.leaseId ||
+                    value.diagnostics.rx.leaseId != previous?.diagnostics?.rx?.leaseId) {
+                    fieldJournal.record("STATE", fields + mapOf(
+                        // Room totals, not per-receive or audible-sound evidence.
+                        "pcmCallbacks" to value.diagnostics.remotePcm.callbacks,
+                        "pcmFrames" to value.diagnostics.remotePcm.frames,
+                        "pcmAtMs" to value.diagnostics.remotePcm.lastCallbackEpochMs,
+                        "rxStartedAtMs" to value.diagnostics.rx.rxStartedAt?.toEpochMilli(),
+                    ), journalIds(value, previous))
+                    signature = fields
+                }
+                previous = value
+            }
+        }
+        scope.launch {
+            while (true) {
+                delay(30_000)
+                val value = state.value
+                if (value.join != null) fieldJournal.record("HEARTBEAT", journalFields(value), journalIds(value))
+            }
+        }
         Batv1CrashBreadcrumbs.initialize(appContext, "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             headsetPttEnabled = headsetPttEnabled,
@@ -1114,6 +1168,11 @@ class IntercomSessionManager(
             bufferedAudio = batv1Transmitter,
             clock = SystemPttClock(),
             onSnapshot = { ptt ->
+                val prior = state.value
+                if (ptt.state != prior.ptt.state || ptt.leaseId != prior.ptt.leaseId) {
+                    val next = prior.copy(ptt = ptt)
+                    fieldJournal.record("TX", journalFields(next), journalIds(next, prior))
+                }
                 // Buffered capture owns its measurement boundaries; LiveKit uses PTT lifecycle.
                 if (batv1Transmitter == null) {
                     gainProcessor.onLiveKitPttSnapshot(previousPttState, ptt)

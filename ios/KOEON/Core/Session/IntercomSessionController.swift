@@ -589,6 +589,39 @@ final class IntercomSessionController: ObservableObject {
 
     private let backgroundCleanup = BoundedBackgroundCleanup()
 
+    @Published private(set) var fieldJournalURL: URL?
+    @Published private(set) var fieldJournalExporting = false
+    @Published private(set) var fieldJournalStatus = ""
+    private var journalAudioSignature = ""
+    private var journalHeartbeatAt: TimeInterval = 0
+
+    private func journal(_ event: String, fields: [String: Any] = [:], lease: String? = nil, speaker: String? = nil) {
+        var data: [String: Any] = ["ptt": pttSnapshot.state.rawValue.uppercased(),
+            "rx": rxSnapshot.state.rawValue.uppercased(), "connection": room.connectionState.rawValue.uppercased(),
+            "lifecycle": appLifecycleState.uppercased(), "runtimeGeneration": runtimeLiveness.generation,
+            "receiveGeneration": rxSnapshot.generation, "route": audio.route.rawValue.uppercased().replacingOccurrences(of: "-", with: "_")]
+        fields.forEach { data[$0.key] = $0.value }
+        var ids: [String: String] = [:]
+        ids["sessionHash"] = joinedSession?.sessionId
+        ids["channelHash"] = joinedSession?.channel.id
+        ids["leaseHash"] = lease ?? rxSnapshot.leaseId ?? pttSnapshot.leaseId
+        ids["speakerSessionHash"] = speaker ?? rxSnapshot.sessionId
+        FieldJournal.shared.record(event, fields: data, ids: ids)
+    }
+
+    func exportFieldJournal() {
+        guard !fieldJournalExporting else { return }
+        fieldJournalExporting = true; fieldJournalURL = nil; fieldJournalStatus = "Exporting…"
+        journal("EXPORT")
+        Task { [weak self] in
+            do {
+                let url = try await FieldJournal.shared.export()
+                self?.fieldJournalURL = url; self?.fieldJournalStatus = "Ready to share (up to 24 hours)"
+            } catch { self?.fieldJournalStatus = "Export failed; retry when storage is available" }
+            self?.fieldJournalExporting = false
+        }
+    }
+
     init(
         api: (any KOEONAPIClientProtocol)? = nil,
         credentialStore: any DeviceCredentialStoring = KeychainDeviceCredentialStore(),
@@ -619,6 +652,7 @@ final class IntercomSessionController: ObservableObject {
         self.rxCuePlayer = rxCuePlayer
         self.statusCuePlayer = statusCuePlayer
         self.pushToTalk = pushToTalk
+        FieldJournal.shared.record("START")
         selectedAudioPublishProfile = AudioPublishProfile.load(from: audioPublishDefaults)
         appTxPath = AppTxPath(rawValue: UserDefaults.standard.string(forKey: "field.appTxPath") ?? "") ?? .prearmFast
         rxReadyPolicy = RxReadyPolicy(rawValue: UserDefaults.standard.string(forKey: "field.rxReadyPolicy") ?? "") ?? .adaptive
@@ -636,6 +670,11 @@ final class IntercomSessionController: ObservableObject {
                 guard let self else { return }
                 self.objectWillChange.send()
                 self.inputGain.setRoute(self.audio.inputProfileKey)
+                let journalSignature = "\(self.audio.route.rawValue)-\(self.audio.pushToTalkAudioSessionActive)"
+                if self.journalAudioSignature != journalSignature {
+                    self.journalAudioSignature = journalSignature
+                    self.journal("AUDIO", fields: ["audio": self.audio.pushToTalkAudioSessionActive ? "ACTIVE" : "INACTIVE"])
+                }
             }
         }
         inputGain.setRoute(audio.inputProfileKey)
@@ -670,6 +709,7 @@ final class IntercomSessionController: ObservableObject {
         }
         room.onConnectionStateChanged = { [weak self] state in
             guard let self else { return }
+            self.journal("CONNECTION", fields: ["connection": state.rawValue.uppercased()])
             if state != .connected { self.runtimeLiveness.invalidate() }
             self.pushToTalk.setServiceConnection(state)
             if state == .reconnecting {
@@ -773,11 +813,13 @@ final class IntercomSessionController: ObservableObject {
         }
         pushToTalk.onRestoreRequested = { [weak self] descriptor, reason in
             if reason == .systemChannelRestoration { self?.runtimeLiveness.invalidate() }
+            self?.journal("RESTORE")
             self?.pttChannelRestoredAt = Date()
             self?.requestRuntimeRestore(descriptor, reason: reason)
         }
         pushToTalk.onIncomingPush = { [weak self] incoming in
             guard let self else { return }
+            self.journal("WAKE")
             self.lastPttIncomingPushAt = Date()
             self.rxWakeGeneration += 1
             self.wakeAttempts.begin(generation: self.rxWakeGeneration, channelId: incoming.channelId,
@@ -1539,6 +1581,7 @@ final class IntercomSessionController: ObservableObject {
 
     func appLifecycleDidChange(_ value: String) {
         appLifecycleState = value
+        journal("LIFECYCLE")
         if value == "active" {
             lastForegroundAt = Date()
             recoveryIntent.resetRetries()
@@ -2201,7 +2244,11 @@ final class IntercomSessionController: ObservableObject {
 
     private func applyPttSnapshot(_ snapshot: PTTSnapshot) {
         let previous = pttSnapshot.state
+        let priorLease = pttSnapshot.leaseId
         pttSnapshot = snapshot
+        if previous != snapshot.state || priorLease != snapshot.leaseId {
+            journal("TX", lease: snapshot.leaseId ?? priorLease)
+        }
         if bufferedTransmitter == nil {
             if snapshot.state == .requestingFloor && previous != .requestingFloor { inputGain.beginTransmission() }
             if ![.requestingFloor, .transmitting, .releasing].contains(snapshot.state) {
@@ -2429,6 +2476,13 @@ final class IntercomSessionController: ObservableObject {
     private func applyRxSnapshot(_ snapshot: RxSnapshot) {
         let previous = rxSnapshot
         rxSnapshot = snapshot
+        if previous.state != snapshot.state || previous.generation != snapshot.generation || previous.rxFirstPcmAt != snapshot.rxFirstPcmAt {
+            var fields: [String: Any] = ["firstPcm": snapshot.rxFirstPcmAt != nil]
+            if let at = snapshot.rxFirstPcmAt { fields["pcmAtMs"] = Int64(at.timeIntervalSince1970 * 1_000) }
+            if let at = snapshot.rxStartedAt { fields["rxStartedAtMs"] = Int64(at.timeIntervalSince1970 * 1_000) }
+            journal(snapshot.rxFirstPcmAt != nil && previous.rxFirstPcmAt == nil ? "RX_PCM" : "RX", fields: fields,
+                lease: snapshot.leaseId ?? previous.leaseId, speaker: snapshot.sessionId ?? previous.sessionId)
+        }
         if snapshot.generation > 0, snapshot.state != .idle,
            previous.generation != snapshot.generation || previous.state == .idle {
             rxAttempts.begin(generation: snapshot.generation, channelId: joinedSession?.channel.id ?? pendingJoinResponse?.channel.id ?? "",
@@ -2911,6 +2965,12 @@ final class IntercomSessionController: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, let joinedAt = self.joinedAt else { return }
                 self.sessionUptimeSeconds = max(0, Int(Date().timeIntervalSince(joinedAt)))
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - self.journalHeartbeatAt >= 30 {
+                    self.journalHeartbeatAt = now
+                    let gain = self.inputGain.snapshot()
+                    self.journal("HEARTBEAT", fields: ["gainDb": gain.effectiveGainDb, "mode": gain.mode.rawValue.uppercased()])
+                }
             }
         }
     }
