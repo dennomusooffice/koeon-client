@@ -797,3 +797,91 @@ private actor StartupMeGate {
     }
     func release() { continuation?.resume(); continuation = nil }
 }
+
+// Kept in this registered test source so command-line builds exercise the persistence contract.
+final class FieldJournalStoreTests: XCTestCase {
+    func testBoundedAdmissionResumesAfterCompletionAndReportsLoss() {
+        let admission = FieldJournalAdmission(limit: 2)
+        XCTAssertTrue(admission.admit()); XCTAssertTrue(admission.admit()); XCTAssertFalse(admission.admit())
+        XCTAssertFalse(admission.admit()); XCTAssertEqual(admission.takeDropped(), 2); XCTAssertEqual(admission.takeDropped(), 0)
+        admission.finish(); XCTAssertTrue(admission.admit()); admission.finish(); admission.finish()
+    }
+    private func sandbox(_ body: (URL) throws -> Void) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try body(root)
+    }
+    private func export(_ store: FieldJournalStore, _ root: URL, _ now: Int64) throws -> [String: Any] {
+        let url = try store.export(to: root.appendingPathComponent("export.json"), now: now)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    }
+    func testRestartRetentionBoundaryAndAppendAfterExport() throws {
+        try sandbox { root in
+            let logs = root.appendingPathComponent("journal")
+            let first = try FieldJournalStore(root: logs, build: "test", installationId: "test", retentionMs: 1000)
+            first.append(event: "RX", fields: [:], ids: [:], wallMs: 1000, monoMs: 1)
+            first.append(event: "RX_PCM", fields: [:], ids: [:], wallMs: 1001, monoMs: 2)
+            let second = try FieldJournalStore(root: logs, build: "test", installationId: "test", retentionMs: 1000)
+            second.append(event: "START", fields: [:], ids: [:], wallMs: 2001, monoMs: 0)
+            let records = try XCTUnwrap(try export(second, root, 2001)["records"] as? [[String: Any]])
+            XCTAssertEqual(records.count, 2)
+            XCTAssertEqual(records.first?["event"] as? String, "RX_PCM")
+            XCTAssertNotEqual(records[0]["runId"] as? String, records[1]["runId"] as? String)
+            second.append(event: "TX", fields: [:], ids: [:], wallMs: 2002, monoMs: 1)
+            XCTAssertEqual((try export(second, root, 2002)["records"] as? [Any])?.count, 2)
+        }
+    }
+    func testPrivacyAndDropAccounting() throws {
+        try sandbox { root in
+            let store = try FieldJournalStore(root: root.appendingPathComponent("journal"), build: "test", installationId: "test")
+            store.append(event: "TX", fields: ["token": "secret", "route": "headset-private", "ptt": "TRANSMITTING", "gainDb": 6],
+                ids: ["leaseHash": "raw-private-lease", "token": "secret"], wallMs: 1000, monoMs: 10, droppedBefore: 4)
+            let result = try export(store, root, 1000)
+            let text = String(decoding: try JSONSerialization.data(withJSONObject: result), as: UTF8.self)
+            XCTAssertFalse(text.contains("secret")); XCTAssertFalse(text.contains("raw-private")); XCTAssertFalse(text.contains("headset-private"))
+            XCTAssertTrue(text.contains(FieldJournalStore.hash("raw-private-lease")))
+            XCTAssertEqual((result["records"] as? [[String: Any]])?.first?["droppedBefore"] as? Int, 4)
+        }
+    }
+    func testCorruptionAndCapacityAreReported() throws {
+        try sandbox { root in
+            let logs = root.appendingPathComponent("journal")
+            let store = try FieldJournalStore(root: logs, build: "test", installationId: "test", maxBytes: 1600, segmentBytes: 500)
+            try Data("{broken\n{\"schema\":[],\"wallTimeMs\":{}}\n".utf8).write(to: logs.appendingPathComponent("broken.jsonl"))
+            for i in 0..<12 { store.append(event: "RX", fields: [:], ids: [:], wallMs: 1000 + Int64(i), monoMs: Int64(i)) }
+            let manifest = try XCTUnwrap(try export(store, root, 1012)["manifest"] as? [String: Any])
+            XCTAssertEqual(manifest["corruptDroppedRecordsLifetime"] as? Int, 2)
+            XCTAssertGreaterThan(manifest["capacityDroppedRecordsLifetime"] as? Int ?? 0, 0)
+            let files = try FileManager.default.contentsOfDirectory(at: logs, includingPropertiesForKeys: [.fileSizeKey]).filter { $0.pathExtension == "jsonl" }
+            XCTAssertLessThanOrEqual(try files.reduce(0) { try $0 + ($1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }, 1600)
+        }
+    }
+    func testBackwardClockExcludesFutureAndMarksDiscontinuity() throws {
+        try sandbox { root in
+            let store = try FieldJournalStore(root: root.appendingPathComponent("journal"), build: "test", installationId: "test")
+            store.append(event: "START", fields: [:], ids: [:], wallMs: 100000, monoMs: 100)
+            store.append(event: "RX", fields: [:], ids: [:], wallMs: 1000, monoMs: 101)
+            let result = try export(store, root, 1000)
+            let records = try XCTUnwrap(result["records"] as? [[String: Any]])
+            XCTAssertEqual(records.count, 1); XCTAssertEqual(records[0]["clockDiscontinuity"] as? Bool, true)
+            XCTAssertEqual((result["manifest"] as? [String: Any])?["futureClockRecordsExcluded"] as? Int, 1)
+        }
+    }
+}
+
+final class FieldJournalRxPcmGateTests: XCTestCase {
+    func testRepeatedAndLateSnapshotsDoNotRecountFirstPcm() {
+        var gate = FieldJournalRxPcmGate()
+        XCTAssertFalse(gate.accept(runtime: 2, generation: 0))
+        XCTAssertTrue(gate.accept(runtime: 2, generation: 13))
+        // A queued nil snapshot followed by the same first-PCM snapshot is not a new receive.
+        XCTAssertFalse(gate.accept(runtime: 2, generation: 13))
+        XCTAssertTrue(gate.accept(runtime: 2, generation: 16))
+        XCTAssertFalse(gate.accept(runtime: 2, generation: 13))
+        // A new runtime restarts RX generations; old runtime callbacks remain fenced.
+        XCTAssertTrue(gate.accept(runtime: 3, generation: 1))
+        XCTAssertFalse(gate.accept(runtime: 2, generation: 19))
+        XCTAssertFalse(gate.accept(runtime: 3, generation: 1))
+    }
+}

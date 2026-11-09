@@ -312,6 +312,7 @@ class LiveKitRoomController(
     private var sessionId: String? = null
     private var deviceId: String? = null
     private var controlSequence = 0L
+    var onFieldRxSnapshot: (com.dennomuso.koeon.core.ptt.RxSnapshot) -> Unit = {}
     private var rxAudio: RxAudioController? = null
     private var rxReadyBarrier: RxReadyBarrier? = null
     private var rxReadyReconcileJob: Job? = null
@@ -362,7 +363,7 @@ class LiveKitRoomController(
             cuePlayer = TonePttCuePlayer(appContext, CueRole.RX),
             onValidatedEnd = { cancelReceiverReadyPublication(); onBufferedAudioEnd() },
             onEndCueCompleted = { onBufferedAudioEndCue() },
-            onSnapshot = { rx -> _snapshot.value = _snapshot.value.copy(rx = rx) },
+            onSnapshot = { rx -> onFieldRxSnapshot(rx); _snapshot.value = _snapshot.value.copy(rx = rx) },
         )
         val nextRoom = LiveKit.create(
             appContext,
