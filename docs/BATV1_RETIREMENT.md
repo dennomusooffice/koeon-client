@@ -1,7 +1,7 @@
 # BATv1退役 / LiveKit専用クライアント
 
 追跡: [Issue #66](https://github.com/dennomusooffice/koeon-client/issues/66)。
-2026-11-09。配信済み基準は `bc735ba`（Android 1.0.18 / versionCode 19、iOS 1.0 / 2026110909）。本変更は後続候補であり、同じバージョン番号の公開済みバイナリに含まれるとは扱わない。
+2026-11-09。配信済み基準は `bc735ba`（Android 1.0.18 / versionCode 19、iOS 1.0 / 2026110909）。この基準版には本撤去は含まれない。後続のAndroid 1.0.19(20)／iOS 1.0(2026110910)を配信し、2026-11-09 21:14 JSTにサーバーを退役反映した。[配信・検証記録](testing/RESULTS_20261109_BATV1_RETIREMENT.md)を参照。
 
 ## 実装
 
@@ -16,7 +16,7 @@
 
 ## サーバー・Webとの境界
 
-Issue #66の契約では旧publish/subscribeは `410 BATV1_RETIRED` / `Cache-Control: no-store`。Join/token/Floor/PTT pushの契約は変えない。本クライアントには旧endpointを呼ぶコード自体がなく、410を契機とするretryや別音声経路へのfallbackもない。
+Issue #66の契約では旧publish/subscribe/resolveは `410 BATV1_RETIRED` / `Cache-Control: no-store`。Join/token/Floor/PTT pushの契約は変えない。本クライアントには旧endpointを呼ぶコード自体がなく、410を契機とするretryや別音声経路へのfallbackもない。
 
 サーバーのローカル作業ツリーを読み取り監査した結果、Web `src/components/koeon-app.tsx` はLiveKitを使用し、`src` のBATv1参照は退役endpointを検証するテストに限られていた。サーバーには未コミット変更があるため、これはローカル状態の監査であり、公開HEADや本番環境の確認ではない。クライアントrepoにはWebアプリ本体がない。共有protocol decoderにも旧制御拒否を追加した。
 
@@ -37,7 +37,7 @@ Issue #66の契約では旧publish/subscribeは `410 BATV1_RETIRED` / `Cache-Con
 
 ## 切替・リリースゲート
 
-1. 候補を新しいAndroid versionCode / iOS build番号で配信する。**本変更の最低必須配信番号は未確定**。上記の既存配信番号をBAT撤去済みとして指定しない。
+1. 候補を新しいAndroid versionCode / iOS build番号で配信する。最低更新対象は**Android 1.0.19(20)／iOS 1.0(2026110910)**。既存基準版をBAT撤去済みとして指定しない。
 2. SIM5のnative相互通信・Web fanout・切断再接続と、上下128kbpsを実測した12/24/48設定を検証。HTTP旧endpoint呼び出し0、Floor renew/release、初回PCM、次PTT復帰を記録する。
 3. 許可された実機試験枠で長時間ロック、Bluetooth再接続、割込み、省電力を検証。#52/#54/#57を本リファクタだけで完了にしない。
 4. 利用者へ新しい最低バージョンを通知し、更新状況を確認してからサーバー退役を別途反映する。旧BAT送信クライアントは410で送信不能となり、自動でLiveKitへ移行する保証はない。更新が必要。
