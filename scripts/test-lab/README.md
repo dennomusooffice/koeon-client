@@ -40,3 +40,7 @@ python3 scripts/test-lab/lab.py shutdown --only a14,a15 --output .secret/test-la
 音声異常はまず1台アイドル→2台音声3回→短い通信断からの新規送信で比較し、ビルドは同時実行しない。各段階の`vm_stat`、`sysctl vm.swapusage`、`memory_pressure`と実際の起動台数を保護領域に保存する。スワップ使用量は履歴を含み、現在のメモリ不足の証拠とは限らない。HAL入力読み取りエラーだけで再生不良と判定せず、出力書き込みエラー・信号検出・接続状態を照合する。根因未確定時にアプリを修正済みとしない。
 
 選択・停止範囲の回帰確認: `python3 -m unittest discover -s scripts/test-lab -p test_lab.py -v`。
+
+### Synthetic-input acceptance boundary
+
+`emulator-audio-probe.py` reporting `injectionCompleted=true` means the emulator gRPC call completed; it does **not** prove the guest microphone captured the waveform. If no receiver detects speech, preserve the sender's fresh Field Diagnostic JSON before another PTT. Check `audioGain.meterSampleCount` and pre/post RMS/peak against the just-completed transmission, and inspect guest input HAL errors. An all-silent sender (-120 dBFS in the observed Android16 case) makes that trial inconclusive for receiver/network blame. Record input-injection failure separately, keep the failed result, and revalidate after restoring the emulator input path. Do not lower speech-correlation thresholds or call a silence-only stream an audio pass.
