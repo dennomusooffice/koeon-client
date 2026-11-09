@@ -224,6 +224,19 @@ final class PTTControllerTests: XCTestCase {
         }
     }
 
+    func testVehicleAndExternalRoutesDoNotRequestBuiltInSpeakerOnActivation() {
+        for route: AudioRouteKind in [.car, .usb, .wired, .bluetooth] {
+            XCTAssertFalse(AudioSessionController.speakerOutputPreferred(for: route))
+            let options = AudioSessionController.pushToTalkCategoryOptions(for: route)
+            XCTAssertFalse(options.contains(.defaultToSpeaker))
+            XCTAssertTrue(options.contains(.allowBluetoothHFP))
+        }
+        for route: AudioRouteKind in [.speaker, .receiver, .builtIn, .unknown] {
+            XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: route))
+            XCTAssertTrue(AudioSessionController.pushToTalkCategoryOptions(for: route).contains(.defaultToSpeaker))
+        }
+    }
+
     func testC1C2C8SpeakerBluetoothSpeakerPolicySurvivesFiftySwitches() {
         for _ in 0 ..< 50 {
             XCTAssertTrue(AudioSessionController.speakerOutputPreferred(for: .speaker))
