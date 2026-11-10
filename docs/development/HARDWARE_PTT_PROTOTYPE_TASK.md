@@ -88,5 +88,7 @@ AppShortcutsProviderによるSiri定型フレーズの自動登録は範囲か�
 - 初回拒否の直前に既存のforeground recoveryによる再接続/セッション再構築を観測。NOT_JOINEDを送信認可迂回で解消しない。復元中の初回開始、長時間ロック後、冷起動、通信断、着信、経路変更、60秒上限の実ボタン受入れは残件。
 - 1080送信中のUI sourceはREADY、同時期journalはTRANSMITTING。UI取得鮮度/表示の不一致は原因未確定。以降はjournalと利用者聴取を分離して判定。
 - 自動: 最大3秒待機版は261件中260成功・専用SFU1skip・失敗0。83の署名実機SDK build、codesign検証、Intent metadataのPTT systemProtocol/background実行/alwaysAllowedを確認。
+- 最終ソース8abd801でも261件中260成功・専用SFU1skip・失敗0（2026-11-11 00:02 JST）。
+- 5分ロック後も利用者は初回失敗、後続2回成功と報告。OSロックを前後とも確認。UTC15:04:00はCONNECTEDのまま開始判断した直後にRECONNECTINGとなりERROR、安全停止。15:04:08の追加操作はCONNECTION_NOT_READYで拒否、09に再接続。13→20、34→39の2回は背景TRANSMITTING→IDLE。ユーザー報告の操作回数と診断の要求件数は区別する。Apple stopのrawValue 5はcleanup時のtransmissionNotFoundであり、開始拒否の原因とはしない。初回失敗は古い接続状態からの復帰問題として#80に残し、ボタンごとのRoom再接続や認可迂回は追加しない。
 
 Android背景方式の追加質問には、AccessibilityService入力と明示許可、前面POWER ON後のmicrophone foreground service維持を候補として説明。キー配送とマイク権限は別問題で、OPPO消灯中/省電力挙動の実機検証、Play申告・説明/同意条件が必要。Android製品実装には追加していない。
