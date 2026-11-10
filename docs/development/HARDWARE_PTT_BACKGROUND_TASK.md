@@ -86,3 +86,13 @@ Android1.0.19(20)の既存Activity音量入力は前面限定。microphone/media
 - iPhoneのAction buttonは前段で復元した「ボイスメモ」のまま。新しい試験用Shortcut「KOEON Toggle Lab」は10秒待機/切替/5秒待機/切替。ロック解除ができないため、このShortcutの削除とアプリ内opt-in OFFのUI復元は未完了。86への更新で旧実行プロセスは終了し、その後の起動は未確認。Action buttonをそのまま試験押下しない。
 
 次の実機受入れは、通常のロック解除後に候補87を起動して認可済み接続を成立させ、アクションボタンに直接App Shortcutを割り当て、ロック直後/5分以上後の最初の開始と停止を反復する。Androidは通常OS設定でサービスを許可できる条件を確認した上で、ptt02の本体音量キー→背景送信を実測する。OS認証/許可を迂回せず、一般的な安定性や音声聴取の成功を未確認のまま宣言しない。
+
+### 再開・統合検証 2026-11-11 03:18 JST
+
+- 再開時にiPhoneのロック解除を確認し、1.0(2026111087)、製品ソースa8d67c1を更新導入・起動。準備時にPOWER OFFを操作したため、最初の接続後の切断を不具合再現には数えない。18:02:46 UTCに再接続してCONNECTED/READYを確認した。
+- 試験Shortcutを310秒待機→切替→5秒待機→切替に変更。18:03:04に開始し2秒後ロック、330秒後までOS locked=trueを55秒間隔で確認。18:08:17に初回ENTRY/RECOVERY BEGIN (RECONNECTING)、18秒CONNECTED/READY/STARTREQUESTED、19秒TRANSMITTING、24秒STOPREQUESTED、25秒IDLE、26秒audio INACTIVE。5分超ロック後の初回Intent成功を1回診断確認した。物理Action button、音声聴取、反復安定性は未確認。その後の通常unlockは拒否され、試験Shortcutは310秒待機のまま残る。Action buttonはボイスメモのままで押下していない。
+- OPPOの許可経路を特定。標準ACTION_APPLICATION_DETAILS_SETTINGSはInstalledAppDetailsを表示し許可メニューがなかったが、通常設定→アプリ→アプリ管理→KOEONはSubSettingsを表示し「その他のオプション→制限付き設定を許可」が存在した。このUIから許可後、read-only照合でallowを確認。通常ユーザー補助設定で専用サービスを有効化しBound servicesを確認。特権による権限書換え・インストーラー偽装は不使用。[Googleの通常許可手順](https://support.google.com/android/answer/12623953?hl=ja)。
+- Android 1.0.19-ptt02(20)、Android製品ソース8de81beを登録保持で更新導入。背景設定ON/TOGGLE/OSサービスON。初回のHome直後の試験は開始時journalがFOREGROUNDだったため背景開始の成功に数えない。
+- Home移行後10秒待機し、仮想USB音量キー（uinput KEY_VOLUMEDOWN）で2回反復。18:15:47.935 UTCと57.571にBACKGROUND_START、48.921と58.524にTRANSMITTING、53.984と18:16:03.550にIDLE。全てBACKGROUND_OR_LOCKED/CONNECTED/audio READY。背景で音量キー入力から既存Floor/TX経路まで統合して開始・停止できた限定証拠。実内蔵ボタン/聴取確認とは区別する。
+- 消灯10秒後の仮想キー2回では、初回に開始せず2回目にBACKGROUND_START (18:16:22.663)、23.656にTRANSMITTING。前面へ戻した後39.797にRELEASING、40.375にIDLE。2回の操作で開始・停止した成功ではない。先行probeの「初回が画面復帰に使用される」と整合するが、製品試験の画面電源状態は追加照合が必要。本体キー/消灯中初回の成立は未達。
+- OSではBoundでもアプリUIが一時的に「未接続」を表示した観測があり、設定・診断の同期は追加確認する。現在OPPOの試験設定はONのため終了時復元が必要。今回の一時診断JSONは保護領域へ回収後、端末Downloadから当該ファイルだけ削除。音声保存なし。公開配信・マージなし。
