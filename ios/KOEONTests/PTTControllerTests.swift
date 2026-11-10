@@ -614,6 +614,30 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertLessThan(values.firstIndex(of: "mic:off")!, values.firstIndex(of: "control:end")!)
     }
 
+    func testReconnectRechecksMicrophoneOffAfterDisconnectedCleanupFailure() async {
+        let events = EventLog()
+        let microphone = await MicrophoneMock(events: events, failOff: true)
+        let controller = PTTController(role: .staff, floor: FloorMock(events: events),
+            microphone: microphone, cuePlayer: CueMock(events: events),
+            control: ControlMock(events: events), clock: ControlledClock(), onUpdate: { _ in })
+        _ = await controller.preArmForAppleActivation()
+        await controller.stopForSafety(reason: "Disconnected during start")
+        let before = await controller.cleanupIsConfirmed()
+        XCTAssertFalse(before)
+        await controller.resetAfterReconnect()
+        let stillUnconfirmed = await controller.cleanupIsConfirmed()
+        XCTAssertFalse(stillUnconfirmed)
+        let failedMute = await controller.currentSnapshot()
+        XCTAssertEqual(failedMute.state, .error)
+        await microphone.setFailOff(false)
+        await controller.resetAfterReconnect()
+        let after = await controller.cleanupIsConfirmed()
+        XCTAssertTrue(after)
+        let values = await events.values()
+        XCTAssertFalse(values.contains("mic:on"))
+        XCTAssertEqual(values.filter { $0 == "release" }.count, 1)
+    }
+
     func testAudioInterruptionUsesSameImmediateSafetyPath() async {
         let events = EventLog()
         let floor = FloorMock(events: events)
@@ -746,6 +770,10 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertFalse(snapshot.txTerminalCleanupComplete)
         let cleanupConfirmed = await controller.cleanupIsConfirmed()
         XCTAssertFalse(cleanupConfirmed)
+        await controller.resetAfterReconnect()
+        let afterReconnect = await controller.currentSnapshot()
+        XCTAssertEqual(afterReconnect.leaseId, "lease-a")
+        XCTAssertEqual(afterReconnect.state, .error)
         let other = FloorResponse(outcome: .busy, owner: FloorOwner(id: "other", name: "Other"),
             leaseId: nil, acquiredAt: nil, leaseExpiresAt: nil, maxTxExpiresAt: nil, lastRenewedAt: nil, isOwner: false)
         await controller.reconcileOwnFloor(other)
@@ -1317,7 +1345,7 @@ private actor FloorMock: FloorControlling {
 @MainActor
 private final class MicrophoneMock: MicrophoneControlling {
     let events: EventLog
-    let failOff: Bool
+    var failOff: Bool
     init(events: EventLog, failOff: Bool = false) {
         self.events = events
         self.failOff = failOff
@@ -1326,6 +1354,7 @@ private final class MicrophoneMock: MicrophoneControlling {
         await events.append(enabled ? "mic:on" : "mic:off")
         if !enabled, failOff { throw MockError.expected }
     }
+    func setFailOff(_ value: Bool) { failOff = value }
 }
 
 private actor CueMock: PttCuePlaying {

@@ -1522,7 +1522,11 @@ final class IntercomSessionController: ObservableObject {
                       descriptor.channelId == channel else { break }
                 journal("PTT_INTENT_RECOVERY", fields: ["reason": "BEGIN"])
                 if restoreTask == nil { requestRuntimeRestore(descriptor, reason: .actionButtonRecovery) }
-                while permitted(), restoreTask != nil {
+                // A restore can stop early while disconnected TX cleanup is
+                // unconfirmed. Allow the same bounded invocation to observe the
+                // SDK reconnect and both release gates, without another resume.
+                while permitted(), restoreTask != nil || room.connectionState != .connected ||
+                        pttRequestGate.state == .rearming || pttSnapshot.state == .error {
                     do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
                 }
                 guard permitted(), restoreTask == nil, joinedSession?.channel.id == channel,
