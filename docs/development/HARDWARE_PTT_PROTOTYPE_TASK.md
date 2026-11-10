@@ -92,3 +92,9 @@ AppShortcutsProviderによるSiri定型フレーズの自動登録は範囲か�
 - 5分ロック後も利用者は初回失敗、後続2回成功と報告。OSロックを前後とも確認。UTC15:04:00はCONNECTEDのまま開始判断した直後にRECONNECTINGとなりERROR、安全停止。15:04:08の追加操作はCONNECTION_NOT_READYで拒否、09に再接続。13→20、34→39の2回は背景TRANSMITTING→IDLE。ユーザー報告の操作回数と診断の要求件数は区別する。Apple stopのrawValue 5はcleanup時のtransmissionNotFoundであり、開始拒否の原因とはしない。初回失敗は古い接続状態からの復帰問題として#80に残し、ボタンごとのRoom再接続や認可迂回は追加しない。
 
 Android背景方式の追加質問には、AccessibilityService入力と明示許可、前面POWER ON後のmicrophone foreground service維持を候補として説明。キー配送とマイク権限は別問題で、OPPO消灯中/省電力挙動の実機検証、Play申告・説明/同意条件が必要。Android製品実装には追加していない。
+
+### 終了・引継ぎ
+
+[Draft PR #83](https://github.com/dennomusooffice/koeon-client/pull/83)は親PR #71のbranchをbaseとし、本TASK差分だけを分離。初回復帰失敗と未受入れ条件を#80に残しOpen維持。2026-11-11 00:14 JSTまでにiPhoneのopt-in OFF・POWER OFF・元のAction button「ボイスメモ」、試験用Shortcut削除を確認。開発版2026111083は端末に残す。OPPOはPOWER OFF・画面オフ30000ms・stay-on 0を確認、Hardware Volume PTTは元のOFFへ復元。一時UI取得ファイルを端末から削除し、iPhone自動操作sessionを終了。音声保存なし。
+
+既存の未コミット方針/仕様台帳/ロードマップ等の所有者変更は別途保持し、本PRへ一括追加していない。仕様台帳とロードマップの本TASK欄は作業ツリーで最新結果へ更新した。次は有効な実機枠で接続復帰を別途修正・受入れし、初回からのロック送信を検証する。今回の限定成功を本番対応完了と扱わない。
