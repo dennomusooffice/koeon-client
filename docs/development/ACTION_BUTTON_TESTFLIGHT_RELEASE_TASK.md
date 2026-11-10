@@ -19,3 +19,7 @@
 ## STOP CONDITION
 
 配信対象SHA/版/候補検証/Apple処理/内部・外部状態をIssue/PR/配信記録へ明記し、マニュアルに配信状態を反映。Apple審査/環境で停止した場合は具体状態と再開手順を残し、配信済みとしない。実機は指定iPhone/OPPOの08:23 JST枠まで、以後は端末操作を停止する。配信作業の時間枠とは混同しない。
+
+## 結果
+
+1.0(2026111103)、source2ab1584b6e1618bb7f9d82518df6e7c19da7886aを署名候補検証後、同じSHA/treeから再構築してアップロード。Apple VALID、internal/externalともIN_BETA_TESTING、既存内部2/外部1グループのbuild関係を再取得して確認。外部ベータ審査申請成功・自動通知ON。マニュアルとLP依頼を更新。詳細/IPA hash/残件は[配信記録](../RELEASE_20261111_ACTION_BUTTON.md)。配信版1103の実機導入・背景受信受入れは未実施、指定端末は開発版1102とAndroid内部ptt07を保持。mainマージ・App Store一般公開・Android一般公開・LP本番変更なし。

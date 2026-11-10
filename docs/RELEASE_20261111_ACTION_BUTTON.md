@@ -9,7 +9,8 @@
 - tree: `18be67ef78dd2fde98db13bdb97270104dd0dfde`。
 - IPA SHA256: `52cba4846bdfd569e7799486d5c7d2a82cbe9cffcf64a84142cf4bf4923764f8`。
 - external audienceの候補を隔離clean checkoutで検証後、同じSHA/treeから再ビルドしてアップロード成功。署名、provisioning、版/接続先、production APNs/PushToTalk/Associated Domains entitlement、runtime framework検証PASS。一時credentialコピー/archive/IPAは既存pipelineが削除した。
-- **Apple処理・内部/外部テスターへの配信状態は確認待ち**。アップロード成功だけで配信済みとは扱わない。
+- **Apple processing=VALID、internal/external=IN_BETA_TESTINGを確認済み**。既存内部2グループ（全ビルドアクセス）と外部1グループで1103への関係を読み取り照合した。ベータ審査申請API成功後、外部テスト可能状態を再取得した。自動通知ON、テスター/公開リンクの新設なし。
+- 暗号化の申告は既存直近5版のfalseを照合し、暗号化方式/依存/entitlementの該当差分なしを確認して引き継いだ。日本語のテスト内容に設定手順/初回復帰/開始音までの待ち/残る背景受信検証を登録。buildからgroupへの読取りは403だったため、groupからbuildへの関係APIで3グループすべてを検証した。
 
 ## 修正と受入れ
 
