@@ -82,7 +82,7 @@ Android1.0.19(20)の既存Activity音量入力は前面限定。microphone/media
 - iOSの同一scope資格を追加した回帰は266件中265成功、専用SFU1スキップ、失敗0。内部候補1.0(2026111087)の署名ビルド成功、未導入。端末は86であり、86の直接Siriフレーズでも実行診断は得られていない。これ以上、同じロック起動を繰り返して成功扱いにはしない。
 - Android ptt01の前面音量トグルを再確認。16:35:04.209 UTCにFOREGROUND/TRANSMITTING、08.372にRELEASING、09.097にIDLE。サービス未有効のホーム背景では新たなREQUESTING_FLOOR/TRANSMITTINGは0。ホスト時刻で直前の停止を背景イベントと分類せず、端末journalのlifecycleで判定した。
 - OPPOの制限付き設定はread-onlyのAppOps照合でignore。原因をインストール元や企業管理と断定していない。許可状態の書換えはしていない。
-- OPPOは背景音量設定OFFをcheckable値で確認、既存音量トグルOFF、POWER OFFへ復元。メディア音量speakerだけ試験前1→試験後2だったため1へ復元。通話speaker3・ring speaker16は試験前後同じ。元々ONのHeadset設定は変更していない。画面消灯は元の30秒へ復元を進めている。
+- OPPOは背景音量設定OFFをcheckable値で確認、既存音量トグルOFF、POWER OFFへ復元。メディア音量speakerだけ試験前1→試験後2だったため1へ復元。通話speaker3・ring speaker16は試験前後同じ。元々ONのHeadset設定は変更していない。画面消灯30000ms・stay-on 0・Accessibility設定の試験前一致・foreground service不在を確認した。音量の直接設定APIは反映されなかったため通常の音量ダウン1回でmusic speaker1を確認し、ring16/通話3も維持した。
 - iPhoneのAction buttonは前段で復元した「ボイスメモ」のまま。新しい試験用Shortcut「KOEON Toggle Lab」は10秒待機/切替/5秒待機/切替。ロック解除ができないため、このShortcutの削除とアプリ内opt-in OFFのUI復元は未完了。86への更新で旧実行プロセスは終了し、その後の起動は未確認。Action buttonをそのまま試験押下しない。
 
 次の実機受入れは、通常のロック解除後に候補87を起動して認可済み接続を成立させ、アクションボタンに直接App Shortcutを割り当て、ロック直後/5分以上後の最初の開始と停止を反復する。Androidは通常OS設定でサービスを許可できる条件を確認した上で、ptt02の本体音量キー→背景送信を実測する。OS認証/許可を迂回せず、一般的な安定性や音声聴取の成功を未確認のまま宣言しない。
