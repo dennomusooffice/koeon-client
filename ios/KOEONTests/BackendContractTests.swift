@@ -367,6 +367,37 @@ final class BackendContractTests: XCTestCase {
         )
     }
 
+    func testActionButtonRequiresOptInAndReadySession() {
+        XCTAssertEqual(actionButtonPttDecision(enabled: false, state: .idle, eligible: true), .disabled)
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: .idle, eligible: false), .unavailable)
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: .idle, eligible: true), .startRequested)
+    }
+
+    func testActionButtonSecondInvocationCancelsPendingBeginEvenWhenReadinessIsLost() {
+        var gate = PttRequestGate()
+        XCTAssertEqual(gate.pressDown(), [.requestBegin])
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: gate.state, eligible: false), .stopRequested)
+        _ = gate.pressUp()
+        XCTAssertTrue(gate.releaseRequestedBeforeBegin)
+        XCTAssertEqual(gate.didBegin(), [.stopSystemTransmission])
+        XCTAssertFalse(gate.floorStarted, "Late Apple begin must not start a cancelled Floor request")
+    }
+
+    func testActionButtonReleaseDoesNotQueueAnotherTransmission() {
+        var gate = PttRequestGate()
+        _ = gate.pressDown()
+        _ = gate.didBegin()
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: gate.state, eligible: false), .stopRequested)
+        _ = gate.pressUp()
+        for _ in 0..<10 {
+            XCTAssertEqual(actionButtonPttDecision(enabled: true, state: gate.state, eligible: true), .settling)
+        }
+        _ = gate.didEnd()
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: gate.state, eligible: true), .settling)
+        XCTAssertTrue(gate.finishRearming().isEmpty)
+        XCTAssertEqual(gate.state, .idle)
+    }
+
     func testAppPttTouchEdgeAcceptsOneDownAndOneUpPerPhysicalHold() {
         var gate = AppPttTouchEdgeGate()
         XCTAssertTrue(gate.changed())

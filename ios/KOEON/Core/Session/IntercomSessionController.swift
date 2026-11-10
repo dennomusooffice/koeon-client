@@ -407,8 +407,28 @@ struct RuntimeRecoveryIntent: Sendable {
     }
 }
 
+enum ActionButtonPttResult: Equatable {
+    case startRequested, stopRequested, settling, disabled, unavailable
+}
+
+/// Stop takes precedence over readiness; repeated calls during release never queue TX.
+func actionButtonPttDecision(enabled: Bool, state: PttRequestGateState,
+                             eligible: Bool) -> ActionButtonPttResult {
+    guard enabled else { return .disabled }
+    switch state {
+    case .beginRequested, .transmitting: return .stopRequested
+    case .endRequested, .rearming: return .settling
+    case .idle: return eligible ? .startRequested : .unavailable
+    }
+}
+
 @MainActor
 final class IntercomSessionController: ObservableObject {
+    // One session owner for SwiftUI and system App Intents, including background launch.
+    static let shared = IntercomSessionController()
+    @Published private(set) var actionButtonPttEnabled = false
+    private var actionButtonOwnsAttempt = false
+
     @Published private(set) var fixture: FixtureResponse?
     @Published private(set) var identity: MeResponse?
     @Published private(set) var enrollmentRequired = false
@@ -628,6 +648,7 @@ final class IntercomSessionController: ObservableObject {
         self.credentialStore = credentialStore
         self.deviceDisplayNameStore = deviceDisplayNameStore
         self.audioPublishDefaults = audioPublishDefaults
+        actionButtonPttEnabled = audioPublishDefaults.bool(forKey: "ptt.actionButtonEnabled")
         self.room = room
         self.audio = audio
         self.network = network
@@ -1372,12 +1393,36 @@ final class IntercomSessionController: ObservableObject {
             : "Target Channel and previous Channel recovery failed"
     }
 
-    func pttDown() {
+    func setActionButtonPttEnabled(_ enabled: Bool) {
+        if !enabled, actionButtonOwnsAttempt { endPttInput(usingIntent: true) }
+        actionButtonPttEnabled = enabled
+        audioPublishDefaults.set(enabled, forKey: "ptt.actionButtonEnabled")
+    }
+
+    /// No awaits or restoration queue: a stale shortcut cannot start a later session.
+    func toggleActionButtonPtt() -> ActionButtonPttResult {
+        let decision = actionButtonPttDecision(enabled: actionButtonPttEnabled,
+            state: pttRequestGate.state, eligible: canPressPTT)
+        switch decision {
+        case .startRequested:
+            actionButtonOwnsAttempt = true
+            beginPttInput(usingIntent: true)
+        case .stopRequested:
+            endPttInput(usingIntent: true)
+        case .disabled, .unavailable, .settling:
+            break
+        }
+        return decision
+    }
+
+    func pttDown() { beginPttInput(usingIntent: false) }
+
+    private func beginPttInput(usingIntent: Bool) {
         guard joinedSession?.canPublish == true else { return }
-        guard appPttTouchEdgeGate.changed() else { return }
+        guard usingIntent || appPttTouchEdgeGate.changed() else { return }
         nextPttDownAt = Date()
         if pttRequestGate.state == .endRequested || pttRequestGate.state == .rearming {
-            guard haptics?.press(eligible: true) ?? true else { return }
+            guard usingIntent || (haptics?.press(eligible: true) ?? true) else { return }
             let actions = pttRequestGate.pressDown()
             pttRequestGateState = pttRequestGate.state
             if actions.contains(.pending) { return }
@@ -1397,22 +1442,22 @@ final class IntercomSessionController: ObservableObject {
             }
             return
         }
-        guard haptics?.press(eligible: true) ?? true else { return }
+        guard usingIntent || (haptics?.press(eligible: true) ?? true) else { return }
         let gateActions = pttRequestGate.pressDown()
         pttRequestGateState = pttRequestGate.state
         guard gateActions.contains(.requestBegin) else {
             if gateActions.contains(.busy) { playStatusCue(.busy) }
             return
         }
-        if appTxPath == .postBeginControl {
+        if !usingIntent, appTxPath == .postBeginControl {
             appleBeginRequestedAt = Date()
             pushToTalk.requestBeginTransmitting()
             return
         }
-        startParallelAppTransmissionAttempt()
+        startParallelAppTransmissionAttempt(requestAppleImmediately: usingIntent)
     }
 
-    private func startParallelAppTransmissionAttempt() {
+    private func startParallelAppTransmissionAttempt(requestAppleImmediately: Bool = false) {
         resetCurrentTxDiagnostics()
         txAttemptGeneration += 1
         let attempt = txAttemptGeneration
@@ -1438,7 +1483,7 @@ final class IntercomSessionController: ObservableObject {
             let prepared = await controller?.preArmForAppleActivation(
                 maximumReadyWaitMilliseconds: self.maximumReadyWaitMilliseconds,
                 onFloorGranted: { [weak self] in
-                    await self?.requestAppleBeginAfterFloorGrant(attempt: attempt)
+                    await self?.requestAppleBeginForAttempt(attempt: attempt)
                 }
             ) == true
             guard self.runtimeLiveness.generation == runtime,
@@ -1456,12 +1501,15 @@ final class IntercomSessionController: ObservableObject {
             self.appPrearmReady = true
             guard self.pttRequestGate.state == .beginRequested ||
                     self.pttRequestGate.state == .transmitting else { return }
-            self.requestAppleBeginAfterFloorGrant(attempt: attempt)
+            self.requestAppleBeginForAttempt(attempt: attempt)
             self.tryActivateAppTransmission()
         }
+        // The PTT-specific intent issues the OS request before returning. Audio
+        // publication still waits for BOTH Floor preparation and Apple activation.
+        if requestAppleImmediately { requestAppleBeginForAttempt(attempt: attempt) }
     }
 
-    private func requestAppleBeginAfterFloorGrant(attempt: Int) {
+    private func requestAppleBeginForAttempt(attempt: Int) {
         guard shouldRequestAppleBeginAfterFloorGrant(
             attempt: attempt,
             currentAttempt: txAttemptGeneration,
@@ -1483,9 +1531,11 @@ final class IntercomSessionController: ObservableObject {
         }
     }
 
-    func pttUp() {
-        guard appPttTouchEdgeGate.ended() else { return }
-        guard haptics?.release() ?? true else { return }
+    func pttUp() { endPttInput(usingIntent: false) }
+
+    private func endPttInput(usingIntent: Bool) {
+        guard usingIntent || appPttTouchEdgeGate.ended() else { return }
+        guard usingIntent || (haptics?.release() ?? true) else { return }
         if pttRequestGate.state == .endRequested || pttRequestGate.state == .rearming {
             _ = pttRequestGate.pressUp()
             pttRequestGateState = pttRequestGate.state
@@ -2311,6 +2361,7 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func finishPttRearming() {
+        actionButtonOwnsAttempt = false
         appPrearmAwaitingApple = false
         appPrearmReady = false
         appAppleBeginReady = false
@@ -2357,6 +2408,7 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func resetPttRequestGate() {
+        actionButtonOwnsAttempt = false
         // Cancellation is cooperative: a pending Floor/API operation can still return.
         // Fence its completion before resetting the UI gate for a new runtime/press.
         txAttemptGeneration += 1

@@ -351,6 +351,22 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertEqual(idle.state, .idle)
     }
 
+    func testEarlyAppleActivationCannotPublishWithoutPreparedFloor() async {
+        let events = EventLog()
+        let controller = makeController(floor: FloorMock(events: events), events: events)
+        await controller.activatePrearmedTransmission()
+        let early = await events.values()
+        XCTAssertFalse(early.contains("mic:on"))
+        let prepared = await controller.preArmForAppleActivation()
+        XCTAssertTrue(prepared)
+        let waiting = await events.values()
+        XCTAssertFalse(waiting.contains("mic:on"))
+        await controller.activatePrearmedTransmission()
+        let started = await events.values()
+        XCTAssertTrue(started.contains("mic:on"))
+        await controller.pttUp(playEndCue: false)
+    }
+
     func testAppPreArmDoesNotEnableMicrophoneUntilAppleActivation() async {
         let events = EventLog()
         let controller = makeController(floor: FloorMock(events: events), events: events)

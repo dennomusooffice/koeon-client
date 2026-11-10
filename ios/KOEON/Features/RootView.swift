@@ -304,6 +304,14 @@ private struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("アクションボタンPTT（試作）") {
+                    Toggle("ショートカットから送信を切り替える", isOn: Binding(
+                        get: { session.actionButtonPttEnabled },
+                        set: { session.setActionButtonPttEnabled($0) }
+                    ))
+                    Text("「ショートカット」で「KOEON送信を切り替える」アクションを含むショートカットを作成し、iPhoneのアクションボタンに割り当てます。KOEONで接続後に使えます。長押しで開始、もう一度長押しで停止します。ロック中も操作できる設定です。実機での動作は検証中です。送信は最大60秒です。")
+                        .font(.footnote)
+                }
                 Section("音声品質") {
                     Picker("送信音声", selection: Binding(
                         get: { session.selectedAudioPublishProfile },
