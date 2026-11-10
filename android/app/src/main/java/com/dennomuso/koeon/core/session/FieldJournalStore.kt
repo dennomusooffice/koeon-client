@@ -32,14 +32,17 @@ class FieldJournalStore(
         corruptDropped = (stats?.get("corruptDroppedRecords") as? JsonPrimitive)?.longOrNull ?: 0
     }
     companion object {
+        private val hardwareBooleanKeys = setOf("backgroundVolumeEnabled", "backgroundVolumeConnected",
+            "backgroundVolumeLatched", "serviceConnected", "settingEnabled")
         val keys = setOf("connection", "ptt", "rx", "operational", "lifecycle", "audio", "route", "mode",
             "runtimeGeneration", "receiveGeneration", "firstPcm", "pcmCallbacks", "pcmFrames", "pcmAtMs",
             "rxStartedAtMs", "txDownAtMs", "gainDb", "gainSamples", "gainDecision", "recoveryLevel", "restoring",
-            "trackSubscribed", "participants", "readyExpected", "readyReceived", "readyTimedOut", "clockDiscontinuity", "reason")
+            "trackSubscribed", "participants", "readyExpected", "readyReceived", "readyTimedOut", "clockDiscontinuity", "reason") + hardwareBooleanKeys
         fun hash(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
         fun safeFields(data: Map<String, Any?>): JsonObject = buildJsonObject {
             data.filterKeys { it in keys }.forEach { (k, v) ->
+                if (k in hardwareBooleanKeys && v !is Boolean) return@forEach
                 when (v) {
                     is Boolean -> put(k, JsonPrimitive(v))
                     is Number -> if (v.toDouble().isFinite()) put(k, JsonPrimitive(v))

@@ -7,6 +7,21 @@ import java.io.File
 import java.nio.file.Files
 
 class FieldJournalStoreTest {
+    @Test fun `background service flags survive export without accepting text payloads`() = sandbox { dir ->
+        val store = FieldJournalStore(File(dir, "journal"), "android", "test", "installation")
+        store.append("HARDWARE_PTT_SERVICE", mapOf(
+            "backgroundVolumeEnabled" to true, "backgroundVolumeConnected" to true,
+            "backgroundVolumeLatched" to false, "serviceConnected" to true, "settingEnabled" to false,
+        ), emptyMap(), 1000, 1)
+        val record = read(store, dir, 1000).getValue("records").jsonArray.single().jsonObject
+        val data = record.getValue("data").jsonObject
+        assertEquals(5, data.size)
+        assertTrue(data.getValue("serviceConnected").jsonPrimitive.boolean)
+        assertFalse(data.getValue("backgroundVolumeLatched").jsonPrimitive.boolean)
+        assertEquals(JsonObject(emptyMap()), FieldJournalStore.safeFields(mapOf(
+            "serviceConnected" to "PRIVATE", "settingEnabled" to 1, "screenText" to "PRIVATE",
+        )))
+    }
     @Test fun `queue bounds include inflight and admission resumes after completion`() {
         val queue = FieldJournalAdmission(2)
         assertTrue(queue.admit()); assertTrue(queue.admit()); assertFalse(queue.admit())

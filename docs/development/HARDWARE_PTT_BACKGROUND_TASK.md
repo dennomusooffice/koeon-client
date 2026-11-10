@@ -104,3 +104,14 @@ POWER OFF/登録解除でSessionDiagnosticsを作り直す2箇所が、背景設
 実装d92c4f5、207件成功、Lint/署名ビルド成功。内部版1.0.19-ptt03(20)、SHA256 `0b47e75531cf148c680d9d260c21cc010767753239f74870a3e8d79423c58da1`を指定OPPOへ更新導入。接続後も設定ONは表示されるがサービスは未接続表示で、OSのBound servicesは専用サービスを保持。時間経過後も同じため、この修正で表示不一致全体が解消したとはしない。次はサービス接続/解除通知順序を分類診断で観測し、実入力と照合する。POWERサイクル、設定OFF/サービス解除時の停止試験はまだ未実施。
 
 分類診断はCONNECTED/UNBOUND/DESTROYEDのサービス通知と、実managerの接続bool・設定bool・UI診断の接続boolだけを既存有界FieldJournalへ追加する。キー内容、画面内容、識別子は増やさない。STATEにはUIの背景設定/サービス/所有ラッチboolを含め、更新境界を観測する。入力処理の意味は変えず、通常UIでサービスを再接続した後に通知順と表示を比較する。
+
+ptt04の通知列では画面dumpの実行に対応してUNBOUND/DESTROYED/CONNECTEDが反復した。標準UiAutomationは既存AccessibilityServiceを抑止するため、これを製品の不安定性と混同しない。[公式FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES](https://developer.android.com/reference/android/app/UiAutomation#FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)。試験専用の無ネットワーク/無マイクInstrumentationでこのflagを使用し、通常UI階層をローカル私有領域にだけ保存する。製品への組込みなし、許可実機だけ、取得は最大10000node/深さ64/処理15秒、終了時helper削除。これで接続表示・設定OFF/サービスOFF試験を再実行する。従来dump取得中の未接続表示は実際に一時解除された状態の可能性が高く、前面へ戻した後の停止も自動化による解除と区別が必要。
+
+### 観測方法の修正と停止受入れ 2026-11-11 03:35 JST
+
+- 64f0aec / 1.0.19-ptt04(20)を指定OPPOへ導入。207件/Lint/署名成功。サービス分類診断で標準UI dumpごとのUNBOUND→DESTROYED→CONNECTED反復を観測した。新UI probe（要求permissionなし、FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES）で取得すると「OSサービス: 接続済み」が表示され、設定OFF試験中の不要な解除通知もなくなった。表示不一致を製品の接続不安定性として扱わない。d92c4f5の状態再構築時の設定引き継ぎは別のコード上の欠落を修正している。
+- 設定OFF: Home背景から仮想USB音量キーで18:30:03.111 UTC TRANSMITTING。アプリ前面へ戻して設定OFF後、06.419 RELEASING、07.044 IDLE。背景へ戻してキー2回を追加しても新しいTX/STARTは0。UI probeの取得によるUNBOUNDはなく、設定OFFの停止として区別できる。
+- OSサービスOFF: OS設定画面（アプリ背景）で仮想キーから18:33:29.462 UTC TRANSMITTING。通常スイッチをOFFにすると33.979 RELEASING、33.980 UNBOUND、33.981 DESTROYED、34.684 IDLE。解除後の仮想キーで新規TXなし。全TXがBACKGROUND_OR_LOCKED/CONNECTED/audio READY。実内蔵キー/音声聴取の証拠ではない。
+- ptt04では追加boolが既存診断whitelistにより除外され、reasonだけ保存された。候補ptt05は5個のboolキーだけ型付きで許可し、保存と文字列/未知項目拒否の回帰を追加。208件成功、Lint/署名ビルド成功、SHA256 `54a945a7dce8299fd256fcf172183ab00a45d13efd5993e2a21f91c419ea08ad`。候補のみ未導入で、上記実測はptt04。
+- 新UI probeは非表示nodeも返すため、最初の診断回収で非表示の古い保存名を選択した。回収済みコピーを端末の同じ場所へ戻し、SHA256一致を確認。対象の可視性条件を修正して今回の診断を回収し、今回の一時ファイルだけ削除した。生のUI/診断は保護領域のみ。今後の選択はvisible=trueを必須とする。
+- 現在OPPOはPOWER ON、背景設定ON、TOGGLE、専用OSサービスOFF、UI probe導入済み。次は消灯キー試験を新観測方法で再実行し、最後に背景設定/サービス/POWERと音量を復元、helperを撤去する。iPhoneは87の5分超初回Intent成功1回を維持し、実ボタン/反復/音声到達と通常unlock後の復元が残る。
