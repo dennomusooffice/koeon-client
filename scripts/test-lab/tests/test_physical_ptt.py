@@ -15,17 +15,19 @@ class HoldTest(unittest.TestCase):
 
     def test_observer_failure_still_releases_and_remote_has_trap(self):
         ended = threading.Event()
+        started = threading.Event()
         commands = []
         def run(args, **kwargs):
             commands.append(args)
             if 'sh' in args:
+                started.set()
                 self.assertTrue(ended.wait(2))
             else:
                 ended.set()
         def fail():
             raise RuntimeError('observer unavailable')
         with self.assertRaisesRegex(RuntimeError, 'observer unavailable'):
-            m.hold('adb', 'device', 10, 20, 1, fail, run=run, sleep=lambda _: None)
+            m.hold('adb', 'device', 10, 20, 1, fail, run=run, sleep=lambda _: self.assertTrue(started.wait(2)))
         self.assertIn('trap', commands[0][-1])
         self.assertEqual(commands[-1][-3:], ['UP', '10', '20'])
         self.assertNotIn('swipe', ' '.join(commands[0]))
