@@ -1,13 +1,13 @@
 # TASK: 本体ボタンPTTの配信版確認・iPhone試作
 
 - Issue: [#80](https://github.com/dennomusooffice/koeon-client/issues/80)、R4→限定R5試作。
-- 担当Codex / レビュー所有者 / 2026-11-10 / 状態: 実装中。
-- 基準SHA: b35d6d59923fbfdc7b1242ab25304ce7b3bd10bb。試作ビルドは既存Debug 0.1(1)、未配信。
-- 今回の追加依頼でAndroid配信版確認とiPhone試作を許可。実機対象・時間枠、配信は未指定。
+- 担当Codex / レビュー所有者 / 2026-11-11 / 状態: 限定実機検証済み、残件あり。
+- 基準SHA: b35d6d59923fbfdc7b1242ab25304ce7b3bd10bb。最新試作ソース8abd801fbecf08e939749e1c2d9d65c131a37af3、iOS開発版1.0(2026111083)。接続実機のみ導入、公開/TestFlight未配信。
+- 実機はiPhone17 Pro MaxとOPPO A79 5G。初回2026-11-10 23:02:37–翌00:02:37 JST、追加許可23:51:29–翌00:51:29 JST。公開配信は対象外。
 
 ## 要求・範囲
 
-Android公開APKに既存音量トグルが含まれるかを版/hash/コードで確認する。iPhoneではAction buttonから送信を切り替える公式App Intentを試作し、参加済みセッションの背景・ロック中操作を目指す。Android背景キー取得、端末再登録、サーバー変更、公開配信、実機操作は今回の実装対象外。
+Android公開APKに既存音量トグルが含まれるかを版/hash/コードで確認する。iPhoneではAction buttonから送信を切り替える公式App Intentを試作し、参加済みセッションの背景・ロック中操作を目指す。Android背景キー取得、端末再登録、サーバー変更、公開配信は今回の実装対象外。実機操作は上記対象・時間枠のみ。
 
 ## 設計・依存
 
@@ -36,7 +36,7 @@ Android公開APKに既存音量トグルが含まれるかを版/hash/コード�
 
 延長枠の切り分けでは既存FieldJournalの許可フィールドに、Intent判断/拒否理由、Apple送信失敗のenumコード、開始待機終了を記録する。自由文エラー・識別子・音声を追加しない。既存の24時間/容量上限と文字種フィルタを使用し、OS拒否とアプリのreadiness拒否を区別する。診断UIにも既存のApple失敗コードとblock reasonを表示する。
 
-作業中。実装/自動検証/配信/実機/mainマージは別に記録する。
+以下の初期自動結果は実機試験前の記録。最新の実機結果は末尾を参照。実装/自動検証/配信/実機/mainマージは別に記録する。
 
 ### Android公開成果物の照合
 
@@ -75,3 +75,18 @@ AppShortcutsProviderによるSiri定型フレーズの自動登録は範囲か�
 - [アクションボタンへのShortcut割当](https://support.apple.com/en-gb/guide/iphone/iphe89d61d66/ios)
 
 これらはAPI・設定の根拠であり、KOEON実機での成功証拠ではない。
+
+### 限定実機結果（2026-11-10/11 JST）
+
+- Android OPPO A79 5G: 導入済み公開検証版1.0.19(20)を確認。TOGGLE・前面READYでADB音量短押し注入によりTALKING→次の短押しでREADY。人の本体ボタン押下と音響は未確認。初回BUSY_REMOTEは前提未成立として除外。OSロック確認後の音量キー注入では復帰時READY。画面の前後比較だけで瞬間的な送信不存在まで保証しない。現行実装は前面限定で、背景/ロック対応PASSとはしない。
+- iPhone17 Pro Max / iOS26.6.2: 既存登録を維持し1.0(2026111080)→81→82→83を同一bundleへ開発導入。元の導入版は1.0(2026111002)。初版77fd3a5、83は8abd801。公開配信と区別する。
+- 1080: ShortcutsにIntent実表示、単一アクションの試験Shortcut作成、Action button割当を確認。opt-in OFFでは拒否、ON後は背景TRANSMITTING→IDLEを診断確認。しかし成功ダイアログが次の長押し停止を阻害し、利用者がダイアログを閉じると停止できた。
+- 1081: 成功ダイアログ除去。利用者が前面で実ボタンの長押し開始/再長押し停止を確認。背景/ロックでは音声未到達。診断は背景REQUESTING_FLOOR後にERROR/IDLE、前面では3回のTRANSMITTING→IDLE。
+- 1082/83: 開始Intentを最大3秒だけ維持して開始状態を待機。83は分類診断追加。82の初回自動操作は前回エラーのOK表示に遮られており、有効な送信試行として数えない。
+- 1083 背景待機後: CONNECTION_NOT_READYで拒否。接続直後の背景ShortcutはUTC14:56:43開始要求→44音声ACTIVE/TRANSMITTING→49停止要求→50 IDLE。ダイアログなし。
+- 1083 ロック実ボタン: 利用者は初回失敗、2回目以降は意図した開始/停止と相手への音声到達を確認。診断は14:58:01 NOT_JOINED、14:58:11/26開始要求→12/27 TRANSMITTING、14:58:21/33停止→IDLE。全てlifecycle BACKGROUND。試験後のOS isLocked=trueも確認。単一機種・限定反復の成功であり一般安定性の保証ではない。
+- 初回拒否の直前に既存のforeground recoveryによる再接続/セッション再構築を観測。NOT_JOINEDを送信認可迂回で解消しない。復元中の初回開始、長時間ロック後、冷起動、通信断、着信、経路変更、60秒上限の実ボタン受入れは残件。
+- 1080送信中のUI sourceはREADY、同時期journalはTRANSMITTING。UI取得鮮度/表示の不一致は原因未確定。以降はjournalと利用者聴取を分離して判定。
+- 自動: 最大3秒待機版は261件中260成功・専用SFU1skip・失敗0。83の署名実機SDK build、codesign検証、Intent metadataのPTT systemProtocol/background実行/alwaysAllowedを確認。
+
+Android背景方式の追加質問には、AccessibilityService入力と明示許可、前面POWER ON後のmicrophone foreground service維持を候補として説明。キー配送とマイク権限は別問題で、OPPO消灯中/省電力挙動の実機検証、Play申告・説明/同意条件が必要。Android製品実装には追加していない。
