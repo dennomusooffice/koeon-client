@@ -15,3 +15,4 @@
 車載のOS割込み試験用に [有限AudioFocus helper](../../scripts/test-lab/android-focus-probe/README.md) を用意。CarPlay/Autoの投影・車載音響とは別判定とする。
 
 - [BATv1退役版の配信・本番反映・SIM5記録（2026-11-09）](RESULTS_20261109_BATV1_RETIREMENT.md)
+- [Xiaomi自動PTT・Bluetooth受入れと未検証範囲（2026-11-10）](RESULTS_20261110_XIAOMI.md)
