@@ -960,6 +960,9 @@ final class IntercomSessionController: ObservableObject {
             self.appleLastTransmitFailureOperation = failure.operation.rawValue
             self.appleLastTransmitFailureCode = failure.code
             self.appleLastTransmitFailureRecoverable = failure.recoverable
+            let failureClass = ("APPLE_" + failure.operation.rawValue + "_" + failure.code)
+                .uppercased().replacingOccurrences(of: "[^A-Z0-9_]", with: "_", options: .regularExpression)
+            self.journal("APPLE_TX_FAILURE", fields: ["reason": String(failureClass.prefix(64))])
             if shouldIgnoreLateStopFailure(
                 operation: failure.operation,
                 gateState: self.pttRequestGate.state,
@@ -1403,6 +1406,10 @@ final class IntercomSessionController: ObservableObject {
     func toggleActionButtonPtt() -> ActionButtonPttResult {
         let decision = actionButtonPttDecision(enabled: actionButtonPttEnabled,
             state: pttRequestGate.state, eligible: canPressPTT)
+        journal("PTT_INTENT", fields: [
+            "reason": decision == .unavailable ? pttBlockReason.uppercased() : String(describing: decision).uppercased(),
+            "operational": operationalState.rawValue.uppercased()
+        ])
         switch decision {
         case .startRequested:
             actionButtonOwnsAttempt = true
@@ -1413,6 +1420,28 @@ final class IntercomSessionController: ObservableObject {
             break
         }
         return decision
+    }
+
+    /// Keep the system intent alive while its asynchronous OS start is pending.
+    /// Never retain a request for a future session or interfere with a newer attempt.
+    func toggleActionButtonPttFromIntent() async -> ActionButtonPttResult {
+        guard !Task.isCancelled else { return .unavailable }
+        let result = toggleActionButtonPtt()
+        guard result == .startRequested else { return result }
+        let attempt = txAttemptGeneration
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(3))
+        while !Task.isCancelled, clock.now < deadline,
+              attempt == txAttemptGeneration, actionButtonOwnsAttempt {
+            if pttSnapshot.state == .transmitting { return .startRequested }
+            guard pttRequestGate.state == .beginRequested || pttRequestGate.state == .transmitting else { break }
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
+        }
+        if attempt == txAttemptGeneration, actionButtonOwnsAttempt {
+            journal("PTT_INTENT_WAIT_END", fields: ["reason": Task.isCancelled ? "CANCELLED" : "NOT_STARTED"])
+            endPttInput(usingIntent: true)
+        }
+        return .unavailable
     }
 
     func pttDown() { beginPttInput(usingIntent: false) }

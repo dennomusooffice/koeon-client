@@ -47,13 +47,24 @@ struct ToggleKoeonTransmissionIntent: PushToTalkTransmissionIntent {
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
 
     @MainActor
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        switch IntercomSessionController.shared.toggleActionButtonPtt() {
-        case .startRequested: return .result(dialog: "送信開始を要求しました。開始音を待って話してください。")
-        case .stopRequested: return .result(dialog: "送信を停止します。")
-        case .settling: return .result(dialog: "送信の終了処理中です。少し待って再操作してください。")
-        case .disabled: return .result(dialog: "KOEONの設定でアクションボタンPTTを有効にしてください。")
-        case .unavailable: return .result(dialog: "送信できません。KOEONを開き、接続と送信可能な状態を確認してください。")
+    func perform() async throws -> some IntentResult {
+        switch await IntercomSessionController.shared.toggleActionButtonPttFromIntent() {
+        // A success dialog blocks the next physical Action button invocation,
+        // including the stop request while locked. Use the existing audio cues.
+        case .startRequested, .stopRequested, .settling: return .result()
+        case .disabled: throw ActionButtonPttError.disabled
+        case .unavailable: throw ActionButtonPttError.unavailable
+        }
+    }
+}
+
+private enum ActionButtonPttError: LocalizedError {
+    case disabled, unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .disabled: "KOEONの設定でアクションボタンPTTを有効にしてください。"
+        case .unavailable: "送信できません。KOEONを開き、接続と送信可能な状態を確認してください。"
         }
     }
 }
