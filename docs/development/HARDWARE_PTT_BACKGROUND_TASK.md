@@ -144,3 +144,13 @@ ptt04の通知列では画面dumpの実行に対応してUNBOUND/DESTROYED/CONNE
 受入れ: 切断中のOFF失敗→再接続後OFF成功を合成試験で再現し、停止確認と次操作可能を検証。OFF再失敗、Floor解除失敗、進行中取得、取消/期限/別scopeは拒否を維持。指定実機で背景の初回開始・次押下停止を確認し、人の音声聴取と診断を分離。STOP: 原因/修正/テスト/実機結果をIssue/PRへ記録、または試験枠終了（未完了を残す）。担当Codex、レビュー所有者。
 
 合成回帰で原因候補を再現: 切断相当のmicrophone OFF失敗→Floor解除→再接続の順で、修正前はcleanupIsConfirmedがfalseのまま（追加1件が失敗）。修正後は再接続時に保有leaseなし/取得・終端処理なし/押下なしを確認し、OFFを1回再確認。失敗すればERROR維持、成功時だけ停止完了を通知する。Floor解除失敗は再接続でも解除済みにしない。Intentは既存8秒内で再接続と独立したApple停止gateの完了を待ち、2回目のsession復元は行わない。iOS267件中266成功・SFU専用1skip、失敗0。実機で同じ競合を通った受入れは未実施。
+
+修正d92c98dを開発版1.0(2026111101)として指定iPhoneへ更新導入。22:38:44 UTC、通常背景・非ロックで初回ENTRY/復元BEGIN→45秒READY/STARTREQUESTED→46秒TRANSMITTING、次押下51秒STOPREQUESTED/IDLE、52秒audio INACTIVE。利用者は「バックグラウンドでのアクションボタンは初回で成功」と報告。開始直後の切断競合を同じ試験で通ったわけではなく、今回の音声聴取も明示回答ではない。
+
+OPPO ptt05の本体音量短押しを利用者が実施。22:40:29.574 UTC BACKGROUND_START、30.516 TRANSMITTING、次押下40.082 RELEASING、40.691 IDLE、全てBACKGROUND_OR_LOCKED/CONNECTED/audio READY。実ボタンで背景開始/停止が成立した新証拠。利用者は開始音を確認したが、iPhoneには声が聞こえなかった。iPhone1101の同時刻の新受信journalはなし。音声到達・消灯/ロックの本体入力は未達/未確認であり、前面受信側との比較を次に行う。OPPOの開始前はPOWER ON/接続済み（利用者操作で以前の復元時から変更）、背景設定OFF/専用OSサービスOFF。試験用に背景設定/音量TOGGLE/専用OSサービスを通常UIで有効化した。
+
+1101の待機後再発（22:44:40 UTC、前回停止から5分49秒）: STARTREQUESTED直後RECONNECTING→ERROR。今回のOFF再確認により43秒にIDLEへ戻ったが、復元BEGIN直後に停止未確認としてruntime復元が先に終了しており、43.829のPTT_INTENTはreason NONE / operational ERROR。利用者もエラーを報告。従ってd92c98dだけでは初回背景復帰は未解決。
+
+追加設計: Action button起点の同じruntime復元処理内で、停止確認を最大3秒待つ。保有leaseやマイクOFFの確認を省略しない。SDK再接続時の有限OFF再確認により停止確認が成立した後で、既存の認可付きresumeへ進みoperational ACTIVEまで完成させる。Intent総8秒・最大1回resumeは維持、取消/POWER OFF/取得未完了/lease未解除/期限切れ時は送信しない。READY診断は実際の復元完了と区別し、拒否理由にoperational/restore状態を含めてNONE誤表示を防ぐ。
+
+追加順序修正のiOS回帰267件中266成功・1skip、失敗0。実機で切断競合を通す検証は次の開発版で実施する。1101の長期待機は失敗のまま記録し、直後成功だけで置き換えない。

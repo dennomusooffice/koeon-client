@@ -1070,6 +1070,10 @@ final class IntercomSessionController: ObservableObject {
     var pttEligible: Bool { canPressPTT }
 
     var pttBlockReason: String {
+        if !isPoweredOn { return "power_off" }
+        if isStoppingRuntime { return "runtime_stopping" }
+        if restoreTask != nil { return "runtime_restoring" }
+        if operationalState != .active { return "runtime_not_active" }
         if !isJoined { return "not_joined" }
         if joinedSession?.canPublish != true { return "rx_only" }
         if room.connectionState != .connected { return "connection_not_ready" }
@@ -1954,6 +1958,18 @@ final class IntercomSessionController: ObservableObject {
             }
             do {
                 await self.ptt?.stopForSafety(reason: "Runtime restore terminal cleanup")
+                if reason == .actionButtonRecovery {
+                    // A disconnect can prevent mute confirmation until the SDK
+                    // reconnects. Keep this single restore alive for a bounded
+                    // interval instead of prematurely leaving operational ERROR.
+                    let cleanupDeadline = ProcessInfo.processInfo.systemUptime + 3
+                    while !Task.isCancelled, self.isPoweredOn, !self.isStoppingRuntime,
+                          ProcessInfo.processInfo.systemUptime < cleanupDeadline,
+                          await self.ptt?.cleanupIsConfirmed() == false {
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                }
+                try Task.checkCancellation()
                 guard await self.ptt?.cleanupIsConfirmed() != false else {
                     self.runtimeRestoreEarlyExitReason = "PENDING_OWN_LEASE_CLEANUP"
                     return
