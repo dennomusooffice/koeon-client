@@ -164,3 +164,5 @@ OPPO ptt05の本体音量短押しを利用者が実施。22:40:29.574 UTC BACKG
 Android短押し版の比較結果: iPhoneを前面にすると22:47:24 UTCにRX_PCM/ACTIVE、28秒DRAINING→29秒IDLEを観測、利用者はホーム背景の音量短押し成功と回答。OPPO消灯後の実ボタンは送信開始せず、押下後もPowerManager Asleep。画面だけ点灯（解除なし）後は22:49:36.467 BACKGROUND_START→37.401 TRANSMITTING→39.619 RELEASING、iPhoneは37秒RX_PCM→41秒IDLE。利用者は「画面が点灯していれば使える、消灯していたら使えない」と確認。背景/点灯ロックの本体キー成立と、消灯時非成立を分離。背景iPhoneへの不達は受信側前面で改善し、背景受信の別残件とする。
 
 長押し変更の自動回帰・Lint・Debug APK成功。600ms境界/repeat単発/解放fallback/取消/同時押し/短押しvolume/前面50往復を検証。消灯時のキー配送を変える機能は追加していない。内部署名版ptt06を準備し、実機確認はこれから。
+
+利用マニュアルは[ACTION_BUTTON_PTT_GUIDE](../ACTION_BUTTON_PTT_GUIDE.md)へ整備。内部/外部TestFlight未配信と待機後再発を明記した検証中の手順であり、配信完了後の対象ビルド追記が必要。サーバーLP改修はkoeon Issue #41へ登録済み。本番LP自体は変更していない。
