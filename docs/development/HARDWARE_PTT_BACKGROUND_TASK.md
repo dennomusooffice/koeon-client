@@ -115,3 +115,12 @@ ptt04の通知列では画面dumpの実行に対応してUNBOUND/DESTROYED/CONNE
 - ptt04では追加boolが既存診断whitelistにより除外され、reasonだけ保存された。候補ptt05は5個のboolキーだけ型付きで許可し、保存と文字列/未知項目拒否の回帰を追加。208件成功、Lint/署名ビルド成功、SHA256 `54a945a7dce8299fd256fcf172183ab00a45d13efd5993e2a21f91c419ea08ad`。候補のみ未導入で、上記実測はptt04。
 - 新UI probeは非表示nodeも返すため、最初の診断回収で非表示の古い保存名を選択した。回収済みコピーを端末の同じ場所へ戻し、SHA256一致を確認。対象の可視性条件を修正して今回の診断を回収し、今回の一時ファイルだけ削除した。生のUI/診断は保護領域のみ。今後の選択はvisible=trueを必須とする。
 - 現在OPPOはPOWER ON、背景設定ON、TOGGLE、専用OSサービスOFF、UI probe導入済み。次は消灯キー試験を新観測方法で再実行し、最後に背景設定/サービス/POWERと音量を復元、helperを撤去する。iPhoneは87の5分超初回Intent成功1回を維持し、実ボタン/反復/音声到達と通常unlock後の復元が残る。
+
+### ptt05追加受入れと朝の再開（2026-11-11）
+
+- 1.0.19-ptt05(20)、source7af7c4dを指定OPPOへ更新導入。新観測方法でOSサービス接続済みを確認。Home背景で800ms長押し・上下同時押しに対するTX開始は0。
+- 消灯10秒/30秒の両条件で、最初の仮想USBキー前はPowerManager Asleep、押下後はAwake。初回のTXはなく、2回目の音量DOWNで開始、3回目の音量UPで停止。端末journalは18:38:04.732/46.152 UTCにTRANSMITTING、09.790/51.343にIDLE、全TXがBACKGROUND_OR_LOCKED/CONNECTED/audio READY。設定/サービス/所有ラッチのboolも正しく保存された。画面復帰後の開始・停止は成立するが、消灯中初回と本体内蔵キーの成立を保証しない。
+- POWER OFF中の仮想キーでは新規TXなし。18:41:22.909 UTCに再接続後も背景設定ON/サービス接続trueを診断とUIで確認。d92c4f5の設定引き継ぎ修正をこの境界で確認した。
+- iPhone87の長時間ロック後の直接Siriフレーズは今回もIntentイベントなし。Android送信に対応する新しいiPhone RXイベントも取得できず、音声到達の証拠にはしない。
+- OPPOは背景設定OFF、音量PTT OFF、POWER OFF、専用OSサービスOFFへ通常UIで復元。通話speaker3/メディアspeaker1/着信speaker16を確認、消灯30000ms/stay-on 0、Accessibility一覧は試験前と一致（空値とnullは正規化）。元々のHeadset設定は変更しない。UI probe撤去成功、端末の試験階層ファイルを削除。通常UIで許可した「制限付き設定」はallowが残り、許可後の独自アプリ情報に取消メニューは表示されなかった。特権で取り消して完全復元と偽らず、この差分を残す。専用サービスは無効、foreground serviceも不在。内部版ptt05は端末に残す。
+- 06:44 JST、利用者がiPhoneを解除し検証継続を依頼。87のCONNECTED/READYとロック解除を確認し、アクションボタンを元のボイスメモからKOEONの直接App Shortcut「送信を切り替える」へ通常UIで割り当てた。310秒待機の試験Shortcutは割り当てていない。実ボタン長押しを自動再現できないため、ロック→長押し→発話→再度長押しを利用者へ依頼中。結果はまだ未確定。元の07:00 JST終了条件を延長と解釈しない。
