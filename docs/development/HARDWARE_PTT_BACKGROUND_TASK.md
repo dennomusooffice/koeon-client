@@ -124,3 +124,11 @@ ptt04の通知列では画面dumpの実行に対応してUNBOUND/DESTROYED/CONNE
 - iPhone87の長時間ロック後の直接Siriフレーズは今回もIntentイベントなし。Android送信に対応する新しいiPhone RXイベントも取得できず、音声到達の証拠にはしない。
 - OPPOは背景設定OFF、音量PTT OFF、POWER OFF、専用OSサービスOFFへ通常UIで復元。通話speaker3/メディアspeaker1/着信speaker16を確認、消灯30000ms/stay-on 0、Accessibility一覧は試験前と一致（空値とnullは正規化）。元々のHeadset設定は変更しない。UI probe撤去成功、端末の試験階層ファイルを削除。通常UIで許可した「制限付き設定」はallowが残り、許可後の独自アプリ情報に取消メニューは表示されなかった。特権で取り消して完全復元と偽らず、この差分を残す。専用サービスは無効、foreground serviceも不在。内部版ptt05は端末に残す。
 - 06:44 JST、利用者がiPhoneを解除し検証継続を依頼。87のCONNECTED/READYとロック解除を確認し、アクションボタンを元のボイスメモからKOEONの直接App Shortcut「送信を切り替える」へ通常UIで割り当てた。310秒待機の試験Shortcutは割り当てていない。実ボタン長押しを自動再現できないため、ロック→長押し→発話→再度長押しを利用者へ依頼中。結果はまだ未確定。元の07:00 JST終了条件を延長と解釈しない。
+
+### iPhone実アクションボタン受入れ（06:49–07:00 JST）
+
+- iPhone17 Pro Max / iOS26.6.2 / 1.0(2026111087)、source a8d67c1。直接App Shortcut割当後のロック直後、21:48:53 UTCに初回ENTRY/復元READY/STARTREQUESTED、54秒TRANSMITTING、次の長押し21:49:15 STOPREQUESTED/IDLE、16秒audio INACTIVE。利用者は「初回から成功しました」と報告。
+- 端末へのアプリ/設定操作を行わず、前回停止から5分以上待機。利用者の次の実ボタン長押しで21:55:07 UTCに初回ENTRY/RECONNECTING/復元BEGIN、08秒CONNECTED/READY/STARTREQUESTED、09秒TRANSMITTING。次の長押し16秒STOPREQUESTED/RELEASING、17秒IDLE、18秒audio INACTIVE。取得時OS locked=true。前回停止から初回操作まで5分52秒。利用者が「初回で相手に届きました！」と音声到達を明示確認した。初回復帰問題はこの端末・ビルド・試験条件で改善を実証した。復元中には既存Apple stopエラー分類も記録されるが、その同じ初回Intent内で復帰・送信・停止が成立した。
+- 利用者は検証後もPTT割当を維持することを明示選択。opt-in/直接App Shortcut割当を残した。通常ロック解除後、今回作成した待機付き「KOEON Toggle Lab」だけ削除し、一覧から消えたことを確認、KOEONへ戻した。他のショートカットは削除しない。
+- 07:00 JSTで実機操作枠終了。最後の画面再取得と自動操作セッション終了を行うコマンドは開始前の期限guardに拒否され、実行されなかった。最終READYの再取得やセッション手動終了を実施済みとはしない（既存sessionは無操作timeout、アプリ終了しない設定）。以後、許可の更新なしに実機へアクセスしない。
+- iPhoneの実ボタン初回・5分超後・相手の聴取・次押下停止は今回確認した範囲で成立。長時間反復/他端末/通信損失全般の安定性や公開配信受入れを保証しない。Androidは仮想USBキーによる背景入力・停止安全性までで、本体内蔵キーと音声聴取、消灯中の初回成立は未確認。Issueは部分検証のままOpen、PRはDraft/未マージを維持する。
