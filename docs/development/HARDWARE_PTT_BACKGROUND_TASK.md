@@ -172,3 +172,7 @@ Android短押し版の比較結果: iPhoneを前面にすると22:47:24 UTCにRX
 押下継続timerを前面/背景に接続し、自動テスト212件・Lint/Debug APK成功。repeatなし/UPなしで600ms時点の1回発火、599ms時点の未発火、解放時の二重反転なし、短押し/設定取消、OS repeatとtimer競合を検証。ptt07を内部署名し実機受入れへ進む。
 
 1102（製品216a947）待機後受入れ: 前回停止22:51:10 UTCから5分14秒後、22:56:24にENTRY/STARTREQUESTED直後RECONNECTING→ERROR。今回は同じIntent内で停止確認/認可付き復元を完了、28秒READY/STARTREQUESTED、29秒TRANSMITTING。次押下35秒STOPREQUESTED/IDLE、36秒audio INACTIVE、locked=false。入口→TRANSMITTINGは4673ms。利用者は初回成功、振動後に少し待って開始音と報告。振動を送信開始としない案内をマニュアルへ追記。単回限定成功で広い安定性は未保証。内部/外部配信は[別TASK](ACTION_BUTTON_TESTFLIGHT_RELEASE_TASK.md)へ進む。
+
+ptt07（製品f65c62f、内部署名SHA256 87714ac18feafecbed4f10421153a9d7416967f0f89d386ff29c8a70d165e66c）をOPPOへ導入。利用者が画面点灯・ホーム背景で押したままの開始/停止を成功と回答。23:10:34.570 UTC BACKGROUND_START→35.865 TRANSMITTING、次押下40.418 IDLE。iPhone1102は36秒RX_PCM→41秒IDLE。実ボタンの動作確認とPCM受信証拠で、聴取の詳細を別の記録と混同しない。ptt07の点灯ロック/消灯再試験は未実施。消灯の制約は前段実機結果のまま残す。
+
+利用者がAndroidも長押しPTTを残すことを明示選択。背景設定/音量TOGGLE/OSサービス/POWER ONを維持。iPhoneも従前指定のopt-in/Action button割当/POWER ONを維持。最終の両端末CONNECTED/READYを確認し、OPPOのUI helperをアンインストール（Success）、画面timeout30000msを確認。iPhone自動操作sessionをDELETE完了（アプリ終了しない設定）。実機操作を終了。AndroidのHeadset設定は変更せず、試験中の利用者の音量短押しを元の推測値へ上書きしない。
