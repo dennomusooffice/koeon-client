@@ -2,6 +2,20 @@ import XCTest
 @testable import KOEON
 
 final class BackendContractTests: XCTestCase {
+    func testActionButtonRestoreRequiresPreviouslyValidatedSameUserAndChannel() {
+        var runtime = ActionButtonValidatedRuntime()
+        XCTAssertFalse(runtime.permits(channel: "channel-a", user: "user-a"))
+        runtime.validate(channel: "channel-a", user: "user-a")
+        XCTAssertTrue(runtime.permits(channel: "channel-a", user: "user-a"))
+        XCTAssertFalse(runtime.permits(channel: "channel-b", user: "user-a"))
+        XCTAssertFalse(runtime.permits(channel: "channel-a", user: "user-b"))
+        runtime.clear()
+        XCTAssertFalse(runtime.permits(channel: "channel-a", user: "user-a"))
+        runtime.validate(channel: "channel-b", user: "user-b")
+        XCTAssertFalse(runtime.permits(channel: "channel-a", user: "user-a"))
+        XCTAssertTrue(runtime.permits(channel: "channel-b", user: "user-b"))
+    }
+
     func testActionButtonInvocationExpiresAtEightSecondsAndRejectsChangedScope() {
         var gate = ActionButtonInvocationGate()
         let token = gate.begin(channel: "channel-a", user: "user-a", now: 100)

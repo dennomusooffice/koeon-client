@@ -412,6 +412,15 @@ enum ActionButtonPttResult: Equatable {
     case startRequested, stopRequested, settling, disabled, unavailable
 }
 
+/// Only a previously validated server response qualifies the same scope for recovery.
+struct ActionButtonValidatedRuntime {
+    private var channel: String?
+    private var user: String?
+    mutating func validate(channel: String, user: String) { self.channel = channel; self.user = user }
+    mutating func clear() { channel = nil; user = nil }
+    func permits(channel: String, user: String) -> Bool { self.channel == channel && self.user == user }
+}
+
 /// One explicit invocation, one scope, one recovery, and a monotonic deadline.
 struct ActionButtonInvocationGate {
     private(set) var active = false
@@ -461,7 +470,7 @@ final class IntercomSessionController: ObservableObject {
     @Published private(set) var actionButtonPttEnabled = false
     private var actionButtonOwnsAttempt = false
     private var actionButtonInvocation = ActionButtonInvocationGate()
-    private var actionButtonHasValidatedSession = false
+    private var actionButtonValidatedRuntime = ActionButtonValidatedRuntime()
     private var transportFailureGeneration = 0
 
     @Published private(set) var fixture: FixtureResponse?
@@ -1351,6 +1360,7 @@ final class IntercomSessionController: ObservableObject {
     func leave(powerOff: Bool = true) async {
         guard !isStoppingRuntime else { return }
         actionButtonInvocation.cancel()
+        actionButtonValidatedRuntime.clear()
         isStoppingRuntime = true
         isLoading = true
         defer { isStoppingRuntime = false; isLoading = false }
@@ -1487,9 +1497,9 @@ final class IntercomSessionController: ObservableObject {
         guard !rxConsistencySnapshot.remoteBusyBlocksLocalPtt else { return rejected("REMOTE_RX_BUSY") }
         guard (joinedSession?.canPublish ?? recoveryIntent.descriptor?.canPublish) == true else { return rejected("NO_PUBLISH_AUTHORITY") }
         guard isPoweredOn else { return rejected("POWER_OFF") }
-        guard actionButtonHasValidatedSession else { return rejected("NO_VALIDATED_RUNTIME") }
         guard let channel = joinedSession?.channel.id ?? recoveryIntent.descriptor?.channelId,
               let user = selectedUserId else { return rejected("NO_SCOPE") }
+        guard actionButtonValidatedRuntime.permits(channel: channel, user: user) else { return rejected("NO_VALIDATED_RUNTIME_FOR_SCOPE") }
         let token = actionButtonInvocation.begin(channel: channel, user: user, now: ProcessInfo.processInfo.systemUptime)
         var ownedAttempt: Int?
         var started = false
@@ -2756,7 +2766,9 @@ final class IntercomSessionController: ObservableObject {
         let ready = joinedSession != nil && room.connectionState == .connected &&
             rx != nil && remoteReceive != nil && ptt != nil
         runtimeLiveness.validate(bindingsReady: ready)
-        if ready { actionButtonHasValidatedSession = true }
+        if ready, let session = joinedSession {
+            actionButtonValidatedRuntime.validate(channel: session.channel.id, user: session.user.id)
+        }
     }
 
     private func performRxRecovery(level: Int, sessionId: String, generation: Int) {

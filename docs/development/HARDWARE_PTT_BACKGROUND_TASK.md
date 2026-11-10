@@ -72,3 +72,17 @@ Android1.0.19(20)の既存Activity音量入力は前面限定。microphone/media
 - 独立probeは撤去済み。Android診断はアプリのExport操作で取得し、端末Downloadへ作ったコピーは削除。音声保存なし。背景試作の設定をOFFに戻してメディア入力を試験した。元々有効なHeadset PTT設定はそのまま。
 - Android追加レビュー: OSサービスのonUnbindで直ちに自身のPTTを解除。POWER OFF/leave要求の時点で新しい背景開始を拒否し、認可済みjoinの完了後だけ解除。207件成功、Lint/Debug APK/署名候補成功。内部候補1.0.19-ptt02(20)、SHA256 `57273dbdd59a4e0c791a98fc399751813a181aa9431b6aba75787d777bf011c0` は未導入。
 - iOS2026111086は85の分類診断と同じIntentへの直接App Shortcut入口を追加。署名ビルド成功、実行結果は未確定。84で確認したロック直後の初回成功を、85/86や5分ロック後の成功へ拡張しない。
+
+### 復帰資格のscope確認
+
+レビューで、初回復帰の資格が「このプロセスで一度正常接続した」というBoolだったため、要求された同一user/channel条件を資格自体にも持たせる。正常runtimeのサーバーJoin応答からuser/channelを保存し、Intent入口で現在scopeと一致する場合だけ復帰可能にする。明示leave/チャンネル変更で消去し、同一scopeの復元中だけ保持する。既存のサーバー認可は引き続き最終権威。異なるuser/channelと冷起動、leave後の拒否を純粋scope gateで確認する。
+
+### 中間検証・復元 2026-11-11 01:42 JST
+
+- iOSの同一scope資格を追加した回帰は266件中265成功、専用SFU1スキップ、失敗0。内部候補1.0(2026111087)の署名ビルド成功、未導入。端末は86であり、86の直接Siriフレーズでも実行診断は得られていない。これ以上、同じロック起動を繰り返して成功扱いにはしない。
+- Android ptt01の前面音量トグルを再確認。16:35:04.209 UTCにFOREGROUND/TRANSMITTING、08.372にRELEASING、09.097にIDLE。サービス未有効のホーム背景では新たなREQUESTING_FLOOR/TRANSMITTINGは0。ホスト時刻で直前の停止を背景イベントと分類せず、端末journalのlifecycleで判定した。
+- OPPOの制限付き設定はread-onlyのAppOps照合でignore。原因をインストール元や企業管理と断定していない。許可状態の書換えはしていない。
+- OPPOは背景音量設定OFFをcheckable値で確認、既存音量トグルOFF、POWER OFFへ復元。メディア音量speakerだけ試験前1→試験後2だったため1へ復元。通話speaker3・ring speaker16は試験前後同じ。元々ONのHeadset設定は変更していない。画面消灯は元の30秒へ復元を進めている。
+- iPhoneのAction buttonは前段で復元した「ボイスメモ」のまま。新しい試験用Shortcut「KOEON Toggle Lab」は10秒待機/切替/5秒待機/切替。ロック解除ができないため、このShortcutの削除とアプリ内opt-in OFFのUI復元は未完了。86への更新で旧実行プロセスは終了し、その後の起動は未確認。Action buttonをそのまま試験押下しない。
+
+次の実機受入れは、通常のロック解除後に候補87を起動して認可済み接続を成立させ、アクションボタンに直接App Shortcutを割り当て、ロック直後/5分以上後の最初の開始と停止を反復する。Androidは通常OS設定でサービスを許可できる条件を確認した上で、ptt02の本体音量キー→背景送信を実測する。OS認証/許可を迂回せず、一般的な安定性や音声聴取の成功を未確認のまま宣言しない。
