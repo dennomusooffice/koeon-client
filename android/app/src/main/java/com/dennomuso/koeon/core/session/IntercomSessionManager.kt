@@ -636,6 +636,8 @@ class IntercomSessionManager(
                         diagnostics = SessionDiagnostics(
                             headsetPttEnabled = headsetPttEnabled,
                             headsetPttMode = headsetPttMode,
+                            backgroundVolumePttEnabled = backgroundVolumePttEnabled,
+                            backgroundVolumeServiceConnected = backgroundVolumeServiceConnected,
                             hardwareVolumePttMode = hardwareVolumePttMode,
                             inputGain = gainProcessor.snapshot(),
                             audioCaptureProfile = audioCaptureProfile,
@@ -1019,6 +1021,8 @@ class IntercomSessionManager(
             diagnostics = SessionDiagnostics(
                 headsetPttEnabled = headsetPttEnabled,
                 headsetPttMode = headsetPttMode,
+                backgroundVolumePttEnabled = backgroundVolumePttEnabled,
+                backgroundVolumeServiceConnected = backgroundVolumeServiceConnected,
                 hardwareVolumePttMode = hardwareVolumePttMode,
                 inputGain = gainProcessor.snapshot(),
                 audioCaptureProfile = audioCaptureProfile,
