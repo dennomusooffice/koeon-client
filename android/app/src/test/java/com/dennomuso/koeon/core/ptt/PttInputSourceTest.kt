@@ -81,24 +81,23 @@ class PttInputSourceTest {
         }
     }
 
-    @Test fun `hardware volume short presses toggle for fifty cycles`() {
+    @Test fun `hardware volume long presses toggle for fifty cycles`() {
         val gate = HardwareVolumePttGate()
-        repeat(50) {
-            assertTrue(gate.keyDown(0) == HardwareVolumeAction.IGNORE)
-            assertTrue(gate.keyUp(false) == HardwareVolumeAction.DOWN)
-            assertTrue(gate.keyDown(0) == HardwareVolumeAction.IGNORE)
-            assertTrue(gate.keyUp(false) == HardwareVolumeAction.UP)
+        repeat(50) { cycle ->
+            val at = cycle * 2000L
+            assertEquals(HardwareVolumeAction.IGNORE, gate.event(24, true, 0, false, at, at, true))
+            assertEquals(HardwareVolumeAction.DOWN, gate.event(24, true, 1, false, at, at + 600, true))
+            assertEquals(HardwareVolumeAction.IGNORE, gate.event(24, false, 0, false, at, at + 700, true))
+            assertEquals(HardwareVolumeAction.IGNORE, gate.event(25, true, 0, false, at + 1000, at + 1000, true))
+            assertEquals(HardwareVolumeAction.UP, gate.event(25, false, 0, false, at + 1000, at + 1700, true))
         }
         assertFalse(gate.isLatched())
     }
 
-    @Test fun `hardware volume repeat and long press never toggle`() {
+    @Test fun `hardware volume short press does not latch`() {
         val gate = HardwareVolumePttGate()
-        gate.keyDown(0)
-        gate.keyDown(1)
-        assertTrue(gate.keyUp(false) == HardwareVolumeAction.IGNORE)
-        gate.keyDown(0)
-        assertTrue(gate.keyUp(true) == HardwareVolumeAction.IGNORE)
+        gate.event(24, true, 0, false, 0, 0, true)
+        assertEquals(HardwareVolumeAction.VOLUME, gate.event(24, false, 0, false, 0, 200, true))
         assertFalse(gate.isLatched())
     }
 
@@ -112,8 +111,8 @@ class PttInputSourceTest {
         val app = AppTouchPttGate()
         val hardware = HardwareVolumePttGate()
         assertTrue(app.down())
-        hardware.keyDown(0)
-        assertEquals(HardwareVolumeAction.DOWN, hardware.keyUp(false))
+        hardware.event(24, true, 0, false, 0, 0, true)
+        assertEquals(HardwareVolumeAction.DOWN, hardware.event(24, false, 0, false, 0, 600, true))
         assertTrue(app.isPressed())
         assertTrue(hardware.clear())
         assertFalse(hardware.isLatched())

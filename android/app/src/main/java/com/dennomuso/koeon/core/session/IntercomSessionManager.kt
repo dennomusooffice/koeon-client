@@ -746,28 +746,37 @@ class IntercomSessionManager(
             audioReady = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY,
             foreground = state.diagnostics.activityVisibility == "foreground",
         ).consumesVolumeKeys()
-        if (!eligible || keyCode !in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) return false
-        val action = when (event.action) {
-            KeyEvent.ACTION_DOWN -> hardwareVolumePttGate.keyDown(event.repeatCount)
-            KeyEvent.ACTION_UP -> hardwareVolumePttGate.keyUp(event.isLongPress)
-            else -> HardwareVolumeAction.IGNORE
-        }
-        val short = if (event.action == KeyEvent.ACTION_UP && action != HardwareVolumeAction.IGNORE) 1 else 0
-        val long = if (event.action == KeyEvent.ACTION_UP && event.isLongPress) 1 else 0
+        if (keyCode !in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) return false
+        if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return false
+        val action = hardwareVolumePttGate.event(keyCode, event.action == KeyEvent.ACTION_DOWN,
+            event.repeatCount, event.isCanceled, event.downTime, event.eventTime,
+            eligible || (hardwareVolumePttMode == HardwareVolumePttMode.TOGGLE && hardwareVolumePttGate.isLatched()))
+        if (action == HardwareVolumeAction.PASS) return false
+        val short = if (action == HardwareVolumeAction.VOLUME) 1 else 0
+        val long = if (action == HardwareVolumeAction.DOWN || action == HardwareVolumeAction.UP) 1 else 0
         _state.update { current -> current.copy(diagnostics = current.diagnostics.copy(
             hardwareVolumePttLatched = hardwareVolumePttGate.isLatched(),
             hardwareVolumeLastKey = KeyEvent.keyCodeToString(keyCode),
             hardwareVolumeLastEventAt = Instant.now().toString(),
             hardwareVolumeShortPressCount = current.diagnostics.hardwareVolumeShortPressCount + short,
             hardwareVolumeLongPressCount = current.diagnostics.hardwareVolumeLongPressCount + long,
-            hardwareVolumePttToggleCount = current.diagnostics.hardwareVolumePttToggleCount + short,
+            hardwareVolumePttToggleCount = current.diagnostics.hardwareVolumePttToggleCount + long,
         )) }
         when (action) {
-            HardwareVolumeAction.DOWN -> pttDown(PttInputSource.HARDWARE_VOLUME_BUTTON)
+            HardwareVolumeAction.DOWN -> if (!pttDown(PttInputSource.HARDWARE_VOLUME_BUTTON)) hardwareVolumePttGate.clear()
             HardwareVolumeAction.UP -> pttUp(PttInputSource.HARDWARE_VOLUME_BUTTON)
-            HardwareVolumeAction.IGNORE -> Unit
+            HardwareVolumeAction.VOLUME -> adjustShortHardwareVolume(keyCode)
+            HardwareVolumeAction.IGNORE, HardwareVolumeAction.PASS -> Unit
         }
         return true
+    }
+
+    fun adjustShortHardwareVolume(keyCode: Int) {
+        if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) return
+        systemAudioManager.adjustSuggestedStreamVolume(
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+            AudioManager.USE_DEFAULT_STREAM_TYPE, AudioManager.FLAG_SHOW_UI,
+        )
     }
 
     fun adjustOutputVolume(direction: Int) {

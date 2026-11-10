@@ -42,9 +42,10 @@ class BackgroundVolumePttService : AccessibilityService() {
         if (event.keyCode != KeyEvent.KEYCODE_VOLUME_UP && event.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) return false
         if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return false
         val result = gate.event(event.keyCode, event.action == KeyEvent.ACTION_DOWN, event.repeatCount,
-            event.isCanceled || event.isLongPress, event.downTime, event.eventTime,
+            event.isCanceled, event.downTime, event.eventTime,
             manager.backgroundVolumePttEligible())
         if (result == BackgroundVolumeDecision.TOGGLE) manager.toggleBackgroundVolumePtt()
+        if (result == BackgroundVolumeDecision.SHORT_PRESS) manager.adjustShortHardwareVolume(event.keyCode)
         return result != BackgroundVolumeDecision.PASS
     }
 
