@@ -334,6 +334,9 @@ class IntercomSessionManager(
         "route" to value.diagnostics.inputGain.route.substringBefore(':').uppercase().replace('-', '_').replace(' ', '_'),
         "mode" to value.diagnostics.inputGain.mode.name, "gainDb" to value.diagnostics.inputGain.effectiveGainDb,
         "readyExpected" to value.diagnostics.rxReadyExpectedCount, "readyReceived" to value.diagnostics.rxReadyReceivedCount,
+        "backgroundVolumeEnabled" to value.diagnostics.backgroundVolumePttEnabled,
+        "backgroundVolumeConnected" to value.diagnostics.backgroundVolumeServiceConnected,
+        "backgroundVolumeLatched" to value.diagnostics.backgroundVolumePttLatched,
     )
     private fun journalIds(value: IntercomUiState, previous: IntercomUiState? = null) = mapOf(
         "sessionHash" to value.join?.sessionId, "channelHash" to value.join?.channel?.id,
@@ -682,10 +685,14 @@ class IntercomSessionManager(
         _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttEnabled = enabled, hardwareVolumePttLatched = false)) }
     }
 
-    fun onBackgroundVolumeServiceChanged(connected: Boolean) {
+    fun onBackgroundVolumeServiceChanged(connected: Boolean, reason: String) {
         cancelBackgroundVolumePtt()
         backgroundVolumeServiceConnected = connected
         _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumeServiceConnected = connected)) }
+        fieldJournal.record("HARDWARE_PTT_SERVICE", journalFields(_state.value) + mapOf(
+            "reason" to reason, "serviceConnected" to backgroundVolumeServiceConnected,
+            "settingEnabled" to backgroundVolumePttEnabled,
+        ))
     }
 
     fun cancelBackgroundVolumePtt() {

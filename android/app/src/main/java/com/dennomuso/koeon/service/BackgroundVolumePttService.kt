@@ -19,7 +19,7 @@ class BackgroundVolumePttService : AccessibilityService() {
             eventTypes = 0
             flags = AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
         }
-        manager.onBackgroundVolumeServiceChanged(true)
+        manager.onBackgroundVolumeServiceChanged(true, "CONNECTED")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
@@ -27,14 +27,14 @@ class BackgroundVolumePttService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         gate.invalidate()
         if (active?.get() === this) active = null
-        manager.onBackgroundVolumeServiceChanged(false)
+        manager.onBackgroundVolumeServiceChanged(false, "UNBOUND")
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         gate.invalidate()
         if (active?.get() === this) active = null
-        manager.onBackgroundVolumeServiceChanged(false)
+        manager.onBackgroundVolumeServiceChanged(false, "DESTROYED")
         super.onDestroy()
     }
 
