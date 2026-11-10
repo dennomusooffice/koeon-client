@@ -7,10 +7,18 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import com.dennomuso.koeon.KoeonApplication
 import java.lang.ref.WeakReference
+import android.os.SystemClock
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /** Only volume key edges; no accessibility content, gestures, or application launch. */
 class BackgroundVolumePttService : AccessibilityService() {
     private val gate = BackgroundVolumeKeyGate()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val hold = VolumeHoldTimer(scope, SystemClock::uptimeMillis)
+    private fun invalidate() { hold.clear(); gate.invalidate() }
     private val manager get() = (application as KoeonApplication).intercomSession
 
     override fun onServiceConnected() {
@@ -23,18 +31,19 @@ class BackgroundVolumePttService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
-    override fun onInterrupt() { gate.invalidate(); manager.cancelBackgroundVolumePtt() }
+    override fun onInterrupt() { invalidate(); manager.cancelBackgroundVolumePtt() }
     override fun onUnbind(intent: Intent?): Boolean {
-        gate.invalidate()
+        invalidate()
         if (active?.get() === this) active = null
         manager.onBackgroundVolumeServiceChanged(false, "UNBOUND")
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
-        gate.invalidate()
+        invalidate()
         if (active?.get() === this) active = null
         manager.onBackgroundVolumeServiceChanged(false, "DESTROYED")
+        scope.cancel()
         super.onDestroy()
     }
 
@@ -44,6 +53,16 @@ class BackgroundVolumePttService : AccessibilityService() {
         val result = gate.event(event.keyCode, event.action == KeyEvent.ACTION_DOWN, event.repeatCount,
             event.isCanceled, event.downTime, event.eventTime,
             manager.backgroundVolumePttEligible())
+        if (event.action == KeyEvent.ACTION_UP) hold.release(event.keyCode)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && result == BackgroundVolumeDecision.CONSUME) {
+            val key = event.keyCode
+            val downAt = event.downTime
+            hold.start(key, downAt) {
+                val held = gate.event(key, true, 1, false, downAt, SystemClock.uptimeMillis(),
+                    manager.backgroundVolumePttEligible())
+                if (held == BackgroundVolumeDecision.TOGGLE) manager.toggleBackgroundVolumePtt()
+            }
+        }
         if (result == BackgroundVolumeDecision.TOGGLE) manager.toggleBackgroundVolumePtt()
         if (result == BackgroundVolumeDecision.SHORT_PRESS) manager.adjustShortHardwareVolume(event.keyCode)
         return result != BackgroundVolumeDecision.PASS
@@ -51,6 +70,6 @@ class BackgroundVolumePttService : AccessibilityService() {
 
     companion object {
         private var active: WeakReference<BackgroundVolumePttService>? = null
-        fun invalidatePendingInput() { active?.get()?.gate?.invalidate() }
+        fun invalidatePendingInput() { active?.get()?.invalidate() }
     }
 }

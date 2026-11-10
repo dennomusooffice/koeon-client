@@ -166,3 +166,7 @@ Android短押し版の比較結果: iPhoneを前面にすると22:47:24 UTCにRX
 長押し変更の自動回帰・Lint・Debug APK成功。600ms境界/repeat単発/解放fallback/取消/同時押し/短押しvolume/前面50往復を検証。消灯時のキー配送を変える機能は追加していない。内部署名版ptt06を準備し、実機確認はこれから。
 
 利用マニュアルは[ACTION_BUTTON_PTT_GUIDE](../ACTION_BUTTON_PTT_GUIDE.md)へ整備。内部/外部TestFlight未配信と待機後再発を明記した検証中の手順であり、配信完了後の対象ビルド追記が必要。サーバーLP改修はkoeon Issue #41へ登録済み。本番LP自体は変更していない。
+
+長押し版ptt06は利用者が短押し音量のみ/長押しPTTを成功と回答。ただし押したまま実行する動作を希望し、解放時fallbackだけでは操作感が揃わないと追加指定。押下ごとに最大2個の600ms timerを持ち、期限時に同じキー/downTime/世代/現在適格性を再検証して1回だけtoggleする。UP/取消/設定OFF/サービス停止ではtimerを取消。OS repeatとtimerの両方が来ても共通gateのfiredで重複拒否する。実ボタンを押したままで開始/停止し、解放後に反転しないことを追加受入れにする。
+
+押下継続timerを前面/背景に接続し、自動テスト212件・Lint/Debug APK成功。repeatなし/UPなしで600ms時点の1回発火、599ms時点の未発火、解放時の二重反転なし、短押し/設定取消、OS repeatとtimer競合を検証。ptt07を内部署名し実機受入れへ進む。
