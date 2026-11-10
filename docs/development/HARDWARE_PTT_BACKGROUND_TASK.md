@@ -170,3 +170,5 @@ Android短押し版の比較結果: iPhoneを前面にすると22:47:24 UTCにRX
 長押し版ptt06は利用者が短押し音量のみ/長押しPTTを成功と回答。ただし押したまま実行する動作を希望し、解放時fallbackだけでは操作感が揃わないと追加指定。押下ごとに最大2個の600ms timerを持ち、期限時に同じキー/downTime/世代/現在適格性を再検証して1回だけtoggleする。UP/取消/設定OFF/サービス停止ではtimerを取消。OS repeatとtimerの両方が来ても共通gateのfiredで重複拒否する。実ボタンを押したままで開始/停止し、解放後に反転しないことを追加受入れにする。
 
 押下継続timerを前面/背景に接続し、自動テスト212件・Lint/Debug APK成功。repeatなし/UPなしで600ms時点の1回発火、599ms時点の未発火、解放時の二重反転なし、短押し/設定取消、OS repeatとtimer競合を検証。ptt07を内部署名し実機受入れへ進む。
+
+1102（製品216a947）待機後受入れ: 前回停止22:51:10 UTCから5分14秒後、22:56:24にENTRY/STARTREQUESTED直後RECONNECTING→ERROR。今回は同じIntent内で停止確認/認可付き復元を完了、28秒READY/STARTREQUESTED、29秒TRANSMITTING。次押下35秒STOPREQUESTED/IDLE、36秒audio INACTIVE、locked=false。入口→TRANSMITTINGは4673ms。利用者は初回成功、振動後に少し待って開始音と報告。振動を送信開始としない案内をマニュアルへ追記。単回限定成功で広い安定性は未保証。内部/外部配信は[別TASK](ACTION_BUTTON_TESTFLIGHT_RELEASE_TASK.md)へ進む。
