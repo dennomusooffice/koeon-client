@@ -26,6 +26,20 @@ class ControlTests(unittest.TestCase):
             c.hold(500, 1000, 2, fail)
         self.assertEqual([f[1] for f in c.sock.frames], [0, 1])
         self.assertIsNone(c.active)
+    def test_timer_releases_while_observer_is_still_waiting(self):
+        import threading
+        c = self.client(); released = threading.Event(); original_send = c.sock.sendall
+        def send(frame):
+            original_send(frame)
+            if struct.unpack('>BBQiiHHHii', frame)[1] == 1: released.set()
+        c.sock.sendall = send
+        def observe():
+            self.assertTrue(released.wait(2), 'UP must not depend on observer completion')
+            return {'control': 'not judged'}
+        result = c.hold(10, 20, 1, observe)
+        self.assertEqual(result['status'], 'OBSERVATION_REQUIRED')
+        self.assertEqual(result['audioAcceptance'], 'NOT_ESTABLISHED')
+
     def test_window_expiry_blocks_down_but_allows_release(self):
         c = self.client(); c.touch(0, 1, 1); c.expires_at = time.time()-1
         with self.assertRaises(TimeoutError): c.touch(0, 1, 1)

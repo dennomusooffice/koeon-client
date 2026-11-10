@@ -44,8 +44,8 @@ Normal Android shell input permissions are required; an OS denial is a blocker.
 
 The Python timer cannot guarantee release after host power loss or process kill.
 The application’s own transmission bounds remain required. The older
-`physical_ptt.py` DOWN/sleep/UP helper is an experimental fallback: it was unreliable
-on this Xiaomi and must not be selected as a verified solution.
+DOWN/sleep/UP experiment is retained only in the Issue/commit history: it was
+unreliable on this Xiaomi and is not included as a runnable fallback.
 
 ## Evidence and limits
 
