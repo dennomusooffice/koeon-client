@@ -287,6 +287,7 @@ class IntercomSessionManager(
     private var backgroundVolumePttEnabled = devicePreferences.getBoolean("background_volume_ptt_enabled", false)
     private var backgroundVolumeServiceConnected = false
     private var backgroundVolumeOwnsPtt = false
+    private var backgroundVolumeStartBlocked = true
     private val hardwareVolumePttGate = HardwareVolumePttGate()
     private val systemAudioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var statusJob: Job? = null
@@ -697,7 +698,7 @@ class IntercomSessionManager(
         // A stop remains possible even if eligibility for a new start has changed.
         if (backgroundVolumeOwnsPtt) return true
         val state = _state.value
-        return state.joined && state.join?.canPublish == true &&
+        return !backgroundVolumeStartBlocked && state.joined && state.join?.canPublish == true &&
             state.operationalState == OperationalState.ACTIVE &&
             state.connectionState == IntercomConnectionState.CONNECTED &&
             state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY &&
@@ -932,6 +933,7 @@ class IntercomSessionManager(
                 audioBitratePreset,
             )
             configurePtt(joined)
+            backgroundVolumeStartBlocked = false
             sessionStartedAt = android.os.SystemClock.elapsedRealtime()
             startSessionPolling(joined)
             _state.update {
@@ -972,17 +974,22 @@ class IntercomSessionManager(
     }
 
     fun leaveAsync() {
+        backgroundVolumeStartBlocked = true
+        cancelBackgroundVolumePtt()
         joinSessionRecovery.invalidate()
         ++switchGeneration
         scope.launch { leave(powerOff = true) }
     }
 
     suspend fun leave(powerOff: Boolean = true) {
+        backgroundVolumeStartBlocked = true
+        cancelBackgroundVolumePtt()
         if (powerOff) { joinSessionRecovery.invalidate(); ++switchGeneration }
         operationMutex.withLock { leaveLocked(powerOff) }
     }
 
     private suspend fun leaveLocked(powerOff: Boolean, keepService: Boolean = false) {
+        backgroundVolumeStartBlocked = true
         appTouchPttGate.cancel()
         hardwareVolumePttGate.clear()
         cancelBackgroundVolumePtt()

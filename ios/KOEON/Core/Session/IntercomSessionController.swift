@@ -1466,7 +1466,12 @@ final class IntercomSessionController: ObservableObject {
     /// Keep the system intent alive while its asynchronous OS start is pending.
     /// Never retain a request for a future session or interfere with a newer attempt.
     func toggleActionButtonPttFromIntent() async -> ActionButtonPttResult {
-        guard !Task.isCancelled else { return .unavailable }
+        journal("PTT_INTENT_ENTRY", fields: ["reason": pttRequestGate.state.rawValue, "audio": audio.interruption.state.rawValue])
+        func rejected(_ reason: String) -> ActionButtonPttResult {
+            journal("PTT_INTENT_REJECT", fields: ["reason": reason, "audio": audio.interruption.state.rawValue])
+            return .unavailable
+        }
+        guard !Task.isCancelled else { return rejected("CANCELLED") }
         if actionButtonInvocation.active {
             actionButtonInvocation.cancel()
             if actionButtonOwnsAttempt { endPttInput(usingIntent: true) }
@@ -1477,12 +1482,14 @@ final class IntercomSessionController: ObservableObject {
         guard actionButtonPttEnabled, pttRequestGate.state == .idle else {
             return toggleActionButtonPtt()
         }
-        guard audio.interruption.state == .ready, !remoteFloorBusy,
-              !rxConsistencySnapshot.remoteBusyBlocksLocalPtt,
-              (joinedSession?.canPublish ?? recoveryIntent.descriptor?.canPublish) == true else { return .unavailable }
-        guard isPoweredOn, actionButtonHasValidatedSession,
-              let channel = joinedSession?.channel.id ?? recoveryIntent.descriptor?.channelId,
-              let user = selectedUserId else { return .unavailable }
+        guard audio.interruption.state == .ready else { return rejected("AUDIO_NOT_READY") }
+        guard !remoteFloorBusy else { return rejected("REMOTE_FLOOR_BUSY") }
+        guard !rxConsistencySnapshot.remoteBusyBlocksLocalPtt else { return rejected("REMOTE_RX_BUSY") }
+        guard (joinedSession?.canPublish ?? recoveryIntent.descriptor?.canPublish) == true else { return rejected("NO_PUBLISH_AUTHORITY") }
+        guard isPoweredOn else { return rejected("POWER_OFF") }
+        guard actionButtonHasValidatedSession else { return rejected("NO_VALIDATED_RUNTIME") }
+        guard let channel = joinedSession?.channel.id ?? recoveryIntent.descriptor?.channelId,
+              let user = selectedUserId else { return rejected("NO_SCOPE") }
         let token = actionButtonInvocation.begin(channel: channel, user: user, now: ProcessInfo.processInfo.systemUptime)
         var ownedAttempt: Int?
         var started = false

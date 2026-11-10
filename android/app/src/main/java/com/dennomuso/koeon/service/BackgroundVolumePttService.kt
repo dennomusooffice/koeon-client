@@ -2,6 +2,7 @@ package com.dennomuso.koeon.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Intent
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import com.dennomuso.koeon.KoeonApplication
@@ -23,6 +24,13 @@ class BackgroundVolumePttService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
     override fun onInterrupt() { gate.invalidate(); manager.cancelBackgroundVolumePtt() }
+    override fun onUnbind(intent: Intent?): Boolean {
+        gate.invalidate()
+        if (active?.get() === this) active = null
+        manager.onBackgroundVolumeServiceChanged(false)
+        return super.onUnbind(intent)
+    }
+
     override fun onDestroy() {
         gate.invalidate()
         if (active?.get() === this) active = null

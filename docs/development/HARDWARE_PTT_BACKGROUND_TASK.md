@@ -58,3 +58,17 @@ Android1.0.19(20)の既存Activity音量入力は前面限定。microphone/media
 - 背景RECONNECTINGからショートカット1回で復元→TRANSMITTING、次の実行でIDLEを確認。Siri直接呼出しは送信せず、Siriの音声割込みとの区別が残る。
 - 試験専用ショートカット「10秒待機→送信切替→5秒待機→送信切替」を通常UIで作成し、待機中にロック。15:55:15 UTCに背景RECONNECTING/復元開始、16秒にCONNECTED/STARTREQUESTED、17秒にTRANSMITTING、22秒にSTOPREQUESTED/IDLE、23秒にaudio INACTIVE。前後ともOS locked=true。初回Intentから開始停止した診断証拠であり、実アクションボタン/音声聴取の追加確認ではない。5分ロック後は次の試験。
 - Android統合試作: 207単体テスト成功、Lint/Debug APK成功。内部署名APKは1.0.19-ptt01 (20)、SHA256 `686f94209a33a91793c3e93ea07d14ed6dad405a74c1733c0841ec2ed8241af9`。版名のみ内部Gradle initで上書きし、公開版のdefaultConfigは変更していない。製品統合後の実機検証はこれから。公開配信・マージなし。
+
+### 起動経路の追加切り分け
+
+5分ロック後のSiri経由ではPTT開始イベントがなく、一般ショートカットの起動条件とSiriの音声占有が混ざる。OSの通常unlock/アプリ起動はロック認証で拒否。Shortcutsの公開URLをno-activate起動で渡すと起動自体は受理されるが、PTT実行の証拠はない。拒否を迂回せず、AppShortcutsProviderから同じPushToTalkTransmissionIntentを直接公開する方法を追加比較する。アクションボタン設定時の選択肢にもなる既存Intentの入口であり、認可・opt-in・冷起動拒否・8秒上限を変更しない。フレーズにはアプリ名だけを含め、ユーザー/チャンネル情報をSiriパラメータへ渡さない。実ボタンとの同等性は別に判定する。[Apple App Shortcuts](https://developer.apple.com/documentation/appintents/app-shortcuts)。
+
+診断版2026111085は入口と早期拒否分類を追加し、署名ビルド・更新導入済み。ただしロック中の通常起動はOSに拒否され、実行診断は未取得。85を実機成功版として扱わない。
+
+### 中間検証 2026-11-11 01:30 JST
+
+- Android 1.0.19-ptt01(20)、ソース23aee76: KOＥONが対象MediaSessionであることを毎回確認して合成MEDIA_PLAY_PAUSEを入力。ホーム背景で16:13:11.449 UTCにTRANSMITTING、15.630にRELEASING、16.279にIDLE。消灯中は18.708にTRANSMITTING、22.909にRELEASING、24.124にIDLE。全TXイベントがBACKGROUND_OR_LOCKED / CONNECTED / audio READY。RX_READYは両回とも期待3/応答2。音声の聴取確認ではない。
+- 音量キーの独立入力probeと既存メディアボタン経由の背景TXは個別に成立したが、統合版の音量→TXは未確認。OPPO Android14の「制限付き設定」が新サービスの有効化を拒否し、標準App Infoに許可メニューが出ない。アプリ情報再生成/通知のOK/メニュー操作でも同じ。権限の特権変更・インストーラー偽装・データを消す再インストールは行っていない。
+- 独立probeは撤去済み。Android診断はアプリのExport操作で取得し、端末Downloadへ作ったコピーは削除。音声保存なし。背景試作の設定をOFFに戻してメディア入力を試験した。元々有効なHeadset PTT設定はそのまま。
+- Android追加レビュー: OSサービスのonUnbindで直ちに自身のPTTを解除。POWER OFF/leave要求の時点で新しい背景開始を拒否し、認可済みjoinの完了後だけ解除。207件成功、Lint/Debug APK/署名候補成功。内部候補1.0.19-ptt02(20)、SHA256 `57273dbdd59a4e0c791a98fc399751813a181aa9431b6aba75787d777bf011c0` は未導入。
+- iOS2026111086は85の分類診断と同じIntentへの直接App Shortcut入口を追加。署名ビルド成功、実行結果は未確定。84で確認したロック直後の初回成功を、85/86や5分ロック後の成功へ拡張しない。

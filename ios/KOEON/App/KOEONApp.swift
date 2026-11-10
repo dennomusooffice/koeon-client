@@ -68,3 +68,16 @@ private enum ActionButtonPttError: LocalizedError {
         }
     }
 }
+
+/// A direct system shortcut also lets the Action button select the existing intent.
+/// No user, channel, credential, or audio data is donated as a phrase parameter.
+struct KoeonPttAppShortcuts: AppShortcutsProvider {
+    static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: ToggleKoeonTransmissionIntent(),
+            phrases: ["\(.applicationName)で送信を切り替える", "Toggle transmission in \(.applicationName)"],
+            shortTitle: "送信を切り替える",
+            systemImageName: "mic"
+        )
+    }
+}
