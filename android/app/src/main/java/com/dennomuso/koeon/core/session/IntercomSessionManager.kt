@@ -177,6 +177,7 @@ data class SessionDiagnostics(
     val hardwareVolumeShortPressCount: Int = 0,
     val hardwareVolumeLongPressCount: Int = 0,
     val hardwareVolumePttToggleCount: Int = 0,
+    val outputVolumeAvailable: Boolean = false,
     val outputVolume: Int = 0,
     val outputVolumeMax: Int = 0,
     val inputGain: InputGainSnapshot = InputGainSnapshot(),
@@ -311,6 +312,19 @@ class IntercomSessionManager(
     private val _state = MutableStateFlow(IntercomUiState())
     val state: StateFlow<IntercomUiState> = _state.asStateFlow()
 
+    private val outputVolumeObserver = OutputVolumeObserver(
+        scope,
+        readIndex = { systemAudioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL) },
+        readMaximum = { systemAudioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL) },
+        publish = { volume ->
+            _state.update { it.copy(diagnostics = it.diagnostics.copy(
+                outputVolumeAvailable = volume != null,
+                outputVolume = volume?.index ?: 0,
+                outputVolumeMax = volume?.maximum ?: 0,
+            )) }
+        },
+    )
+
     val fieldJournal = FieldJournal(appContext)
 
     private fun journalFields(value: IntercomUiState): Map<String, Any?> = mapOf(
@@ -371,8 +385,6 @@ class IntercomSessionManager(
             headsetPttEnabled = headsetPttEnabled,
             headsetPttMode = headsetPttMode,
             hardwareVolumePttMode = hardwareVolumePttMode,
-            outputVolume = systemAudioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL),
-            outputVolumeMax = systemAudioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),
             inputGain = gainProcessor.snapshot(),
             audioCaptureProfile = audioCaptureProfile,
             audioBitratePreset = audioBitratePreset,
@@ -701,10 +713,7 @@ class IntercomSessionManager(
             if (direction < 0) AudioManager.ADJUST_LOWER else AudioManager.ADJUST_RAISE,
             AudioManager.FLAG_SHOW_UI,
         )
-        _state.update { it.copy(diagnostics = it.diagnostics.copy(
-            outputVolume = systemAudioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL),
-            outputVolumeMax = systemAudioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),
-        )) }
+        outputVolumeObserver.refresh()
     }
 
     fun setInputGainMode(mode: InputGainMode) {
@@ -757,6 +766,7 @@ class IntercomSessionManager(
     }
 
     fun setActivityVisibility(value: String) {
+        outputVolumeObserver.setActive(value == "foreground")
         val service = IntercomForegroundService.diagnostics()
         _state.update {
             it.copy(diagnostics = it.diagnostics.copy(
