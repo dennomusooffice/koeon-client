@@ -576,7 +576,9 @@ private fun HardwareAndGainSettings(state: IntercomUiState, manager: IntercomSes
             modifier = Modifier.weight(1f),
         ) { Text("TOGGLE") }
     }
-    Text("OUTPUT VOLUME ${diagnostics.outputVolume}/${diagnostics.outputVolumeMax}")
+    Text(if (diagnostics.outputVolumeAvailable)
+        "OUTPUT VOLUME ${diagnostics.outputVolume}/${diagnostics.outputVolumeMax}"
+    else "OUTPUT VOLUME Unavailable")
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { manager.adjustOutputVolume(-1) }, modifier = Modifier.weight(1f)) { Text("−") }
         Button(onClick = { manager.adjustOutputVolume(1) }, modifier = Modifier.weight(1f)) { Text("+") }
