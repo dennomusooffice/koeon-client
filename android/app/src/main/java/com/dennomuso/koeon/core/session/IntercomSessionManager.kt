@@ -168,6 +168,9 @@ data class SessionDiagnostics(
     val appTouchPointerIdPresent: Boolean = false,
     val headsetLatched: Boolean = false,
     val headsetRoutePresent: Boolean = false,
+    val backgroundVolumePttEnabled: Boolean = false,
+    val backgroundVolumeServiceConnected: Boolean = false,
+    val backgroundVolumePttLatched: Boolean = false,
     val hardwareVolumePttMode: HardwareVolumePttMode = HardwareVolumePttMode.OFF,
     val hardwareVolumePttLatched: Boolean = false,
     val hardwareVolumeLastKey: String? = null,
@@ -281,6 +284,9 @@ class IntercomSessionManager(
         }
     }
     private val appTouchPttGate = AppTouchPttGate()
+    private var backgroundVolumePttEnabled = devicePreferences.getBoolean("background_volume_ptt_enabled", false)
+    private var backgroundVolumeServiceConnected = false
+    private var backgroundVolumeOwnsPtt = false
     private val hardwareVolumePttGate = HardwareVolumePttGate()
     private val systemAudioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var statusJob: Job? = null
@@ -389,6 +395,7 @@ class IntercomSessionManager(
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             headsetPttEnabled = headsetPttEnabled,
             headsetPttMode = headsetPttMode,
+            backgroundVolumePttEnabled = backgroundVolumePttEnabled,
             hardwareVolumePttMode = hardwareVolumePttMode,
             outputVolume = systemAudioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL),
             outputVolumeMax = systemAudioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),
@@ -664,7 +671,49 @@ class IntercomSessionManager(
         _state.update { it.copy(diagnostics = it.diagnostics.copy(headsetPttMode = mode)) }
     }
 
+    fun setBackgroundVolumePttEnabled(enabled: Boolean) {
+        if (hardwareVolumePttGate.clear()) pttUp(PttInputSource.HARDWARE_VOLUME_BUTTON)
+        cancelBackgroundVolumePtt()
+        backgroundVolumePttEnabled = enabled
+        devicePreferences.edit().putBoolean("background_volume_ptt_enabled", enabled).apply()
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttEnabled = enabled, hardwareVolumePttLatched = false)) }
+    }
+
+    fun onBackgroundVolumeServiceChanged(connected: Boolean) {
+        cancelBackgroundVolumePtt()
+        backgroundVolumeServiceConnected = connected
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumeServiceConnected = connected)) }
+    }
+
+    fun cancelBackgroundVolumePtt() {
+        com.dennomuso.koeon.service.BackgroundVolumePttService.invalidatePendingInput()
+        if (backgroundVolumeOwnsPtt) pttUp(PttInputSource.HARDWARE_VOLUME_BUTTON)
+        backgroundVolumeOwnsPtt = false
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttLatched = false)) }
+    }
+
+    fun backgroundVolumePttEligible(): Boolean {
+        if (!backgroundVolumePttEnabled || !backgroundVolumeServiceConnected || hardwareVolumePttMode != HardwareVolumePttMode.TOGGLE) return false
+        // A stop remains possible even if eligibility for a new start has changed.
+        if (backgroundVolumeOwnsPtt) return true
+        val state = _state.value
+        return state.joined && state.join?.canPublish == true &&
+            state.operationalState == OperationalState.ACTIVE &&
+            state.connectionState == IntercomConnectionState.CONNECTED &&
+            state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY &&
+            state.ptt.state == PttState.IDLE && IntercomForegroundService.diagnostics().running
+    }
+
+    fun toggleBackgroundVolumePtt() {
+        if (backgroundVolumeOwnsPtt) { cancelBackgroundVolumePtt(); return }
+        if (!backgroundVolumePttEligible()) return
+        backgroundVolumeOwnsPtt = pttDown(PttInputSource.HARDWARE_VOLUME_BUTTON)
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttLatched = backgroundVolumeOwnsPtt)) }
+        fieldJournal.record("HARDWARE_PTT", journalFields(_state.value) + mapOf("reason" to if (backgroundVolumeOwnsPtt) "BACKGROUND_START" else "BACKGROUND_REJECTED"))
+    }
+
     fun setHardwareVolumePttMode(mode: HardwareVolumePttMode) {
+        cancelBackgroundVolumePtt()
         if (mode == HardwareVolumePttMode.OFF && hardwareVolumePttGate.clear()) {
             pttUp(PttInputSource.HARDWARE_VOLUME_BUTTON)
         }
@@ -678,6 +727,7 @@ class IntercomSessionManager(
 
     /** Returns true only when KOEON intentionally owns this foreground key sequence. */
     fun onHardwareVolumeKey(keyCode: Int, event: KeyEvent): Boolean {
+        if (backgroundVolumePttEnabled && backgroundVolumeServiceConnected) return false
         val state = _state.value
         val eligible = HardwareVolumePttEligibility(
             mode = hardwareVolumePttMode,
@@ -935,6 +985,7 @@ class IntercomSessionManager(
     private suspend fun leaveLocked(powerOff: Boolean, keepService: Boolean = false) {
         appTouchPttGate.cancel()
         hardwareVolumePttGate.clear()
+        cancelBackgroundVolumePtt()
         val join = _state.value.join
         statusJob?.cancel()
         uptimeJob?.cancel()
@@ -1151,6 +1202,9 @@ class IntercomSessionManager(
                 refreshInputGainDiagnostics()
                 if (ptt.state !in setOf(PttState.REQUESTING_FLOOR, PttState.TRANSMITTING, PttState.RELEASING)) {
                     IntercomForegroundService.resetHeadsetLatch()
+                    backgroundVolumeOwnsPtt = false
+                    com.dennomuso.koeon.service.BackgroundVolumePttService.invalidatePendingInput()
+                    _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttLatched = false)) }
                 }
                 _state.update { it.copy(ptt = ptt, error = ptt.lastError ?: it.error) }
             },
@@ -1229,6 +1283,7 @@ class IntercomSessionManager(
     private suspend fun stopPttForSafetyIfActive(reason: String) {
         val touchCancelled = appTouchPttGate.cancel()
         hardwareVolumePttGate.clear()
+        cancelBackgroundVolumePtt()
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             lastPttInputSource = PttInputSource.SYSTEM_SAFETY,
             appTouchPressed = false,

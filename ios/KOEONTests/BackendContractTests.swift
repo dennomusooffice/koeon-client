@@ -2,6 +2,45 @@ import XCTest
 @testable import KOEON
 
 final class BackendContractTests: XCTestCase {
+    func testActionButtonInvocationExpiresAtEightSecondsAndRejectsChangedScope() {
+        var gate = ActionButtonInvocationGate()
+        let token = gate.begin(channel: "channel-a", user: "user-a", now: 100)
+        XCTAssertTrue(gate.permits(token, channel: "channel-a", user: "user-a", now: 107.99))
+        XCTAssertFalse(gate.permits(token, channel: "channel-a", user: "user-a", now: 108))
+        XCTAssertFalse(gate.permits(token, channel: "channel-b", user: "user-a", now: 101))
+        XCTAssertFalse(gate.permits(token, channel: "channel-a", user: "user-b", now: 101))
+    }
+
+    func testActionButtonInvocationCancelAndLateCompletionCannotAffectNextInvocation() {
+        var gate = ActionButtonInvocationGate()
+        let old = gate.begin(channel: "channel-a", user: "user-a", now: 10)
+        gate.cancel()
+        XCTAssertFalse(gate.permits(old, channel: "channel-a", user: "user-a", now: 11))
+        let next = gate.begin(channel: "channel-a", user: "user-a", now: 11)
+        gate.finish(old)
+        XCTAssertTrue(gate.permits(next, channel: "channel-a", user: "user-a", now: 12))
+        gate.finish(next)
+        XCTAssertFalse(gate.active)
+    }
+
+    func testActionButtonInvocationAllowsOnlyOneRecoveryForItsOwnGeneration() {
+        var gate = ActionButtonInvocationGate()
+        let first = gate.begin(channel: "channel-a", user: "user-a", now: 10)
+        XCTAssertTrue(gate.claimRecovery(first))
+        XCTAssertFalse(gate.claimRecovery(first))
+        gate.cancel()
+        let next = gate.begin(channel: "channel-a", user: "user-a", now: 11)
+        XCTAssertFalse(gate.claimRecovery(first))
+        XCTAssertTrue(gate.claimRecovery(next))
+    }
+
+    func testActionButtonRecoveryDoesNotTrustStaleConnectedSnapshot() {
+        XCTAssertEqual(runtimeRestoreEntryDecision(reason: .actionButtonRecovery,
+            hasJoinedRuntime: true, connectionState: .connected), .performFreshResume)
+        XCTAssertEqual(runtimeRestoreEntryDecision(reason: .foregroundRecovery,
+            hasJoinedRuntime: true, connectionState: .connected), .useConnectedRuntime)
+    }
+
     func testRuntimeConfigurationAcceptsValidHTTPSURL() throws {
         let url = try XCTUnwrap(RuntimeConfiguration.apiBaseURL(from: [
             RuntimeConfiguration.apiBaseURLInfoKey: "https://api.example.test/v1",

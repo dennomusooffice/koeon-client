@@ -85,6 +85,7 @@ enum RuntimeRestoreReason: String, Sendable {
     case incomingPushColdWake = "INCOMING_PUSH_COLD_WAKE"
     case foregroundRecovery = "FOREGROUND_RECOVERY"
     case systemChannelRestoration = "SYSTEM_CHANNEL_RESTORATION"
+    case actionButtonRecovery = "ACTION_BUTTON_RECOVERY"
 }
 
 enum RuntimeRestoreEntryDecision: String, Sendable {
@@ -114,7 +115,7 @@ func runtimeRestoreEntryDecision(
 ) -> RuntimeRestoreEntryDecision {
     // Once the Apple incoming-Push path has classified this runtime as a cold
     // wake, a stale SDK `.connected` snapshot must not cancel the fresh resume.
-    if runtimeDirty || reason == .incomingPushColdWake || reason == .rxSelfHeal || reason == .backendSessionExpired { return .performFreshResume }
+    if runtimeDirty || reason == .incomingPushColdWake || reason == .rxSelfHeal || reason == .backendSessionExpired || reason == .actionButtonRecovery { return .performFreshResume }
     return hasJoinedRuntime && connectionState == .connected
         ? .useConnectedRuntime
         : .performFreshResume
@@ -411,6 +412,37 @@ enum ActionButtonPttResult: Equatable {
     case startRequested, stopRequested, settling, disabled, unavailable
 }
 
+/// One explicit invocation, one scope, one recovery, and a monotonic deadline.
+struct ActionButtonInvocationGate {
+    private(set) var active = false
+    private var generation = 0
+    private var channel = ""
+    private var user = ""
+    private var expiresAt: TimeInterval = 0
+    private var recovered = false
+
+    mutating func begin(channel: String, user: String, now: TimeInterval) -> Int {
+        generation += 1
+        active = true
+        self.channel = channel
+        self.user = user
+        expiresAt = now + 8
+        recovered = false
+        return generation
+    }
+    func owns(_ token: Int) -> Bool { active && token == generation }
+    func permits(_ token: Int, channel: String?, user: String?, now: TimeInterval) -> Bool {
+        owns(token) && channel == self.channel && user == self.user && now < expiresAt
+    }
+    mutating func claimRecovery(_ token: Int) -> Bool {
+        guard owns(token), !recovered else { return false }
+        recovered = true
+        return true
+    }
+    mutating func finish(_ token: Int) { if owns(token) { active = false } }
+    mutating func cancel() { generation += 1; active = false }
+}
+
 /// Stop takes precedence over readiness; repeated calls during release never queue TX.
 func actionButtonPttDecision(enabled: Bool, state: PttRequestGateState,
                              eligible: Bool) -> ActionButtonPttResult {
@@ -428,6 +460,9 @@ final class IntercomSessionController: ObservableObject {
     static let shared = IntercomSessionController()
     @Published private(set) var actionButtonPttEnabled = false
     private var actionButtonOwnsAttempt = false
+    private var actionButtonInvocation = ActionButtonInvocationGate()
+    private var actionButtonHasValidatedSession = false
+    private var transportFailureGeneration = 0
 
     @Published private(set) var fixture: FixtureResponse?
     @Published private(set) var identity: MeResponse?
@@ -686,6 +721,7 @@ final class IntercomSessionController: ObservableObject {
 
         room.onUnsafeDisconnect = { [weak self] reason in
             guard let self else { return }
+            self.transportFailureGeneration += 1
             self.runtimeLiveness.invalidate()
             // A transport failure is not the end of an Apple PTT reception.
             // The APNs response may have just activated it. Keep ownership
@@ -711,7 +747,10 @@ final class IntercomSessionController: ObservableObject {
         room.onConnectionStateChanged = { [weak self] state in
             guard let self else { return }
             self.journal("CONNECTION", fields: ["connection": state.rawValue.uppercased()])
-            if state != .connected { self.runtimeLiveness.invalidate() }
+            if state != .connected {
+                self.transportFailureGeneration += 1
+                self.runtimeLiveness.invalidate()
+            }
             self.pushToTalk.setServiceConnection(state)
             if state == .reconnecting {
                 self.beginReconnectAttempt(reason: "livekit_reconnecting")
@@ -1311,6 +1350,7 @@ final class IntercomSessionController: ObservableObject {
 
     func leave(powerOff: Bool = true) async {
         guard !isStoppingRuntime else { return }
+        actionButtonInvocation.cancel()
         isStoppingRuntime = true
         isLoading = true
         defer { isStoppingRuntime = false; isLoading = false }
@@ -1397,6 +1437,7 @@ final class IntercomSessionController: ObservableObject {
     }
 
     func setActionButtonPttEnabled(_ enabled: Bool) {
+        if !enabled { actionButtonInvocation.cancel() }
         if !enabled, actionButtonOwnsAttempt { endPttInput(usingIntent: true) }
         actionButtonPttEnabled = enabled
         audioPublishDefaults.set(enabled, forKey: "ptt.actionButtonEnabled")
@@ -1426,21 +1467,73 @@ final class IntercomSessionController: ObservableObject {
     /// Never retain a request for a future session or interfere with a newer attempt.
     func toggleActionButtonPttFromIntent() async -> ActionButtonPttResult {
         guard !Task.isCancelled else { return .unavailable }
-        let result = toggleActionButtonPtt()
-        guard result == .startRequested else { return result }
-        let attempt = txAttemptGeneration
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(3))
-        while !Task.isCancelled, clock.now < deadline,
-              attempt == txAttemptGeneration, actionButtonOwnsAttempt {
-            if pttSnapshot.state == .transmitting { return .startRequested }
-            guard pttRequestGate.state == .beginRequested || pttRequestGate.state == .transmitting else { break }
-            do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
+        if actionButtonInvocation.active {
+            actionButtonInvocation.cancel()
+            if actionButtonOwnsAttempt { endPttInput(usingIntent: true) }
+            journal("PTT_INTENT", fields: ["reason": "CANCEL_PREPARATION"])
+            return .stopRequested
         }
-        if attempt == txAttemptGeneration, actionButtonOwnsAttempt {
-            journal("PTT_INTENT_WAIT_END", fields: ["reason": Task.isCancelled ? "CANCELLED" : "NOT_STARTED"])
-            endPttInput(usingIntent: true)
+        // Stop/settling/disabled decisions never wait for a connection recovery.
+        guard actionButtonPttEnabled, pttRequestGate.state == .idle else {
+            return toggleActionButtonPtt()
         }
+        guard audio.interruption.state == .ready, !remoteFloorBusy,
+              !rxConsistencySnapshot.remoteBusyBlocksLocalPtt,
+              (joinedSession?.canPublish ?? recoveryIntent.descriptor?.canPublish) == true else { return .unavailable }
+        guard isPoweredOn, actionButtonHasValidatedSession,
+              let channel = joinedSession?.channel.id ?? recoveryIntent.descriptor?.channelId,
+              let user = selectedUserId else { return .unavailable }
+        let token = actionButtonInvocation.begin(channel: channel, user: user, now: ProcessInfo.processInfo.systemUptime)
+        var ownedAttempt: Int?
+        var started = false
+        defer {
+            actionButtonInvocation.finish(token)
+            if !started, let attempt = ownedAttempt, attempt == txAttemptGeneration, actionButtonOwnsAttempt {
+                endPttInput(usingIntent: true)
+            }
+        }
+        func permitted() -> Bool {
+            !Task.isCancelled && isPoweredOn && actionButtonPttEnabled && !isStoppingRuntime &&
+                actionButtonInvocation.permits(token, channel: selectedChannelId, user: selectedUserId,
+                                               now: ProcessInfo.processInfo.systemUptime)
+        }
+        var needsRecovery = room.connectionState != .connected || (appLifecycleState != "active" && runtimeLiveness.dirty)
+        while permitted() {
+            if restoreTask != nil || needsRecovery {
+                guard actionButtonInvocation.claimRecovery(token),
+                      let descriptor = PttRestoreDescriptor.load(from: .standard) ?? recoveryIntent.descriptor,
+                      descriptor.channelId == channel else { break }
+                journal("PTT_INTENT_RECOVERY", fields: ["reason": "BEGIN"])
+                if restoreTask == nil { requestRuntimeRestore(descriptor, reason: .actionButtonRecovery) }
+                while permitted(), restoreTask != nil {
+                    do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
+                }
+                guard permitted(), restoreTask == nil, joinedSession?.channel.id == channel,
+                      room.connectionState == .connected else { break }
+                needsRecovery = false
+                journal("PTT_INTENT_RECOVERY", fields: ["reason": "READY"])
+            }
+            guard permitted(), joinedSession?.channel.id == channel else { break }
+            let failureBeforeStart = transportFailureGeneration
+            let result = toggleActionButtonPtt()
+            guard result == .startRequested else { return result }
+            let attempt = txAttemptGeneration
+            ownedAttempt = attempt
+            let startDeadline = ProcessInfo.processInfo.systemUptime + 3
+            while permitted(), ProcessInfo.processInfo.systemUptime < startDeadline,
+                  attempt == txAttemptGeneration, actionButtonOwnsAttempt {
+                if pttSnapshot.state == .transmitting {
+                    started = true
+                    return .startRequested
+                }
+                guard pttRequestGate.state == .beginRequested || pttRequestGate.state == .transmitting else { break }
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
+            }
+            if attempt == txAttemptGeneration, actionButtonOwnsAttempt { endPttInput(usingIntent: true) }
+            guard permitted(), transportFailureGeneration > failureBeforeStart || room.connectionState != .connected else { break }
+            needsRecovery = true
+        }
+        journal("PTT_INTENT_WAIT_END", fields: ["reason": Task.isCancelled ? "CANCELLED" : "NOT_STARTED"])
         return .unavailable
     }
 
@@ -2653,8 +2746,10 @@ final class IntercomSessionController: ObservableObject {
 
 
     private func validateCurrentRuntime() {
-        runtimeLiveness.validate(bindingsReady: joinedSession != nil && room.connectionState == .connected &&
-            rx != nil && remoteReceive != nil && ptt != nil)
+        let ready = joinedSession != nil && room.connectionState == .connected &&
+            rx != nil && remoteReceive != nil && ptt != nil
+        runtimeLiveness.validate(bindingsReady: ready)
+        if ready { actionButtonHasValidatedSession = true }
     }
 
     private func performRxRecovery(level: Int, sessionId: String, generation: Int) {
