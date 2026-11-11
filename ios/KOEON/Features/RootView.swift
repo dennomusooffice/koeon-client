@@ -203,6 +203,16 @@ struct RootView: View {
         }
     }
 
+    private var currentChannelNumber: Int? {
+        if let channel = session.fixture?.channels.first(where: { $0.id == session.joinedSession?.channel.id }) {
+            return ChannelSwitchPolicy.number(channel.channelNumber)
+        }
+        return ChannelSwitchPolicy.number(session.joinedSession?.channel.channelNumber)
+    }
+    private var keyDigits: (ones: Int?, tens: Int?) {
+        ChannelSwitchPolicy.digits(number: currentChannelNumber, entry: channelDigits, count: channelDigitCount)
+    }
+    private var twoDigitActive: Bool { channelDigits != nil ? channelDigitCount == 2 : (currentChannelNumber ?? 0) >= 10 }
     private var channelKeys: some View {
         VStack(spacing: 5) {
             Text("CHANNEL SELECT").font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading)
@@ -214,17 +224,18 @@ struct RootView: View {
                             if (channelDigits?.count ?? 0) < 2 { channelDigits?.append(String(number)) }
                         } else { channelDigitCount = 1; channelDigits = String(number) }
                     } label: {
-                        VStack(spacing: 4) {
-                            Capsule().fill(ChannelSwitchPolicy.number(session.joinedSession?.channel.name ?? "") == number && channelDigits == nil ? Color.blue : Color.gray.opacity(0.3)).frame(width: 16, height: 3)
-                            Text("\(number)").font(.title3.monospaced().bold())
-                        }.frame(maxWidth: .infinity, minHeight: 44)
+                        Text("\(number)").font(.title3.monospaced().bold())
+                            .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .disabled(!channelSelectionEnabled || (channelDigits == nil && numberedChannel(number) == nil))
+                    .overlay(ChannelKeyLED(blue: keyDigits.ones == number, green: keyDigits.tens == number))
                     .accessibilityLabel("CH \(number)")
+                    .accessibilityValue(keyDigits.ones == number && keyDigits.tens == number ? "1の位・10の位" : keyDigits.ones == number ? "1の位" : keyDigits.tens == number ? "10の位" : "消灯")
                 }
             }
             HStack {
-                Button("2桁入力") { pendingChannelID = nil; channelDigitCount = 2; channelDigits = "" }.disabled(!channelSelectionEnabled)
+                Button("2桁") { pendingChannelID = nil; channelDigitCount = 2; channelDigits = "" }.disabled(!channelSelectionEnabled)
+                    .overlay(ChannelKeyLED(blue: false, green: twoDigitActive))
                 Button("確定") {
                     if channelSelectionEnabled, let target = candidateChannel { Task { await session.switchChannel(to: target.id) } }
                     cancelChannelEntry()
@@ -290,7 +301,7 @@ struct RootView: View {
     private func stageChannel(_ id: String) {
         guard channelSelectionEnabled, let channel = session.fixture?.channels.first(where: { $0.id == id }) else { return }
         pendingChannelID = id
-        channelDigits = ChannelSwitchPolicy.number(channel.name).map(String.init) ?? ""
+        channelDigits = ChannelSwitchPolicy.number(channel.channelNumber).map(String.init) ?? ""
         channelDigitCount = max(1, channelDigits?.count ?? 1)
     }
     private func cancelChannelEntry() { channelDigits = nil; pendingChannelID = nil }
@@ -321,7 +332,7 @@ struct RootView: View {
                 Spacer(minLength: 0)
             } else {
                 HStack {
-                    Text("CHANNEL / \(session.room.connectionState.rawValue)").font(.caption2)
+                    Text("\(currentChannelNumber.map { "CH\($0)" } ?? "CH —") / \(session.room.connectionState.rawValue)").font(.caption2)
                     Spacer()
                     Text(consoleStatus).font(.caption2.bold())
                 }.lineLimit(1)
@@ -838,5 +849,20 @@ private struct ConsoleMeter: View {
             }
             Text(db.map { $0.isFinite ? String(format: "%.0f", $0) : "—" } ?? "—").font(.caption2.monospaced()).frame(width: 25)
         }.accessibilityElement(children: .ignore).accessibilityLabel("\(label): \(db.map { String(format: "%.0f dBFS", $0) } ?? "未取得")")
+    }
+}
+
+private struct ChannelKeyLED: View {
+    let blue: Bool
+    let green: Bool
+    var body: some View {
+        RoundedRectangle(cornerRadius: 7).strokeBorder(
+            LinearGradient(stops: [
+                .init(color: green ? .green : blue ? .blue : .clear, location: 0),
+                .init(color: green ? .green : blue ? .blue : .clear, location: 0.499),
+                .init(color: blue ? .blue : green ? .green : .clear, location: 0.5),
+                .init(color: blue ? .blue : green ? .green : .clear, location: 1)
+            ], startPoint: .leading, endPoint: .trailing), lineWidth: 3
+        ).allowsHitTesting(false).accessibilityHidden(true)
     }
 }

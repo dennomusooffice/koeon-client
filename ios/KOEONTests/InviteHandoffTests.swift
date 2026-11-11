@@ -57,15 +57,29 @@ final class InviteHandoffTests: XCTestCase {
     }
 
     func testExplicitChannelNumbersRejectAmbiguity() {
-        XCTAssertEqual(ChannelSwitchPolicy.number("CH12 Test"), 12)
-        XCTAssertEqual(ChannelSwitchPolicy.number("ch0"), 0)
-        XCTAssertEqual(ChannelSwitchPolicy.number("CH99-Stage"), 99)
-        for name in ["CH100", "CH12abc", "stage12", "12 stage", "CH-1"] { XCTAssertNil(ChannelSwitchPolicy.number(name)) }
-        let one = Channel(id: "one", workspaceId: "scope", name: "CH12 Test")
-        let two = Channel(id: "two", workspaceId: "scope", name: "CH12 Duplicate")
+        XCTAssertEqual(ChannelSwitchPolicy.number(12), 12)
+        XCTAssertEqual(ChannelSwitchPolicy.number(0), 0)
+        for n in [-1, 100] { XCTAssertNil(ChannelSwitchPolicy.number(n)) }
+        let one = Channel(id: "one", workspaceId: "scope", name: "CH99 misleading", channelNumber: 12)
+        let two = Channel(id: "two", workspaceId: "scope", name: "Other", channelNumber: 12)
+        XCTAssertNil(ChannelSwitchPolicy.numbered([Channel(id: "old", workspaceId: "scope", name: "CH12")], number: 12))
         XCTAssertEqual(ChannelSwitchPolicy.numbered([one], number: 12), one)
         XCTAssertNil(ChannelSwitchPolicy.numbered([one, two], number: 12))
         XCTAssertNil(ChannelSwitchPolicy.numbered([one], number: 1))
+    }
+
+    func testChannelNumberDecodingAndDigitPlaces() throws {
+        for suffix in ["", ",\"channelNumber\":null", ",\"channelNumber\":12"] {
+            let data = Data("{\"id\":\"synthetic\",\"name\":\"CH99\"\(suffix)}".utf8)
+            let channel = try JSONDecoder().decode(Channel.self, from: data)
+            XCTAssertEqual(channel.channelNumber, suffix.hasSuffix("12") ? 12 : nil)
+        }
+        for (n, ones, tens) in [(1, 1, nil as Int?), (12, 2, 1), (11, 1, 1), (10, 0, 1), (99, 9, 9)] {
+            let digits = ChannelSwitchPolicy.digits(number: n, entry: nil, count: 1)
+            XCTAssertEqual(digits.ones, ones); XCTAssertEqual(digits.tens, tens)
+        }
+        let partial = ChannelSwitchPolicy.digits(number: 2, entry: "1", count: 2)
+        XCTAssertNil(partial.ones); XCTAssertEqual(partial.tens, 1)
     }
 
     func testChannelSelectorHasStableOrderAndWraps() {

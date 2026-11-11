@@ -1,5 +1,7 @@
 package com.dennomuso.koeon
 
+import androidx.compose.ui.semantics.stateDescription
+
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -442,7 +444,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     fun stageChannel(id: String) {
         val channel = channels.firstOrNull { it.id == id } ?: return
         pendingChannelId = id
-        digits = ChannelSwitchPolicy.number(channel.name)?.toString().orEmpty()
+        digits = ChannelSwitchPolicy.number(channel.channelNumber)?.toString().orEmpty()
         digitCount = maxOf(1, digits!!.length)
     }
     LaunchedEffect(digits, pendingChannelId, joined.channel.id) {
@@ -461,7 +463,12 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     val interactionEnabled = canTransmit && (inputPressed || pttSemantic == PttSemanticState.READY)
     val pttEnabled = interactionEnabled && pttSemantic == PttSemanticState.READY && digits == null
     val touchDownEligible by rememberUpdatedState(pttEnabled)
-    val pttColor = if (state.error != null || !audioReady) KoeonRed else when (pttSemantic) {
+    val currentChoice = channels.firstOrNull { it.id == joined.channel.id }
+    val currentNumber = ChannelSwitchPolicy.number(if (currentChoice != null) currentChoice.channelNumber else joined.channel.channelNumber)
+    val keyDigits = ChannelSwitchPolicy.digits(currentNumber, digits, digitCount)
+    val twoDigitActive = if (digits != null) digitCount == 2 else (currentNumber ?: 0) >= 10
+    val warningActive = com.dennomuso.koeon.core.ptt.consoleWarningActive(pttSemantic, state.diagnostics.audioAvailabilityState)
+    val pttColor = if (warningActive) KoeonRed else when (pttSemantic) {
         PttSemanticState.READY -> Color.Gray.copy(alpha = .4f)
         PttSemanticState.TALKING -> Color(0xFF16E05D)
         PttSemanticState.BUSY_REMOTE, PttSemanticState.PREPARING -> Color(0xFFFFB020)
@@ -497,7 +504,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 }
                 Text(candidate?.name ?: "番号を選択してください", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1)
             } else {
-                Text("CHANNEL / ${state.connectionState} · ${pttSemantic.name}", fontSize = 11.sp, lineHeight = 14.sp)
+                Text("${currentNumber?.let { "CH$it" } ?: "CH —"} / ${state.connectionState} · ${pttSemantic.name}", fontSize = 11.sp, lineHeight = 14.sp)
                 Text(joined.channel.name, fontSize = 24.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.clickable(enabled = channelEnabled) { channelListOpen = true })
                 Text("SPEAKER / 発話者", fontSize = 10.sp, lineHeight = 13.sp)
                 Text(if (pttSemantic == PttSemanticState.TALKING) "自分" else state.currentSpeaker ?: "—", fontSize = 22.sp, lineHeight = 25.sp, maxLines = 1)
@@ -505,7 +512,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 Text(state.participants.joinToString(" · ").ifBlank { "—" }, fontSize = 22.sp, lineHeight = 25.sp, maxLines = 1, modifier = Modifier.clickable { membersOpen = true })
             }
             Spacer(Modifier.weight(1f))
-            Text(state.error ?: if (!audioReady) "AUDIO INTERRUPTED" else "AUDIO: ${state.diagnostics.audioRoute}", fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1)
+            Text(if (warningActive) state.error ?: "AUDIO INTERRUPTED" else "AUDIO: ${state.diagnostics.audioRoute}", fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1)
             Text("v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1)
         }
     }
@@ -540,18 +547,15 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp),
                     colors = androidx.compose.material3.ButtonDefaults.elevatedButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurface),
-                    modifier = Modifier.weight(1f).height(44.dp),
+                    modifier = Modifier.weight(1f).height(44.dp).channelLED(keyDigits.ones == number, keyDigits.tens == number).semantics { stateDescription = if (keyDigits.ones == number && keyDigits.tens == number) "1の位・10の位" else if (keyDigits.ones == number) "1の位" else if (keyDigits.tens == number) "10の位" else "消灯" },
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.width(16.dp).height(3.dp).background(if (ChannelSwitchPolicy.number(joined.channel.name) == number && digits == null) Color(0xFF328BDF) else Color.Gray.copy(alpha = .3f)))
-                        Text(number.toString(), fontSize = 20.sp, lineHeight = 23.sp)
-                    }
+                    Text(number.toString(), fontSize = 20.sp, lineHeight = 23.sp)
                 }
             }
         }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Button(onClick = { pendingChannelId = null; digitCount = 2; digits = "" }, enabled = channelEnabled, modifier = Modifier.weight(1f)) { Text("2桁入力", fontSize = 11.sp, lineHeight = 14.sp) }
+        Button(onClick = { pendingChannelId = null; digitCount = 2; digits = "" }, enabled = channelEnabled, modifier = Modifier.weight(1f).channelLED(false, twoDigitActive)) { Text("2桁", fontSize = 11.sp, lineHeight = 14.sp) }
         Button(onClick = { candidate?.let { manager.switchChannel(it.id) }; digits = null; pendingChannelId = null }, enabled = channelEnabled && candidate != null, modifier = Modifier.weight(1f)) { Text("確定", fontSize = 11.sp, lineHeight = 14.sp) }
         Button(onClick = { digits = null; pendingChannelId = null }, enabled = digits != null, modifier = Modifier.weight(1f)) { Text("取消", fontSize = 11.sp, lineHeight = 14.sp) }
     }
@@ -962,4 +966,13 @@ private fun ConsoleMeter(label: String, db: Float?, color: Color) {
         }
         Text(level?.let { "%.0f".format(it) } ?: "—", fontSize = 10.sp, lineHeight = 13.sp, modifier = Modifier.width(26.dp))
     }
+}
+
+private fun Modifier.channelLED(blue: Boolean, green: Boolean): Modifier {
+    if (!blue && !green) return this
+    val left = if (green) Color(0xFF37B469) else Color(0xFF328BDF)
+    val right = if (blue) Color(0xFF328BDF) else Color(0xFF37B469)
+    return border(3.dp, androidx.compose.ui.graphics.Brush.horizontalGradient(
+        0f to left, .499f to left, .5f to right, 1f to right
+    ), androidx.compose.foundation.shape.RoundedCornerShape(7.dp))
 }

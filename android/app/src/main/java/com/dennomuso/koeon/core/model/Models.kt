@@ -12,7 +12,7 @@ data class Tenant(val id: String, val name: String)
 data class Workspace(val id: String, val tenantId: String, val name: String)
 
 @Serializable
-data class Channel(val id: String, val workspaceId: String, val name: String)
+data class Channel(val id: String, val workspaceId: String, val name: String, val channelNumber: Int? = null)
 
 @Serializable
 data class User(
@@ -51,7 +51,7 @@ data class IdentityWorkspace(val id: String, val name: String)
 data class IdentityDevice(val id: String, val name: String? = null, val platform: String)
 
 @Serializable
-data class IdentityChannel(val id: String, val name: String, val type: String)
+data class IdentityChannel(val id: String, val name: String, val type: String, val channelNumber: Int? = null)
 
 @Serializable
 data class MeResponse(
@@ -79,7 +79,7 @@ data class EnrollmentResponse(
 )
 
 @Serializable
-data class JoinChannel(val id: String, val name: String)
+data class JoinChannel(val id: String, val name: String, val channelNumber: Int? = null)
 
 @Serializable
 data class JoinResponse(

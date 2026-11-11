@@ -40,6 +40,7 @@ struct Channel: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let workspaceId: String?
     let name: String
+    var channelNumber: Int? = nil
 }
 
 struct User: Codable, Identifiable, Equatable, Sendable {
@@ -72,7 +73,7 @@ struct ResumeRequest: Codable, Equatable, Sendable {
 struct IdentityUser: Codable, Sendable { let id: String; let displayName: String; let role: KOEONRole }
 struct IdentityWorkspace: Codable, Sendable { let id: String; let name: String }
 struct IdentityDevice: Codable, Sendable { let id: String; let name: String?; let platform: String }
-struct IdentityChannel: Codable, Identifiable, Sendable { let id: String; let name: String; let type: String }
+struct IdentityChannel: Codable, Identifiable, Sendable { let id: String; let name: String; let type: String; var channelNumber: Int? = nil }
 struct MeResponse: Codable, Sendable {
     let user: IdentityUser
     let workspace: IdentityWorkspace
@@ -238,15 +239,20 @@ enum PostCallRearmState: String, Sendable {
 }
 
 enum ChannelSwitchPolicy {
-    /// Only an explicit CH prefix is a shortcut; list order never defines identity.
-    static func number(_ name: String) -> Int? {
-        guard let expression = try? NSRegularExpression(pattern: "^CH\\s*([0-9]{1,2})(?=$|[\\s_:：\\-・])", options: [.caseInsensitive]),
-              let match = expression.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
-              let range = Range(match.range(at: 1), in: name) else { return nil }
-        return Int(name[range])
+    static func number(_ value: Int?) -> Int? {
+        guard let value, (0...99).contains(value) else { return nil }
+        return value
+    }
+    static func digits(number: Int?, entry: String?, count: Int) -> (ones: Int?, tens: Int?) {
+        if let entry {
+            let values = entry.compactMap { Int(String($0)) }
+            return count == 2 ? (values.count == 2 ? values[1] : nil, values.first) : (values.first, nil)
+        }
+        guard let n = self.number(number) else { return (nil, nil) }
+        return (n % 10, n >= 10 ? n / 10 : nil)
     }
     static func numbered(_ channels: [Channel], number: Int) -> Channel? {
-        let matches = channels.filter { self.number($0.name) == number }
+        let matches = channels.filter { self.number($0.channelNumber) == number }
         return matches.count == 1 ? matches.first : nil
     }
 

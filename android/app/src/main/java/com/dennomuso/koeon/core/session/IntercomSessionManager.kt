@@ -922,7 +922,7 @@ class IntercomSessionManager(
         val fixture = FixtureResponse(
             tenant = Tenant("authenticated", "KOEON"),
             workspace = Workspace(identity.workspace.id, "authenticated", identity.workspace.name),
-            channels = identity.channels.map { Channel(it.id, identity.workspace.id, it.name) },
+            channels = identity.channels.map { Channel(it.id, identity.workspace.id, it.name, it.channelNumber) },
             users = listOf(User(
                 id = identity.user.id,
                 workspaceId = identity.workspace.id,

@@ -3,10 +3,18 @@ package com.dennomuso.koeon.core.session
 import com.dennomuso.koeon.core.model.Channel
 
 object ChannelSwitchPolicy {
-    private val numberPattern = Regex("^CH\\s*([0-9]{1,2})(?=$|[\\s_:：\\-・])", RegexOption.IGNORE_CASE)
-    fun number(name: String): Int? = numberPattern.find(name)?.groupValues?.get(1)?.toIntOrNull()
+    fun number(value: Int?): Int? = value?.takeIf { it in 0..99 }
+    data class Digits(val ones: Int?, val tens: Int?)
+    fun digits(number: Int?, entry: String?, count: Int): Digits {
+        if (entry != null) {
+            val values = entry.mapNotNull { it.digitToIntOrNull() }
+            return if (count == 2) Digits(values.getOrNull(1), values.firstOrNull()) else Digits(values.firstOrNull(), null)
+        }
+        val n = number(number) ?: return Digits(null, null)
+        return Digits(n % 10, if (n >= 10) n / 10 else null)
+    }
     fun numbered(channels: List<Channel>, number: Int): Channel? =
-        channels.filter { this.number(it.name) == number }.singleOrNull()
+        channels.filter { this.number(it.channelNumber) == number }.singleOrNull()
 
     fun ordered(channels: List<Channel>): List<Channel> =
         channels.sortedWith(compareBy<Channel>({ it.name }, { it.id }))

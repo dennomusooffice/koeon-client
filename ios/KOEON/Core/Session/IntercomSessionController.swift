@@ -1140,7 +1140,7 @@ final class IntercomSessionController: ObservableObject {
             guard !Task.isCancelled, credentialStore.read() == credential,
                   channelChoicesAreCurrent(requested: requested, current: channelChoiceScope, identity: me) else { return }
             identity = me
-            let channels = me.channels.map { Channel(id: $0.id, workspaceId: me.workspace.id, name: $0.name) }
+            let channels = me.channels.map { Channel(id: $0.id, workspaceId: me.workspace.id, name: $0.name, channelNumber: $0.channelNumber) }
             let user = User(id: me.user.id, workspaceId: me.workspace.id, name: me.user.displayName,
                 role: me.user.role, channelIds: channels.map(\.id))
             fixture = FixtureResponse(tenant: Tenant(id: "authenticated", name: "KOEON"),
@@ -1221,7 +1221,7 @@ final class IntercomSessionController: ObservableObject {
         self.identity = identity
         enrollmentRequired = false
         let channels = identity.channels.map {
-            Channel(id: $0.id, workspaceId: identity.workspace.id, name: $0.name)
+            Channel(id: $0.id, workspaceId: identity.workspace.id, name: $0.name, channelNumber: $0.channelNumber)
         }
         let user = User(
             id: identity.user.id,
@@ -2182,7 +2182,7 @@ final class IntercomSessionController: ObservableObject {
     }
 
     private func applyResumeIdentity(_ response: JoinResponse) {
-        let channel = Channel(id: response.channel.id, workspaceId: response.user.workspaceId, name: response.channel.name)
+        let channel = Channel(id: response.channel.id, workspaceId: response.user.workspaceId, name: response.channel.name, channelNumber: response.channel.channelNumber)
         let user = User(
             id: response.user.id,
             workspaceId: response.user.workspaceId,

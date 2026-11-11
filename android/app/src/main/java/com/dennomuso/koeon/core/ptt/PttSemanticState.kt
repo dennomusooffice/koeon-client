@@ -33,3 +33,8 @@ fun pttSemanticState(
     remoteTalking || pttState == PttState.BUSY -> PttSemanticState.BUSY_REMOTE
     else -> PttSemanticState.READY
 }
+
+/** Current warning only. Historical error text must never latch the console ring red. */
+fun consoleWarningActive(state: PttSemanticState, audio: AudioAvailabilityState): Boolean =
+    state in setOf(PttSemanticState.ERROR, PttSemanticState.INTERRUPTED) ||
+        audio in setOf(AudioAvailabilityState.INTERRUPTED, AudioAvailabilityState.RECOVERY_FAILED)
