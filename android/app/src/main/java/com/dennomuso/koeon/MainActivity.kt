@@ -4,6 +4,10 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.ui.graphics.graphicsLayer
 
@@ -274,7 +278,7 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
 
     Column(
         modifier = Modifier.fillMaxSize().safeDrawingPadding()
-            .then(if (!state.joined) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+            .then(if (state.join == null && state.channelSwitchSource == null) Modifier.verticalScroll(rememberScrollState()) else Modifier)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -284,15 +288,15 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
                 Text("KOEON", fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp, maxLines = 1)
             }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            androidx.compose.material3.ElevatedButton(onClick = { powerConfirm = true }, enabled = state.joined && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "POWER" }) { androidx.compose.material3.Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(26.dp)) }
+            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface), onClick = { powerConfirm = true }, enabled = (state.join != null || state.channelSwitchSource != null) && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "POWER" }) { androidx.compose.material3.Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(26.dp)) }
             Spacer(Modifier.weight(1f))
-            androidx.compose.material3.ElevatedButton(onClick = { overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
-            androidx.compose.material3.ElevatedButton(onClick = { overlay = "Diagnostics" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "Diagnostics" }) { Text("DIAG", fontSize = 10.sp, lineHeight = 13.sp) }
+            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface), onClick = { overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
+            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface), onClick = { overlay = "Diagnostics" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Diagnostics" }) { Text("DIAG", fontSize = 10.sp, lineHeight = 13.sp) }
         }
         }
 
 
-        if (!state.joined) {
+        if (state.join == null && state.channelSwitchSource == null) {
             if (state.enrollmentRequired) {
                 Text("KOEONを利用登録", color = KoeonGreen, fontSize = 26.sp, lineHeight = 29.sp, fontWeight = FontWeight.Bold)
                 Text("運営から届いた招待コードを入力してください。")
@@ -392,7 +396,7 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
             SessionPanel(state, manager)
         }
 
-        state.error?.takeIf { !state.joined }?.let { error ->
+        state.error?.takeIf { state.join == null && state.channelSwitchSource == null }?.let { error ->
             Text(error, color = MaterialTheme.colorScheme.error)
             if (error.contains("Microphone permission")) {
                 Button(
@@ -409,7 +413,7 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
 
 @Composable
 private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSessionManager) {
-    val joined = state.join ?: return
+    val joined = state.join ?: state.channelSwitchSource ?: return
     val view = LocalView.current
     var inputPressed by remember(joined.sessionId) { mutableStateOf(false) }
     val hapticController = remember(view, joined.sessionId) {
@@ -453,7 +457,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     var pendingChannelId by remember(joined.channel.id) { mutableStateOf<String?>(null) }
     var channelListOpen by remember { mutableStateOf(false) }
     val channels = state.fixture?.channels.orEmpty()
-    val channelEnabled = state.operationalState == OperationalState.ACTIVE && state.ptt.state == PttState.IDLE && !inputPressed
+    val channelEnabled = (state.operationalState == OperationalState.ACTIVE || (state.channelSwitchSource != null && state.operationalState == OperationalState.ERROR)) && !state.loading && state.ptt.state == PttState.IDLE && !inputPressed
     val candidate = pendingChannelId?.let { id -> channels.firstOrNull { it.id == id } }
         ?: digits?.takeIf { it.length == digitCount }?.toIntOrNull()?.let { ChannelSwitchPolicy.numbered(channels, it) }
     fun stageChannel(id: String) {
@@ -510,11 +514,11 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         cursorOn = true
         if (digits != null && !reduceMotion) while (true) { kotlinx.coroutines.delay(500); cursorOn = !cursorOn }
     }
-    Card(colors = CardDefaults.cardColors(containerColor = KoeonLcd, contentColor = Color(0xFF382B10)), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().height(202.dp).border(5.dp, if (LocalConsoleDark.current) Color(0xFF10140E) else Color(0xFFAEB5A6), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Card(colors = CardDefaults.cardColors(containerColor = KoeonLcd, contentColor = Color(0xFF382B10)), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().requiredHeight(202.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).border(5.dp, if (LocalConsoleDark.current) Color(0xFF10140E) else Color(0xFFAEB5A6), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
+        Column(Modifier.fillMaxSize().padding(12.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(2.dp)), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (digits != null) {
                 Text("CHANNEL EDIT / 変更元 → 変更先", fontSize = 11.sp, lineHeight = 14.sp)
-                Text("FROM  ${joined.channel.name}", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1)
+                Text("FROM  ${joined.channel.name}", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("TO CH", fontSize = 24.sp, lineHeight = 27.sp)
                     repeat(digitCount) { index ->
@@ -525,18 +529,20 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                     }
                     Text(if (entryRejected) "未割当" else if (digits!!.length < digitCount && pendingChannelId == null) "入力中" else "確定待ち", fontSize = 14.sp, lineHeight = 17.sp)
                 }
-                Text(if (entryRejected) "このCHは未割り当てです" else candidate?.name ?: "番号を選択して確定してください", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1)
+                Text(if (entryRejected) "このCHは未割り当てです" else candidate?.name ?: "番号を選択して確定してください", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
             } else {
-                Text("${currentNumber?.let { "CH$it" } ?: "CH —"} / ${state.connectionState} · ${pttSemantic.name}", fontSize = 11.sp, lineHeight = 14.sp)
-                Text(joined.channel.name, fontSize = 24.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.clickable(enabled = channelEnabled) { channelListOpen = true })
+                Text(if (state.channelSwitchSource != null && state.operationalState != OperationalState.ERROR) "CH CHANGE / 接続切替中…" else "${currentNumber?.let { "CH$it" } ?: "CH —"} / ${state.connectionState} · ${pttSemantic.name}", fontSize = 11.sp, lineHeight = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
+                Text(joined.channel.name, fontSize = 24.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false, modifier = Modifier.clickable(enabled = channelEnabled) { channelListOpen = true })
                 Text("SPEAKER / 発話者", fontSize = 10.sp, lineHeight = 13.sp)
-                Text(if (pttSemantic == PttSemanticState.TALKING) "自分" else state.currentSpeaker ?: "—", fontSize = 22.sp, lineHeight = 25.sp, maxLines = 1)
+                Text(if (pttSemantic == PttSemanticState.TALKING) "自分" else state.currentSpeaker ?: "—", fontSize = 22.sp, lineHeight = 25.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
                 Text("MEMBERS / 参加者 ${state.participants.size}", fontSize = 10.sp, lineHeight = 13.sp)
-                Text(state.participants.joinToString(" · ").ifBlank { "—" }, fontSize = 22.sp, lineHeight = 25.sp, maxLines = 1, modifier = Modifier.clickable { membersOpen = true })
+                Text(state.participants.joinToString(" · ").ifBlank { "—" }, fontSize = 22.sp, lineHeight = 25.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false, modifier = Modifier.clickable { membersOpen = true })
             }
             Spacer(Modifier.weight(1f))
-            Text(if (warningActive) state.error ?: "AUDIO INTERRUPTED" else "AUDIO: ${state.diagnostics.audioRoute}", fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1)
-            Text("v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1)
+            Row(Modifier.fillMaxWidth().height(16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(if (state.error != null) state.error!! else "AUDIO: ${state.diagnostics.audioRoute}", modifier = Modifier.weight(1f), fontSize = 9.sp, lineHeight = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
+                Text("v${BuildConfig.VERSION_NAME}", fontSize = 9.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
+            }
         }
     }
     if (!audioReady) {
@@ -611,8 +617,9 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 scaleY = pressScale
                 translationY = if (inputPressed) 3.dp.toPx() else 0f
             }
-            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
-            .border(6.dp, pttColor, CircleShape)
+            .consoleKeyFace(CircleShape)
+            .background(androidx.compose.ui.graphics.Brush.radialGradient(0f to Color.Transparent, .72f to Color.Transparent, .90f to pttColor.copy(alpha = .12f), 1f to pttColor.copy(alpha = .48f)), CircleShape)
+            .border(5.dp, pttColor.copy(alpha = .8f), CircleShape)
             .semantics {
                 contentDescription = "Push to talk, ${pttSemantic.name.replace('_', ' ')}"
                 if (!pttEnabled) disabled()
@@ -1011,9 +1018,18 @@ private fun Modifier.channelLED(blue: Boolean, green: Boolean, red: Boolean = fa
     if (!blue && !green && !red) return this
     val left = if (red) KoeonRed else if (green) Color(0xFF37B469) else Color(0xFF328BDF)
     val right = if (red) KoeonRed else if (blue) Color(0xFF328BDF) else Color(0xFF37B469)
-    return border(3.dp, androidx.compose.ui.graphics.Brush.horizontalGradient(
+    val brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
         0f to left, .499f to left, .5f to right, 1f to right
-    ), androidx.compose.foundation.shape.RoundedCornerShape(7.dp))
+    )
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
+    return clip(shape).drawWithContent {
+        // Nested translucent bands diffuse the embedded edge LED toward the centre.
+        for ((width, opacity) in listOf(22f to .035f, 16f to .055f, 11f to .09f, 7f to .16f, 3f to .70f)) {
+            drawRoundRect(brush, cornerRadius = androidx.compose.ui.geometry.CornerRadius(7.dp.toPx()),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width.dp.toPx()), alpha = opacity)
+        }
+        drawContent()
+    }
 }
 
 @Composable
@@ -1057,11 +1073,11 @@ private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = f
 }
 
 @Composable
-private fun Modifier.consoleKeyFace(): Modifier {
-    val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
+private fun Modifier.consoleKeyFace(shape: androidx.compose.ui.graphics.Shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)): Modifier {
     val face = androidx.compose.ui.graphics.Brush.verticalGradient(
-        if (LocalConsoleDark.current) listOf(Color(0xFF3C3C3C), Color(0xFF292929))
-        else listOf(Color(0xFFF7F7F7), Color(0xFFD9D9D9))
+        if (LocalConsoleDark.current) listOf(Color(0xAA727975), Color(0xBB303733), Color(0xCC242A27))
+        else listOf(Color(0xEFFFFFFF), Color(0xAACBD2CE), Color(0xDDDEE3DF))
     )
-    return shadow(2.dp, shape).background(face, shape).border(1.dp, Color.Gray.copy(alpha = .5f), shape)
+    return shadow(3.dp, shape, clip = false).background(face, shape)
+        .border(1.dp, androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.White.copy(alpha = .75f), Color.White.copy(alpha = .08f), Color.Black.copy(alpha = .22f))), shape)
 }

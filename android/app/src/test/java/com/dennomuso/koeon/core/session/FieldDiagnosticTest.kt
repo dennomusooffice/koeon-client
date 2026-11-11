@@ -17,6 +17,19 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FieldDiagnosticTest {
+    @Test fun channelSwitchPresentationDoesNotGrantTransmissionOrExposeOldCredential() {
+        val old = JoinResponse("old-session", "wss://example.invalid", "SYNTHETIC_PRIVATE_TOKEN", "room", User("u", "w", "Staff", Role.STAFF), JoinChannel("old", "Stage"), true, 300)
+        for (operation in listOf(OperationalState.SWITCHING_CHANNEL, OperationalState.CONNECTING, OperationalState.ERROR)) {
+            val state = IntercomUiState(channelSwitchSource = old, operationalState = operation)
+            val encoded = buildAndroidFieldDiagnostic(state)
+            val fields = Json.parseToJsonElement(encoded).jsonObject.getValue("state").jsonObject
+            assertEquals("false", fields.getValue("pttEligible").jsonPrimitive.content)
+            assertFalse(state.joined)
+            assertEquals(null, state.join)
+            assertFalse(encoded.contains("SYNTHETIC_PRIVATE_TOKEN"))
+        }
+    }
+
     @Test fun audioAvailabilityMatchesPttEligibility() {
         for ((availability, semantic, reason) in listOf(
             Triple(AudioAvailabilityState.READY, "READY", "null"),

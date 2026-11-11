@@ -203,6 +203,8 @@ data class IntercomUiState(
     val enrollmentRequired: Boolean = false,
     val joined: Boolean = false,
     val join: JoinResponse? = null,
+    // Presentation only: never grants membership, a live session, or permission to TX.
+    val channelSwitchSource: JoinResponse? = null,
     val connectionState: IntercomConnectionState = IntercomConnectionState.DISCONNECTED,
     val ptt: PttSnapshot = PttSnapshot(),
     val participants: List<String> = emptyList(),
@@ -988,6 +990,7 @@ class IntercomSessionManager(
                     loading = false,
                     joined = true,
                     join = joined,
+                    channelSwitchSource = null,
                     diagnostics = it.diagnostics.copy(foregroundService = "Active"),
                     error = null,
                     operationalState = OperationalState.ACTIVE,
@@ -1059,6 +1062,7 @@ class IntercomSessionManager(
         audioInterruption.reset()
         pttStoppedForAudioInterruption = false
         _state.value = IntercomUiState(
+            channelSwitchSource = if (powerOff) null else _state.value.channelSwitchSource,
             fixture = _state.value.fixture,
             identity = _state.value.identity,
             enrollmentRequired = false,
@@ -1079,9 +1083,10 @@ class IntercomSessionManager(
 
     fun switchChannel(targetChannelId: String) {
         val current = _state.value
-        val previousChannelId = current.join?.channel?.id ?: return
-        val userId = current.identity?.user?.id ?: current.join?.user?.id ?: return
-        if (targetChannelId == previousChannelId || current.operationalState == OperationalState.SWITCHING_CHANNEL) return
+        val source = current.join ?: current.channelSwitchSource ?: return
+        val previousChannelId = source.channel.id
+        val userId = current.identity?.user?.id ?: source.user.id
+        if ((targetChannelId == previousChannelId && current.joined) || current.loading || current.operationalState == OperationalState.SWITCHING_CHANNEL) return
         val assignedIds = current.identity?.channels?.map { it.id }
             ?: current.fixture?.users?.firstOrNull { it.id == userId }?.channelIds
             ?: emptyList()
@@ -1091,7 +1096,7 @@ class IntercomSessionManager(
         }
         joinSessionRecovery.invalidate()
         val generation = ++switchGeneration
-        _state.update { it.copy(operationalState = OperationalState.SWITCHING_CHANNEL, loading = true, error = null) }
+        _state.update { it.copy(channelSwitchSource = source, operationalState = OperationalState.SWITCHING_CHANNEL, loading = true, error = null) }
         scope.launch {
             leave(powerOff = false)
             if (generation != switchGeneration) return@launch
@@ -1099,6 +1104,7 @@ class IntercomSessionManager(
             if (generation != switchGeneration) return@launch
             if (!switched) {
                 val recovered = joinChannel(userId, previousChannelId)
+                if (generation != switchGeneration) return@launch
                 _state.update {
                     it.copy(error = if (recovered) {
                         "Target Channel join failed; previous Channel restored"
