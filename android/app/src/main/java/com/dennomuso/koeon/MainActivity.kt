@@ -563,7 +563,30 @@ private fun AudioBitrateSettings(state: IntercomUiState, manager: IntercomSessio
 @Composable
 private fun HardwareAndGainSettings(state: IntercomUiState, manager: IntercomSessionManager) {
     val diagnostics = state.diagnostics
-    Text("Hardware Volume PTT · foreground only", fontWeight = FontWeight.Bold)
+    val context = LocalContext.current
+    var showBackgroundConsent by remember { mutableStateOf(false) }
+    Text("Hardware Volume PTT · 長押し", fontWeight = FontWeight.Bold)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("背景で音量PTT（試作）", modifier = Modifier.weight(1f))
+        Switch(checked = diagnostics.backgroundVolumePttEnabled,
+            onCheckedChange = { enabled ->
+                if (enabled) showBackgroundConsent = true else manager.setBackgroundVolumePttEnabled(false)
+            }, modifier = Modifier.semantics { contentDescription = "Background Volume PTT" })
+    }
+    Text("約0.6秒以上の長押しで開始・次の長押しで停止。短押しは音量調整。背景設定OFFでは前面のみ。背景利用にはTOGGLEとOSサービスの有効化が必要です。消灯時の動作は機種によって異なります。", fontSize = 11.sp)
+    if (diagnostics.backgroundVolumePttEnabled) {
+        Text(if (diagnostics.backgroundVolumeServiceConnected) "OSサービス: 接続済み" else "OSサービス: 未接続")
+        Button(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("背景PTTのOS設定") }
+    }
+    if (showBackgroundConsent) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showBackgroundConsent = false },
+            title = { Text("背景の音量ボタンで送信") },
+            text = { Text("Accessibilityサービスで音量ボタンの押下・解放を検出します。参加中は約0.6秒以上の長押しで送信開始・停止を切り替えます。短押しは解放時に音量を1段階調整します。画面内容は取得せず、音量以外のキーを記録・送信しません。背景設定とOSサービスをOFFにすると無効になります。ロック中も誤って押すと送信する場合があります。") },
+            confirmButton = { Button(onClick = { manager.setBackgroundVolumePttEnabled(true); showBackgroundConsent = false }) { Text("同意して有効化") } },
+            dismissButton = { Button(onClick = { showBackgroundConsent = false }) { Text("キャンセル") } },
+        )
+    }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(
             onClick = { manager.setHardwareVolumePttMode(HardwareVolumePttMode.OFF) },

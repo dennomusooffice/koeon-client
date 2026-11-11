@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">KOEON</string>
+    <string name="background_volume_ptt_label">KOEON Background Volume PTT</string>
+    <string name="background_volume_ptt_description">参加中に音量ボタンの短押しで送信開始・停止します。背景設定とTOGGLEがONの間は音量調整の代わりにPTTになります。画面内容は取得せず、音量以外のキーを保存・送信しません。アプリ設定とこのサービスをOFFにすると無効になります。</string>
 </resources>

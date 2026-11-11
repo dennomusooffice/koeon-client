@@ -1,0 +1,3 @@
+<resources>
+  <string name="probe_description">Temporary PTT input test. Observes only volume key counts and screen lock state for 10 minutes after arming. Does not read screen content, other keys, audio, or network data. Consume mode temporarily prevents normal volume changes. Disable and uninstall after testing.</string>
+</resources>

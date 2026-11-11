@@ -61,7 +61,7 @@ class AppTouchPttGate {
 fun isParentScrollEnabledWhileTouchPtt(appTouchPressed: Boolean): Boolean = !appTouchPressed
 
 enum class HardwareVolumePttMode { OFF, TOGGLE }
-enum class HardwareVolumeAction { DOWN, UP, IGNORE }
+enum class HardwareVolumeAction { DOWN, UP, IGNORE, PASS, VOLUME }
 
 data class HardwareVolumePttEligibility(
     val mode: HardwareVolumePttMode,
@@ -74,33 +74,28 @@ data class HardwareVolumePttEligibility(
         joined && canPublish && audioReady && foreground
 }
 
-/** Completed short presses toggle a latch; repeat/long sequences never toggle. */
+/** Foreground latch uses the same long-press recognition as background input. */
 class HardwareVolumePttGate {
-    private var keyDown = false
-    private var repeated = false
+    private val input = com.dennomuso.koeon.service.BackgroundVolumeKeyGate()
     private var latched = false
 
-    fun keyDown(repeatCount: Int): HardwareVolumeAction {
-        if (repeatCount > 0) repeated = true
-        else if (!keyDown) { keyDown = true; repeated = false }
-        return HardwareVolumeAction.IGNORE
+    fun event(key: Int, down: Boolean, repeat: Int, cancelled: Boolean,
+              downAt: Long, now: Long, eligible: Boolean): HardwareVolumeAction {
+        return when (input.event(key, down, repeat, cancelled, downAt, now, eligible)) {
+            com.dennomuso.koeon.service.BackgroundVolumeDecision.PASS -> HardwareVolumeAction.PASS
+            com.dennomuso.koeon.service.BackgroundVolumeDecision.CONSUME -> HardwareVolumeAction.IGNORE
+            com.dennomuso.koeon.service.BackgroundVolumeDecision.SHORT_PRESS -> HardwareVolumeAction.VOLUME
+            com.dennomuso.koeon.service.BackgroundVolumeDecision.TOGGLE -> {
+                latched = !latched
+                if (latched) HardwareVolumeAction.DOWN else HardwareVolumeAction.UP
+            }
+        }
     }
-
-    fun keyUp(longPress: Boolean): HardwareVolumeAction {
-        if (!keyDown) return HardwareVolumeAction.IGNORE
-        keyDown = false
-        if (repeated || longPress) { repeated = false; return HardwareVolumeAction.IGNORE }
-        latched = !latched
-        return if (latched) HardwareVolumeAction.DOWN else HardwareVolumeAction.UP
-    }
-
     fun clear(): Boolean {
-        keyDown = false
-        repeated = false
+        input.invalidate()
         val wasLatched = latched
         latched = false
         return wasLatched
     }
-
     fun isLatched() = latched
 }

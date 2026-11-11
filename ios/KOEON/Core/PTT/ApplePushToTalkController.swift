@@ -3,6 +3,7 @@ import Combine
 import CryptoKit
 import Foundation
 import PushToTalk
+import MediaPlayer
 import UIKit
 
 /// Shares the entire initialization, including restoration configuration.
@@ -96,7 +97,12 @@ struct PttRequestGate: Equatable, Sendable {
         }
     }
 
-    mutating func didBegin() -> [PttRequestGateAction] {
+    mutating func didBegin(acceptExternalBegin: Bool = false) -> [PttRequestGateAction] {
+        // OS UI and accessories do not call pressDown(). Only an explicitly
+        // authorized external begin may enter from idle; never bypass rearming.
+        if state == .idle, acceptExternalBegin {
+            state = .beginRequested
+        }
         guard state == .beginRequested else {
             state = .endRequested
             return [.stopSystemTransmission]
@@ -231,6 +237,10 @@ func shouldEnablePttAccessoryEvents(
     frameworkState: PushToTalkFrameworkState
 ) -> Bool {
     settingEnabled && canPublish && frameworkState == .joined
+}
+
+func shouldAcceptExternalPttBegin(source: String, headsetEnabled: Bool, eligible: Bool) -> Bool {
+    eligible && (source == "userRequest" || (source == "handsfreeButton" && headsetEnabled))
 }
 
 struct PttIncomingEvent: Equatable, Sendable {
@@ -534,6 +544,7 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     @Published private(set) var lastIncomingPushLeaseId: String?
     @Published private(set) var lastTransmitRequestSource = "unknown"
     @Published private(set) var accessoryButtonEventsEnabled = false
+    @Published private(set) var accessoryConfigurationState = "NOT_CONFIGURED"
     @Published private(set) var headsetPttEnabled: Bool
     @Published private(set) var handsfreeBeginCount = 0
     @Published private(set) var handsfreeEndCount = 0
@@ -825,7 +836,7 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     func setHeadsetPttEnabled(_ enabled: Bool) {
         headsetPttEnabled = enabled
         if enabled, handsfreeBeginCount == 0 {
-            genericMfbSupportState = "GENERIC_MFB_NOT_SUPPORTED_BY_APPLE_PTT_IF_NO_CALLBACK"
+            genericMfbSupportState = "WAITING_FOR_ACCESSORY_EVENT"
         } else if !enabled {
             genericMfbSupportState = "DISABLED"
         }
@@ -899,8 +910,15 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
             canPublish: canPublish,
             frameworkState: state
         )
-        try await manager.setAccessoryButtonEventsEnabled(enabled, channelUUID: uuid)
+        accessoryConfigurationState = "APPLYING"
+        do {
+            try await manager.setAccessoryButtonEventsEnabled(enabled, channelUUID: uuid)
+        } catch {
+            accessoryConfigurationState = "FAILED"
+            throw error
+        }
         accessoryButtonEventsEnabled = enabled
+        accessoryConfigurationState = enabled ? "ENABLED" : "DISABLED"
     }
 
     private func submitTokenIfPossible() async {
@@ -915,6 +933,7 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     }
 
     private func resetChannelState() {
+        accessoryConfigurationState = "NOT_CONFIGURED"
         state = manager == nil ? .initializing : .ready
         channelUUID = nil
         channelId = nil
@@ -993,8 +1012,9 @@ extension ApplePushToTalkController: PTChannelManagerDelegate {
         channelUUID: UUID,
         didBeginTransmittingFrom source: PTChannelTransmitRequestSource
     ) {
-        incomingState.setLocalTransmitting(true)
         Task { @MainActor in
+            guard self.channelUUID == channelUUID, self.state == .joined else { return }
+            incomingState.setLocalTransmitting(true)
             let label = Self.sourceLabel(source)
             lastTransmitRequestSource = label
             onTransmitRequestDidBegin?(label)
@@ -1013,8 +1033,9 @@ extension ApplePushToTalkController: PTChannelManagerDelegate {
         channelUUID: UUID,
         didEndTransmittingFrom source: PTChannelTransmitRequestSource
     ) {
-        incomingState.setLocalTransmitting(false)
         Task { @MainActor in
+            guard self.channelUUID == channelUUID else { return }
+            incomingState.setLocalTransmitting(false)
             let label = Self.sourceLabel(source)
             lastTransmitRequestSource = label
             if label == "handsfreeButton" {
@@ -1137,4 +1158,82 @@ extension ApplePushToTalkController: PTChannelManagerDelegate {
 private enum PushToTalkControllerError: LocalizedError {
     case notInitialized
     var errorDescription: String? { "Apple PushToTalk channel manager is unavailable." }
+}
+
+// AVRCP is not mapped by setAccessoryButtonEventsEnabled. See Apple DTS
+// thread/850343 answer 909261022. This bridge never activates an audio session.
+enum MediaPttCommand: String { case toggle, start, stop }
+enum MediaPttAction: Equatable { case start, stop, ignore }
+func mediaPttAction(command: MediaPttCommand, enabled: Bool, eligible: Bool,
+                    state: PttRequestGateState) -> MediaPttAction {
+    guard enabled else { return .ignore }
+    let active = state == .beginRequested || state == .transmitting
+    switch command {
+    case .stop: return active ? .stop : .ignore
+    case .start: return state == .idle && eligible ? .start : .ignore
+    case .toggle: return active ? .stop : (state == .idle && eligible ? .start : .ignore)
+    }
+}
+
+@MainActor
+final class HeadsetMediaPttBridge {
+    private var targets: [(MPRemoteCommand, Any)] = []
+    private(set) var enabled = false
+    private(set) var pendingBegin = false
+    private(set) var commandCount = 0
+    private(set) var lastCommand = "NONE"
+    private var generation = 0
+    private var registrationGeneration = 0
+    var onCommand: ((MediaPttCommand) -> Void)?
+    func update(enabled: Bool, transmitting: Bool) {
+        if self.enabled != enabled {
+            self.enabled = enabled
+            registrationGeneration += 1
+            let registration = registrationGeneration
+            if enabled {
+                let center = MPRemoteCommandCenter.shared()
+                for (command, kind) in [(center.togglePlayPauseCommand, MediaPttCommand.toggle),
+                                        (center.playCommand, .start), (center.pauseCommand, .stop),
+                                        (center.stopCommand, .stop)] {
+                    command.isEnabled = true
+                    let target = command.addTarget { [weak self] _ in
+                        Task { @MainActor in
+                            guard let self, self.enabled, self.registrationGeneration == registration else { return }
+                            self.commandCount += 1; self.lastCommand = kind.rawValue
+                            self.onCommand?(kind)
+                        }
+                        return .success
+                    }
+                    targets.append((command, target))
+                }
+            } else {
+                cancelPending()
+                for (command, target) in targets { command.removeTarget(target); command.isEnabled = false }
+                targets.removeAll()
+                MPNowPlayingInfoCenter.default().playbackState = .stopped
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            }
+        }
+        guard enabled else { return }
+        let playing = transmitting || pendingBegin
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: "KOEON PTT",
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0,
+        ]
+        MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
+    }
+    func prepareBegin(_ operation: @escaping @MainActor () -> Void) {
+        guard enabled, !pendingBegin else { return }
+        generation += 1; let expected = generation
+        pendingBegin = true
+        update(enabled: true, transmitting: true)
+        // DTS requires returning from the remote handler before requesting PTT.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.enabled, self.generation == expected else { return }
+            self.pendingBegin = false
+            operation()
+        }
+    }
+    func cancelPending() { generation += 1; pendingBegin = false }
 }

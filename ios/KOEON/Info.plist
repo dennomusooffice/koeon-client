@@ -23,7 +23,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>KOEON uses the microphone only while you hold Push-to-Talk.</string>
+	<string>KOEON uses the microphone while Push-to-Talk transmission is active, including when started with a button or shortcut.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>KOEON uses the camera to scan invite QR codes for secure device enrollment.</string>
 	<key>UIApplicationSceneManifest</key>

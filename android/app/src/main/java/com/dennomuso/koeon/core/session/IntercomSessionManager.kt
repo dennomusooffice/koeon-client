@@ -3,6 +3,8 @@ package com.dennomuso.koeon.core.session
 import android.content.Context
 import android.media.AudioManager
 import android.view.KeyEvent
+import android.os.SystemClock
+import com.dennomuso.koeon.service.VolumeHoldTimer
 import com.dennomuso.koeon.BuildConfig
 import com.dennomuso.koeon.core.api.HttpKoeonApi
 import com.dennomuso.koeon.core.api.KoeonApi
@@ -168,6 +170,9 @@ data class SessionDiagnostics(
     val appTouchPointerIdPresent: Boolean = false,
     val headsetLatched: Boolean = false,
     val headsetRoutePresent: Boolean = false,
+    val backgroundVolumePttEnabled: Boolean = false,
+    val backgroundVolumeServiceConnected: Boolean = false,
+    val backgroundVolumePttLatched: Boolean = false,
     val hardwareVolumePttMode: HardwareVolumePttMode = HardwareVolumePttMode.OFF,
     val hardwareVolumePttLatched: Boolean = false,
     val hardwareVolumeLastKey: String? = null,
@@ -281,7 +286,16 @@ class IntercomSessionManager(
         }
     }
     private val appTouchPttGate = AppTouchPttGate()
+    private var backgroundVolumePttEnabled = devicePreferences.getBoolean("background_volume_ptt_enabled", false)
+    private var backgroundVolumeServiceConnected = false
+    private var backgroundVolumeOwnsPtt = false
+    private var backgroundVolumeStartBlocked = true
     private val hardwareVolumePttGate = HardwareVolumePttGate()
+    private val hardwareVolumeHold = VolumeHoldTimer(scope, SystemClock::uptimeMillis)
+    private fun clearHardwareVolumeInput(): Boolean {
+        hardwareVolumeHold.clear()
+        return hardwareVolumePttGate.clear()
+    }
     private val systemAudioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var statusJob: Job? = null
     private var uptimeJob: Job? = null
@@ -327,6 +341,9 @@ class IntercomSessionManager(
         "route" to value.diagnostics.inputGain.route.substringBefore(':').uppercase().replace('-', '_').replace(' ', '_'),
         "mode" to value.diagnostics.inputGain.mode.name, "gainDb" to value.diagnostics.inputGain.effectiveGainDb,
         "readyExpected" to value.diagnostics.rxReadyExpectedCount, "readyReceived" to value.diagnostics.rxReadyReceivedCount,
+        "backgroundVolumeEnabled" to value.diagnostics.backgroundVolumePttEnabled,
+        "backgroundVolumeConnected" to value.diagnostics.backgroundVolumeServiceConnected,
+        "backgroundVolumeLatched" to value.diagnostics.backgroundVolumePttLatched,
     )
     private fun journalIds(value: IntercomUiState, previous: IntercomUiState? = null) = mapOf(
         "sessionHash" to value.join?.sessionId, "channelHash" to value.join?.channel?.id,
@@ -389,6 +406,7 @@ class IntercomSessionManager(
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             headsetPttEnabled = headsetPttEnabled,
             headsetPttMode = headsetPttMode,
+            backgroundVolumePttEnabled = backgroundVolumePttEnabled,
             hardwareVolumePttMode = hardwareVolumePttMode,
             outputVolume = systemAudioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL),
             outputVolumeMax = systemAudioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),
@@ -628,6 +646,8 @@ class IntercomSessionManager(
                         diagnostics = SessionDiagnostics(
                             headsetPttEnabled = headsetPttEnabled,
                             headsetPttMode = headsetPttMode,
+                            backgroundVolumePttEnabled = backgroundVolumePttEnabled,
+                            backgroundVolumeServiceConnected = backgroundVolumeServiceConnected,
                             hardwareVolumePttMode = hardwareVolumePttMode,
                             inputGain = gainProcessor.snapshot(),
                             audioCaptureProfile = audioCaptureProfile,
@@ -664,8 +684,54 @@ class IntercomSessionManager(
         _state.update { it.copy(diagnostics = it.diagnostics.copy(headsetPttMode = mode)) }
     }
 
+    fun setBackgroundVolumePttEnabled(enabled: Boolean) {
+        if (clearHardwareVolumeInput()) pttUp(PttInputSource.HARDWARE_VOLUME_BUTTON)
+        cancelBackgroundVolumePtt()
+        backgroundVolumePttEnabled = enabled
+        devicePreferences.edit().putBoolean("background_volume_ptt_enabled", enabled).apply()
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttEnabled = enabled, hardwareVolumePttLatched = false)) }
+    }
+
+    fun onBackgroundVolumeServiceChanged(connected: Boolean, reason: String) {
+        cancelBackgroundVolumePtt()
+        backgroundVolumeServiceConnected = connected
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumeServiceConnected = connected)) }
+        fieldJournal.record("HARDWARE_PTT_SERVICE", journalFields(_state.value) + mapOf(
+            "reason" to reason, "serviceConnected" to backgroundVolumeServiceConnected,
+            "settingEnabled" to backgroundVolumePttEnabled,
+        ))
+    }
+
+    fun cancelBackgroundVolumePtt() {
+        com.dennomuso.koeon.service.BackgroundVolumePttService.invalidatePendingInput()
+        if (backgroundVolumeOwnsPtt) pttUp(PttInputSource.HARDWARE_VOLUME_BUTTON)
+        backgroundVolumeOwnsPtt = false
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttLatched = false)) }
+    }
+
+    fun backgroundVolumePttEligible(): Boolean {
+        if (!backgroundVolumePttEnabled || !backgroundVolumeServiceConnected || hardwareVolumePttMode != HardwareVolumePttMode.TOGGLE) return false
+        // A stop remains possible even if eligibility for a new start has changed.
+        if (backgroundVolumeOwnsPtt) return true
+        val state = _state.value
+        return !backgroundVolumeStartBlocked && state.joined && state.join?.canPublish == true &&
+            state.operationalState == OperationalState.ACTIVE &&
+            state.connectionState == IntercomConnectionState.CONNECTED &&
+            state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY &&
+            state.ptt.state == PttState.IDLE && IntercomForegroundService.diagnostics().running
+    }
+
+    fun toggleBackgroundVolumePtt() {
+        if (backgroundVolumeOwnsPtt) { cancelBackgroundVolumePtt(); return }
+        if (!backgroundVolumePttEligible()) return
+        backgroundVolumeOwnsPtt = pttDown(PttInputSource.HARDWARE_VOLUME_BUTTON)
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttLatched = backgroundVolumeOwnsPtt)) }
+        fieldJournal.record("HARDWARE_PTT", journalFields(_state.value) + mapOf("reason" to if (backgroundVolumeOwnsPtt) "BACKGROUND_START" else "BACKGROUND_REJECTED"))
+    }
+
     fun setHardwareVolumePttMode(mode: HardwareVolumePttMode) {
-        if (mode == HardwareVolumePttMode.OFF && hardwareVolumePttGate.clear()) {
+        cancelBackgroundVolumePtt()
+        if (mode == HardwareVolumePttMode.OFF && clearHardwareVolumeInput()) {
             pttUp(PttInputSource.HARDWARE_VOLUME_BUTTON)
         }
         hardwareVolumePttMode = mode
@@ -678,36 +744,62 @@ class IntercomSessionManager(
 
     /** Returns true only when KOEON intentionally owns this foreground key sequence. */
     fun onHardwareVolumeKey(keyCode: Int, event: KeyEvent): Boolean {
-        val state = _state.value
-        val eligible = HardwareVolumePttEligibility(
-            mode = hardwareVolumePttMode,
-            joined = state.joined,
-            canPublish = state.join?.canPublish == true,
-            audioReady = state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY,
-            foreground = state.diagnostics.activityVisibility == "foreground",
-        ).consumesVolumeKeys()
-        if (!eligible || keyCode !in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) return false
-        val action = when (event.action) {
-            KeyEvent.ACTION_DOWN -> hardwareVolumePttGate.keyDown(event.repeatCount)
-            KeyEvent.ACTION_UP -> hardwareVolumePttGate.keyUp(event.isLongPress)
-            else -> HardwareVolumeAction.IGNORE
+        if (backgroundVolumePttEnabled && backgroundVolumeServiceConnected) return false
+        val eligible = foregroundVolumeEligible()
+        if (keyCode !in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) return false
+        if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return false
+        val action = hardwareVolumePttGate.event(keyCode, event.action == KeyEvent.ACTION_DOWN,
+            event.repeatCount, event.isCanceled, event.downTime, event.eventTime,
+            eligible || (hardwareVolumePttMode == HardwareVolumePttMode.TOGGLE && hardwareVolumePttGate.isLatched()))
+        if (event.action == KeyEvent.ACTION_UP) hardwareVolumeHold.release(keyCode)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && action == HardwareVolumeAction.IGNORE) {
+            val downAt = event.downTime
+            hardwareVolumeHold.start(keyCode, downAt) {
+                val held = hardwareVolumePttGate.event(keyCode, true, 1, false, downAt,
+                    SystemClock.uptimeMillis(), foregroundVolumeEligible())
+                applyHardwareVolumeAction(keyCode, held)
+            }
         }
-        val short = if (event.action == KeyEvent.ACTION_UP && action != HardwareVolumeAction.IGNORE) 1 else 0
-        val long = if (event.action == KeyEvent.ACTION_UP && event.isLongPress) 1 else 0
+        return applyHardwareVolumeAction(keyCode, action)
+    }
+
+    private fun foregroundVolumeEligible(): Boolean {
+        val state = _state.value
+        return !(backgroundVolumePttEnabled && backgroundVolumeServiceConnected) &&
+            (HardwareVolumePttEligibility(hardwareVolumePttMode, state.joined,
+                state.join?.canPublish == true,
+                state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY,
+                state.diagnostics.activityVisibility == "foreground").consumesVolumeKeys() ||
+                (hardwareVolumePttMode == HardwareVolumePttMode.TOGGLE && hardwareVolumePttGate.isLatched()))
+    }
+
+    private fun applyHardwareVolumeAction(keyCode: Int, action: HardwareVolumeAction): Boolean {
+        if (action == HardwareVolumeAction.PASS) return false
+        val short = if (action == HardwareVolumeAction.VOLUME) 1 else 0
+        val long = if (action == HardwareVolumeAction.DOWN || action == HardwareVolumeAction.UP) 1 else 0
         _state.update { current -> current.copy(diagnostics = current.diagnostics.copy(
             hardwareVolumePttLatched = hardwareVolumePttGate.isLatched(),
             hardwareVolumeLastKey = KeyEvent.keyCodeToString(keyCode),
             hardwareVolumeLastEventAt = Instant.now().toString(),
             hardwareVolumeShortPressCount = current.diagnostics.hardwareVolumeShortPressCount + short,
             hardwareVolumeLongPressCount = current.diagnostics.hardwareVolumeLongPressCount + long,
-            hardwareVolumePttToggleCount = current.diagnostics.hardwareVolumePttToggleCount + short,
+            hardwareVolumePttToggleCount = current.diagnostics.hardwareVolumePttToggleCount + long,
         )) }
         when (action) {
-            HardwareVolumeAction.DOWN -> pttDown(PttInputSource.HARDWARE_VOLUME_BUTTON)
+            HardwareVolumeAction.DOWN -> if (!pttDown(PttInputSource.HARDWARE_VOLUME_BUTTON)) clearHardwareVolumeInput()
             HardwareVolumeAction.UP -> pttUp(PttInputSource.HARDWARE_VOLUME_BUTTON)
-            HardwareVolumeAction.IGNORE -> Unit
+            HardwareVolumeAction.VOLUME -> adjustShortHardwareVolume(keyCode)
+            HardwareVolumeAction.IGNORE, HardwareVolumeAction.PASS -> Unit
         }
         return true
+    }
+
+    fun adjustShortHardwareVolume(keyCode: Int) {
+        if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) return
+        systemAudioManager.adjustSuggestedStreamVolume(
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+            AudioManager.USE_DEFAULT_STREAM_TYPE, AudioManager.FLAG_SHOW_UI,
+        )
     }
 
     fun adjustOutputVolume(direction: Int) {
@@ -882,6 +974,7 @@ class IntercomSessionManager(
                 audioBitratePreset,
             )
             configurePtt(joined)
+            backgroundVolumeStartBlocked = false
             sessionStartedAt = android.os.SystemClock.elapsedRealtime()
             startSessionPolling(joined)
             _state.update {
@@ -922,19 +1015,25 @@ class IntercomSessionManager(
     }
 
     fun leaveAsync() {
+        backgroundVolumeStartBlocked = true
+        cancelBackgroundVolumePtt()
         joinSessionRecovery.invalidate()
         ++switchGeneration
         scope.launch { leave(powerOff = true) }
     }
 
     suspend fun leave(powerOff: Boolean = true) {
+        backgroundVolumeStartBlocked = true
+        cancelBackgroundVolumePtt()
         if (powerOff) { joinSessionRecovery.invalidate(); ++switchGeneration }
         operationMutex.withLock { leaveLocked(powerOff) }
     }
 
     private suspend fun leaveLocked(powerOff: Boolean, keepService: Boolean = false) {
+        backgroundVolumeStartBlocked = true
         appTouchPttGate.cancel()
-        hardwareVolumePttGate.clear()
+        clearHardwareVolumeInput()
+        cancelBackgroundVolumePtt()
         val join = _state.value.join
         statusJob?.cancel()
         uptimeJob?.cancel()
@@ -961,6 +1060,8 @@ class IntercomSessionManager(
             diagnostics = SessionDiagnostics(
                 headsetPttEnabled = headsetPttEnabled,
                 headsetPttMode = headsetPttMode,
+                backgroundVolumePttEnabled = backgroundVolumePttEnabled,
+                backgroundVolumeServiceConnected = backgroundVolumeServiceConnected,
                 hardwareVolumePttMode = hardwareVolumePttMode,
                 inputGain = gainProcessor.snapshot(),
                 audioCaptureProfile = audioCaptureProfile,
@@ -1151,6 +1252,9 @@ class IntercomSessionManager(
                 refreshInputGainDiagnostics()
                 if (ptt.state !in setOf(PttState.REQUESTING_FLOOR, PttState.TRANSMITTING, PttState.RELEASING)) {
                     IntercomForegroundService.resetHeadsetLatch()
+                    backgroundVolumeOwnsPtt = false
+                    com.dennomuso.koeon.service.BackgroundVolumePttService.invalidatePendingInput()
+                    _state.update { it.copy(diagnostics = it.diagnostics.copy(backgroundVolumePttLatched = false)) }
                 }
                 _state.update { it.copy(ptt = ptt, error = ptt.lastError ?: it.error) }
             },
@@ -1228,7 +1332,8 @@ class IntercomSessionManager(
 
     private suspend fun stopPttForSafetyIfActive(reason: String) {
         val touchCancelled = appTouchPttGate.cancel()
-        hardwareVolumePttGate.clear()
+        clearHardwareVolumeInput()
+        cancelBackgroundVolumePtt()
         _state.update { it.copy(diagnostics = it.diagnostics.copy(
             lastPttInputSource = PttInputSource.SYSTEM_SAFETY,
             appTouchPressed = false,

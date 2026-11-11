@@ -3,6 +3,41 @@ import XCTest
 
 @MainActor
 final class RuntimeRestorePipelineTests: XCTestCase {
+    func testActionButtonIntentColdSessionRejectsWithoutWaitingOrQueueing() async {
+        let suite = "ActionButtonIntent-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = IntercomSessionController(api: ResumeCleanupAPIStub(),
+            pushToTalk: ApplePushToTalkController(defaults: defaults), audioPublishDefaults: defaults)
+        let disabled = await controller.toggleActionButtonPttFromIntent()
+        XCTAssertEqual(disabled, .disabled)
+        controller.setActionButtonPttEnabled(true)
+        let unavailable = await controller.toggleActionButtonPttFromIntent()
+        XCTAssertEqual(unavailable, .unavailable)
+        XCTAssertEqual(controller.pttRequestGateState, .idle)
+        XCTAssertFalse(controller.isPoweredOn)
+        XCTAssertFalse(controller.isJoined)
+    }
+
+    func testActionButtonColdSessionRejectsWithoutQueuedTransmitOrPowerOn() {
+        let suite = "ActionButton-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = IntercomSessionController(api: ResumeCleanupAPIStub(),
+            pushToTalk: ApplePushToTalkController(defaults: defaults), audioPublishDefaults: defaults)
+        XCTAssertEqual(controller.toggleActionButtonPtt(), .disabled)
+        controller.setActionButtonPttEnabled(true)
+        controller.appLifecycleDidChange("background")
+        for _ in 0..<5 { XCTAssertEqual(controller.toggleActionButtonPtt(), .unavailable) }
+        XCTAssertFalse(controller.isPoweredOn)
+        XCTAssertFalse(controller.isJoined)
+        XCTAssertEqual(controller.pttRequestGateState, .idle)
+        XCTAssertTrue(defaults.bool(forKey: "ptt.actionButtonEnabled"))
+        controller.setActionButtonPttEnabled(false)
+        XCTAssertEqual(controller.toggleActionButtonPtt(), .disabled)
+        XCTAssertFalse(defaults.bool(forKey: "ptt.actionButtonEnabled"))
+    }
+
     func testFailedResumePreservesPushUntilExplicitPowerOff() async {
         let api = ResumeCleanupAPIStub()
         let controller = isolatedResumeController(api: api)

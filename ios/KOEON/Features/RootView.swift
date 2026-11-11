@@ -131,6 +131,9 @@ struct RootView: View {
                 get: { session.pushToTalk.headsetPttEnabled },
                 set: { session.setHeadsetPttEnabled($0) }
             ))
+            Text("再生ボタンPTTは試験中です。Bluetooth接続後にONにしてください。アプリ再起動・Bluetooth再接続後はOFF→ONが必要です。有効中は音楽の再生操作がPTTに切り替わります。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button("この端末のユーザーを変更") {
                 Task { await session.resetDeviceAssignment() }
             }
@@ -178,6 +181,9 @@ struct RootView: View {
                 get: { session.pushToTalk.headsetPttEnabled },
                 set: { session.setHeadsetPttEnabled($0) }
             ))
+            Text("再生ボタンPTTは試験中です。Bluetooth接続後にONにしてください。アプリ再起動・Bluetooth再接続後はOFF→ONが必要です。有効中は音楽の再生操作がPTTに切り替わります。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button("この端末のユーザーを変更", role: .destructive) {
                 Task { await session.resetDeviceAssignment() }
             }
@@ -304,6 +310,14 @@ private struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("アクションボタンPTT（試作）") {
+                    Toggle("ショートカットから送信を切り替える", isOn: Binding(
+                        get: { session.actionButtonPttEnabled },
+                        set: { session.setActionButtonPttEnabled($0) }
+                    ))
+                    Text("「ショートカット」で「KOEON送信を切り替える」アクションを含むショートカットを作成し、iPhoneのアクションボタンに割り当てます。KOEONで接続後に使えます。長押しで開始、もう一度長押しで停止します。ロック中も操作できる設定です。実機での動作は検証中です。送信は最大60秒です。")
+                        .font(.footnote)
+                }
                 Section("音声品質") {
                     Picker("送信音声", selection: Binding(
                         get: { session.selectedAudioPublishProfile },
@@ -428,6 +442,9 @@ private struct DiagnosticsView: View {
                     row("Control START", session.pttSnapshot.controlStartResult)
                     row("Control END", session.pttSnapshot.controlEndResult)
                     row("Apple PTT request gate", session.pttRequestGateState.rawValue)
+                    row("PTT block reason", session.pttBlockReason)
+                    row("Apple TX failure operation", session.appleLastTransmitFailureOperation ?? "None")
+                    row("Apple TX failure code", session.appleLastTransmitFailureCode ?? "None")
                     row("Status cue", session.lastStatusCueResult)
                     row("ptt_down_at", format(session.pttSnapshot.pttDownAt))
                     row("floor_granted_at", format(session.pttSnapshot.floorGrantedAt))
