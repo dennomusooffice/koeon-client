@@ -83,3 +83,26 @@ DTSに従い、Now Playingのplaying状態を設定し、リモートコマン�
 Now Playing追加版は実機未導入・未検証であり、BluetoothボタンPTTの問題は未解決として#86を開いたままとする。受入れ条件が満たされるまで一般/内部/外部配信へ進まない。次の実機検証には新しい有効な時間枠が必要。Android変更、サーバー変更、マージはなし。
 
 Now Playing追加後の最終シミュレータ回帰: 272件中271成功・1スキップ・失敗0。実機成功を意味しない。診断fixtureは製品targetに含めていない。
+
+
+## 10分延長枠のプローブ再試験・1106
+
+利用者が追加10分の実機検証を許可。操作ガード期限10:20:30 JST。前枠のプローブ「実施」返答は通常版復元後に届き、押下時点を照合できなかったため、その回の判定は保留のままとした。
+
+同じ隔離プローブ1105を再導入し、新しい押下依頼・返答と件数を対応させた。
+
+| 操作 | 観測 | 判定 |
+| --- | --- | --- |
+| 再参加・前面で利用者が短押し | 10:11:53のJOINED_ACCESSORY_ENABLED、begin/end 0/0、handsfree 0のまま | 当該押下でApple PTT通知なし |
+| 直後にアプリのControl Begin (3s) | 10:12:48、begin/end 1/1、activation 1、developer source | Apple制御要求の対照成功。音声なし |
+| ホーム背景で利用者が短押し | 利用者は音楽操作と報告。件数1/1、handsfree 0、更新時刻も変わらず | 当該押下でApple PTT通知なし |
+| Leave Probe | 10:13:56、LEFT | 退出完了 |
+
+これでKOEONの通信/送信状態処理を除いた最小プローブでも、当該機器・条件でAVRCPがPTTアクセサリ通知へ来ないことを確認した。一般のBluetooth全機種非対応やOS不具合の証明にはしない。
+
+Now Playing試作のソースは `591bdc6885e1b53e4ba1966418a76d8c23b677d8`、開発ビルド1.0(2026111106)。署名、PTT entitlement、development APNs、既存API設定を検証後、プローブに代えて実機へ導入。初期診断はBluetooth/CONNECTED/READY/IDLE、mediaArmed=true、mediaEnabled=true、commandCount=0。TestFlight配信・マージなし。
+
+
+1106前面実ボタンの利用者結果も「無反応」。終了直前snapshotはCONNECTED/READY/IDLE、mediaArmed/Enabled true、mediaCommandCount=0、handsfree0/0。利用者返答は設定復元の操作中に届いたため、押下の厳密な時刻は不明。既存の結果と合わせ、Now Playing情報・コマンド登録だけでメディア所有権を獲得できたとは言えず、修正完了としない。
+
+10:20:13までにHeadset設定OFF（UI value0）、POWER ON維持、Appium session DELETE完了。通常アプリ1106を残し、Action button設定を維持。OFF後の追加音声試験はなし。次の切り分けは、Now Playing情報の登録とOSが選ぶメディア操作対象を分離し、正式APIでの所有権確立条件を調べること。無音再生やApple音声所有権迂回で通知を奪わない。前面/背景/ロックの成功・相手への音声到達は未達のまま。
