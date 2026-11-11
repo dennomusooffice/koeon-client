@@ -256,17 +256,17 @@ struct RootView: View {
         ChannelSwitchPolicy.numbered(session.fixture?.channels ?? [], number: number)
     }
     private var consoleHeader: some View {
-        HStack {
+        ZStack {
+            VStack(spacing: 2) {
+                Text("KOEON").font(.system(size: 24, weight: .black)).tracking(2).lineLimit(1).minimumScaleFactor(0.6)
+                Text("VOICE COMMUNICATOR").font(.system(size: 8)).lineLimit(1).minimumScaleFactor(0.6)
+            }.frame(maxWidth: .infinity).padding(.horizontal, 108)
+            HStack {
             Button { showPowerConfirmation = true } label: {
                 Image(systemName: "power").frame(width: 44, height: 44)
             }
             .accessibilityLabel("POWER")
             .disabled(!session.isPoweredOn && !session.isJoined)
-            Spacer()
-            VStack(spacing: 2) {
-                Text("KOEON").font(.system(size: 24, weight: .black)).tracking(2)
-                Text("VOICE COMMUNICATOR").font(.system(size: 8))
-            }
             Spacer()
             Button { showSettings = true } label: {
                 VStack { Image(systemName: "slider.horizontal.3"); Text("SETTINGS").font(.system(size: 8)) }.frame(minWidth: 44, minHeight: 44)
@@ -274,6 +274,7 @@ struct RootView: View {
             Button { showDiagnostics = true } label: {
                 VStack { Image(systemName: "waveform.path.ecg"); Text("DIAG").font(.system(size: 8)) }.frame(minWidth: 44, minHeight: 44)
             }.accessibilityLabel("Diagnostics")
+        }
         }
         .buttonStyle(ConsoleKeyStyle())
         .disabled(session.hapticSnapshot.inputPressed)

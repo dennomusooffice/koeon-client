@@ -273,11 +273,14 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text("KOEON", fontSize = 23.sp, lineHeight = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, maxLines = 1)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             androidx.compose.material3.ElevatedButton(onClick = { powerConfirm = true }, enabled = state.joined && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "POWER" }) { Text("⏻", fontSize = 22.sp, lineHeight = 25.sp) }
-            Text("KOEON", fontSize = 23.sp, lineHeight = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, modifier = Modifier.weight(1f))
+            Spacer(Modifier.weight(1f))
             androidx.compose.material3.ElevatedButton(onClick = { overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
             androidx.compose.material3.ElevatedButton(onClick = { overlay = "Diagnostics" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "Diagnostics" }) { Text("DIAG", fontSize = 10.sp, lineHeight = 13.sp) }
+        }
         }
 
 
