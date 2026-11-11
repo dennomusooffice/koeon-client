@@ -170,10 +170,10 @@ data class SessionDiagnostics(
     val appTouchPointerIdPresent: Boolean = false,
     val headsetLatched: Boolean = false,
     val headsetRoutePresent: Boolean = false,
-    val backgroundVolumePttEnabled: Boolean = false,
+    val backgroundVolumePttEnabled: Boolean = true,
     val backgroundVolumeServiceConnected: Boolean = false,
     val backgroundVolumePttLatched: Boolean = false,
-    val hardwareVolumePttMode: HardwareVolumePttMode = HardwareVolumePttMode.OFF,
+    val hardwareVolumePttMode: HardwareVolumePttMode = HardwareVolumePttMode.TOGGLE,
     val hardwareVolumePttLatched: Boolean = false,
     val hardwareVolumeLastKey: String? = null,
     val hardwareVolumeLastEventAt: String? = null,
@@ -286,7 +286,7 @@ class IntercomSessionManager(
         }
     }
     private val appTouchPttGate = AppTouchPttGate()
-    private var backgroundVolumePttEnabled = devicePreferences.getBoolean("background_volume_ptt_enabled", false)
+    private var backgroundVolumePttEnabled = devicePreferences.getBoolean("background_volume_ptt_enabled", true)
     private var backgroundVolumeServiceConnected = false
     private var backgroundVolumeOwnsPtt = false
     private var backgroundVolumeStartBlocked = true
@@ -325,7 +325,7 @@ class IntercomSessionManager(
         )
     }.getOrDefault(HeadsetPttMode.TOGGLE)
     private var hardwareVolumePttMode = runCatching {
-        HardwareVolumePttMode.valueOf(devicePreferences.getString("hardware_volume_ptt_mode", HardwareVolumePttMode.OFF.name)!!)
+        HardwareVolumePttMode.valueOf(devicePreferences.getString("hardware_volume_ptt_mode", HardwareVolumePttMode.TOGGLE.name)!!)
     }.getOrDefault(HardwareVolumePttMode.OFF)
 
     private val _state = MutableStateFlow(IntercomUiState())
