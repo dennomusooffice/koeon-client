@@ -880,16 +880,23 @@ private struct ChannelKeyLED: View {
 
 private struct ConsoleEmblem: View {
     var body: some View {
-        LinearGradient(stops: [
-            .init(color: Color(red: 1, green: 0.945, blue: 0.722), location: 0),
-            .init(color: Color(red: 0.706, green: 0.518, blue: 0.188), location: 0.35),
-            .init(color: Color(red: 1, green: 0.902, blue: 0.627), location: 0.46),
-            .init(color: Color(red: 0.561, green: 0.380, blue: 0.110), location: 0.51),
-            .init(color: Color(red: 0.851, green: 0.714, blue: 0.361), location: 0.82),
-            .init(color: Color(red: 1, green: 0.941, blue: 0.667), location: 1)
-        ], startPoint: .topLeading, endPoint: .bottomTrailing)
-        .mask(Image("ConsoleEmblem").resizable().frame(width: 56, height: 56).offset(x: -1.5))
-        .shadow(color: .black.opacity(0.45), radius: 0.5, x: 0, y: 1)
+        ZStack {
+            RoundedRectangle(cornerRadius: 5)
+                .fill(LinearGradient(stops: [
+                    .init(color: Color(red: 1, green: 0.945, blue: 0.722), location: 0),
+                    .init(color: Color(red: 0.706, green: 0.518, blue: 0.188), location: 0.35),
+                    .init(color: Color(red: 1, green: 0.902, blue: 0.627), location: 0.46),
+                    .init(color: Color(red: 0.72, green: 0.52, blue: 0.19), location: 0.52),
+                    .init(color: Color(red: 0.851, green: 0.714, blue: 0.361), location: 0.82),
+                    .init(color: Color(red: 1, green: 0.941, blue: 0.667), location: 1)
+                ], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color(red: 0.56, green: 0.38, blue: 0.11), lineWidth: 0.7))
+            Image("ConsoleEmblem").resizable().frame(width: 42, height: 42)
+                .foregroundStyle(Color(red: 1, green: 0.95, blue: 0.73)).offset(x: -1.1, y: 0.7)
+            Image("ConsoleEmblem").resizable().frame(width: 42, height: 42)
+                .foregroundStyle(Color(red: 0.35, green: 0.23, blue: 0.07)).offset(x: -1.1)
+        }
+        .shadow(color: .black.opacity(0.3), radius: 0.6, x: 0, y: 1)
         .accessibilityHidden(true)
     }
 }

@@ -3,7 +3,7 @@ package com.dennomuso.koeon
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.ui.graphics.graphicsLayer
 
@@ -575,10 +575,10 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             }
         }
     }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Button(onClick = { pendingChannelId = null; digitCount = 2; digits = "" }, enabled = channelEnabled, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), modifier = Modifier.weight(1f).height(44.dp).channelLED(false, twoDigitActive)) { Text("2桁", fontSize = 11.sp, lineHeight = 14.sp) }
-        Button(onClick = { candidate?.let { manager.switchChannel(it.id) }; digits = null; pendingChannelId = null }, enabled = channelEnabled && candidate != null, modifier = Modifier.weight(1f)) { Text("確定", fontSize = 11.sp, lineHeight = 14.sp) }
-        Button(onClick = { digits = null; pendingChannelId = null }, enabled = digits != null, modifier = Modifier.weight(1f)) { Text("取消", fontSize = 11.sp, lineHeight = 14.sp) }
+    Row(Modifier.fillMaxWidth().height(48.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+        ConsoleActionKey("2桁", channelEnabled, twoDigitActive) { pendingChannelId = null; digitCount = 2; digits = "" }
+        ConsoleActionKey("確定", channelEnabled && candidate != null) { candidate?.let { manager.switchChannel(it.id) }; digits = null; pendingChannelId = null }
+        ConsoleActionKey("取消", digits != null) { digits = null; pendingChannelId = null }
     }
     Text("押している間、送信", modifier = Modifier.align(Alignment.CenterHorizontally), fontSize = 12.sp, lineHeight = 15.sp)
     BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1000,21 +1000,44 @@ private fun Modifier.channelLED(blue: Boolean, green: Boolean): Modifier {
 
 @Composable
 private fun ConsoleEmblem() {
-    Box(Modifier.size(34.dp, 30.dp), contentAlignment = Alignment.Center) {
-        androidx.compose.foundation.Image(
-            painter = androidx.compose.ui.res.painterResource(R.drawable.ic_launcher_monochrome),
-            contentDescription = null,
-            modifier = Modifier.requiredSize(56.dp).graphicsLayer {
-                compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
-                translationX = -1.5.dp.toPx()
-            }.drawWithCache {
-                val gold = androidx.compose.ui.graphics.Brush.linearGradient(
-                    0f to Color(0xFFFFF1B8), .35f to Color(0xFFB48430),
-                    .46f to Color(0xFFFFE6A0), .51f to Color(0xFF8F611C),
-                    .82f to Color(0xFFD9B65C), 1f to Color(0xFFFFF1B8)
-                )
-                onDrawWithContent { drawContent(); drawRect(gold, blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn) }
-            }
-        )
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(5.dp)
+    val gold = androidx.compose.ui.graphics.Brush.linearGradient(
+        0f to Color(0xFFFFF1B8), .35f to Color(0xFFB48430),
+        .46f to Color(0xFFFFE6A0), .52f to Color(0xFFB88530),
+        .82f to Color(0xFFD9B65C), 1f to Color(0xFFFFF0AA)
+    )
+    Box(Modifier.size(34.dp, 30.dp).shadow(1.dp, shape).background(gold, shape)
+        .border(.7.dp, Color(0xFF8F611C), shape), contentAlignment = Alignment.Center) {
+        for (highlight in listOf(true, false)) {
+            androidx.compose.foundation.Image(
+                painter = androidx.compose.ui.res.painterResource(R.drawable.ic_launcher_monochrome),
+                contentDescription = null,
+                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(if (highlight) Color(0xFFFFF2BA) else Color(0xFF593B12)),
+                modifier = Modifier.requiredSize(42.dp).graphicsLayer {
+                    translationX = -1.1.dp.toPx()
+                    translationY = if (highlight) .7.dp.toPx() else 0f
+                }
+            )
+        }
     }
+}
+
+@Composable
+private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = false, onClick: () -> Unit) {
+    val dark = LocalConsoleDark.current
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
+    val face = androidx.compose.ui.graphics.Brush.verticalGradient(
+        if (dark) listOf(Color(0xFF3C3C3C), Color(0xFF292929)) else listOf(Color(0xFFF7F7F7), Color(0xFFD9D9D9))
+    )
+    Button(
+        onClick = onClick, enabled = enabled, shape = shape,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp),
+        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+            containerColor = Color.Transparent, disabledContainerColor = Color.Transparent,
+            contentColor = if (dark) Color(0xFFE6E6E6) else Color(0xFF333333),
+            disabledContentColor = Color(0xFF888888)
+        ),
+        modifier = Modifier.width(52.dp).height(44.dp).shadow(2.dp, shape)
+            .background(face, shape).border(1.dp, Color.Gray.copy(alpha = .5f), shape).channelLED(false, green)
+    ) { Text(label, fontSize = 17.sp, lineHeight = 20.sp) }
 }
