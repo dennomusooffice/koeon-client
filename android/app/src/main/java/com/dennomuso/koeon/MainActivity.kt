@@ -6,6 +6,8 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredSize
@@ -610,7 +612,6 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     Box(
         modifier = Modifier
             .size(diameter)
-            .shadow(if (inputPressed) 3.dp else 14.dp, CircleShape, clip = false)
             .graphicsLayer {
                 val pressScale = if (inputPressed) 0.97f else 1f
                 scaleX = pressScale
@@ -1078,6 +1079,17 @@ private fun Modifier.consoleKeyFace(shape: androidx.compose.ui.graphics.Shape = 
         if (LocalConsoleDark.current) listOf(Color(0x667D8981), Color(0x40303733), Color(0x70242A27))
         else listOf(Color(0x80FFFFFF), Color(0x40CBD2CE), Color(0x66DEE3DF))
     )
-    return shadow(3.dp, shape, clip = false).background(face, shape)
-        .border(1.dp, androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.White.copy(alpha = .75f), Color.White.copy(alpha = .08f), Color.Black.copy(alpha = .22f))), shape)
+    val rim = androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.White.copy(alpha = .75f), Color.White.copy(alpha = .08f), Color.Black.copy(alpha = .22f)))
+    return drawBehind {
+        // A translucent face must not reveal Android elevation shadow tessellation.
+        val outline = shape.createOutline(size, layoutDirection, this)
+        for (width in 2..10) drawOutline(outline, Color.Black.copy(alpha = .018f),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width.dp.toPx()))
+    }.background(face, shape).drawWithContent {
+        drawContent()
+        // Draw the thin highlight directly. Brush border masking leaves an opaque
+        // interior on some Android GPUs when the underlying face is translucent.
+        drawOutline(shape.createOutline(size, layoutDirection, this), rim,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
+    }
 }
