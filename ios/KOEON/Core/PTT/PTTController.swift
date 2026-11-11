@@ -367,9 +367,23 @@ actor PTTController {
         }
     }
 
-    func resetAfterReconnect() {
+    func resetAfterReconnect() async {
         guard snapshot.state == .error, ownedLeaseId == nil,
-              !acquisitionInFlight, snapshot.txTerminalCleanupComplete else { return }
+              !acquisitionInFlight, terminalTask == nil, !isPressed else { return }
+        if !snapshot.txTerminalCleanupComplete {
+            // A disconnected Room rejects mute as well as publish. Recheck mute
+            // once after reconnect, without forgetting an unconfirmed Floor lease.
+            let operation = generation
+            do { try await microphone.setMicrophoneEnabled(false) } catch { return }
+            guard generation == operation, snapshot.state == .error,
+                  ownedLeaseId == nil, !acquisitionInFlight,
+                  terminalTask == nil, !isPressed else { return }
+            snapshot.txTerminalCleanupComplete = true
+            snapshot.txErrorRecoverable = true
+            snapshot.microphoneMutedAt = clock.now
+            // Let the session finish Apple's independent release gate too.
+            publish()
+        }
         snapshot.state = role.canPublish ? .idle : .rxOnly
         publish()
     }

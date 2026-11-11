@@ -44,6 +44,14 @@
             </intent-filter>
         </activity>
 
+        <service android:name=".service.BackgroundVolumePttService"
+            android:label="@string/background_volume_ptt_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/background_volume_ptt" />
+        </service>
+
         <service
             android:name=".service.IntercomForegroundService"
             android:exported="false"

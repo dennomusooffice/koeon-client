@@ -2,6 +2,59 @@ import XCTest
 @testable import KOEON
 
 final class BackendContractTests: XCTestCase {
+    func testActionButtonRestoreRequiresPreviouslyValidatedSameUserAndChannel() {
+        var runtime = ActionButtonValidatedRuntime()
+        XCTAssertFalse(runtime.permits(channel: "channel-a", user: "user-a"))
+        runtime.validate(channel: "channel-a", user: "user-a")
+        XCTAssertTrue(runtime.permits(channel: "channel-a", user: "user-a"))
+        XCTAssertFalse(runtime.permits(channel: "channel-b", user: "user-a"))
+        XCTAssertFalse(runtime.permits(channel: "channel-a", user: "user-b"))
+        runtime.clear()
+        XCTAssertFalse(runtime.permits(channel: "channel-a", user: "user-a"))
+        runtime.validate(channel: "channel-b", user: "user-b")
+        XCTAssertFalse(runtime.permits(channel: "channel-a", user: "user-a"))
+        XCTAssertTrue(runtime.permits(channel: "channel-b", user: "user-b"))
+    }
+
+    func testActionButtonInvocationExpiresAtEightSecondsAndRejectsChangedScope() {
+        var gate = ActionButtonInvocationGate()
+        let token = gate.begin(channel: "channel-a", user: "user-a", now: 100)
+        XCTAssertTrue(gate.permits(token, channel: "channel-a", user: "user-a", now: 107.99))
+        XCTAssertFalse(gate.permits(token, channel: "channel-a", user: "user-a", now: 108))
+        XCTAssertFalse(gate.permits(token, channel: "channel-b", user: "user-a", now: 101))
+        XCTAssertFalse(gate.permits(token, channel: "channel-a", user: "user-b", now: 101))
+    }
+
+    func testActionButtonInvocationCancelAndLateCompletionCannotAffectNextInvocation() {
+        var gate = ActionButtonInvocationGate()
+        let old = gate.begin(channel: "channel-a", user: "user-a", now: 10)
+        gate.cancel()
+        XCTAssertFalse(gate.permits(old, channel: "channel-a", user: "user-a", now: 11))
+        let next = gate.begin(channel: "channel-a", user: "user-a", now: 11)
+        gate.finish(old)
+        XCTAssertTrue(gate.permits(next, channel: "channel-a", user: "user-a", now: 12))
+        gate.finish(next)
+        XCTAssertFalse(gate.active)
+    }
+
+    func testActionButtonInvocationAllowsOnlyOneRecoveryForItsOwnGeneration() {
+        var gate = ActionButtonInvocationGate()
+        let first = gate.begin(channel: "channel-a", user: "user-a", now: 10)
+        XCTAssertTrue(gate.claimRecovery(first))
+        XCTAssertFalse(gate.claimRecovery(first))
+        gate.cancel()
+        let next = gate.begin(channel: "channel-a", user: "user-a", now: 11)
+        XCTAssertFalse(gate.claimRecovery(first))
+        XCTAssertTrue(gate.claimRecovery(next))
+    }
+
+    func testActionButtonRecoveryDoesNotTrustStaleConnectedSnapshot() {
+        XCTAssertEqual(runtimeRestoreEntryDecision(reason: .actionButtonRecovery,
+            hasJoinedRuntime: true, connectionState: .connected), .performFreshResume)
+        XCTAssertEqual(runtimeRestoreEntryDecision(reason: .foregroundRecovery,
+            hasJoinedRuntime: true, connectionState: .connected), .useConnectedRuntime)
+    }
+
     func testRuntimeConfigurationAcceptsValidHTTPSURL() throws {
         let url = try XCTUnwrap(RuntimeConfiguration.apiBaseURL(from: [
             RuntimeConfiguration.apiBaseURLInfoKey: "https://api.example.test/v1",
@@ -365,6 +418,37 @@ final class BackendContractTests: XCTestCase {
             audioPublishProfileForConnection(selected: .telephone12k, applied: nil),
             .telephone12k
         )
+    }
+
+    func testActionButtonRequiresOptInAndReadySession() {
+        XCTAssertEqual(actionButtonPttDecision(enabled: false, state: .idle, eligible: true), .disabled)
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: .idle, eligible: false), .unavailable)
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: .idle, eligible: true), .startRequested)
+    }
+
+    func testActionButtonSecondInvocationCancelsPendingBeginEvenWhenReadinessIsLost() {
+        var gate = PttRequestGate()
+        XCTAssertEqual(gate.pressDown(), [.requestBegin])
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: gate.state, eligible: false), .stopRequested)
+        _ = gate.pressUp()
+        XCTAssertTrue(gate.releaseRequestedBeforeBegin)
+        XCTAssertEqual(gate.didBegin(), [.stopSystemTransmission])
+        XCTAssertFalse(gate.floorStarted, "Late Apple begin must not start a cancelled Floor request")
+    }
+
+    func testActionButtonReleaseDoesNotQueueAnotherTransmission() {
+        var gate = PttRequestGate()
+        _ = gate.pressDown()
+        _ = gate.didBegin()
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: gate.state, eligible: false), .stopRequested)
+        _ = gate.pressUp()
+        for _ in 0..<10 {
+            XCTAssertEqual(actionButtonPttDecision(enabled: true, state: gate.state, eligible: true), .settling)
+        }
+        _ = gate.didEnd()
+        XCTAssertEqual(actionButtonPttDecision(enabled: true, state: gate.state, eligible: true), .settling)
+        XCTAssertTrue(gate.finishRearming().isEmpty)
+        XCTAssertEqual(gate.state, .idle)
     }
 
     func testAppPttTouchEdgeAcceptsOneDownAndOneUpPerPhysicalHold() {
