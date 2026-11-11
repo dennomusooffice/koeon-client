@@ -131,6 +131,9 @@ struct RootView: View {
                 get: { session.pushToTalk.headsetPttEnabled },
                 set: { session.setHeadsetPttEnabled($0) }
             ))
+            Text("再生ボタンPTTは試験中です。Bluetooth接続後にONにしてください。アプリ再起動・Bluetooth再接続後はOFF→ONが必要です。有効中は音楽の再生操作がPTTに切り替わります。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button("この端末のユーザーを変更") {
                 Task { await session.resetDeviceAssignment() }
             }
@@ -178,6 +181,9 @@ struct RootView: View {
                 get: { session.pushToTalk.headsetPttEnabled },
                 set: { session.setHeadsetPttEnabled($0) }
             ))
+            Text("再生ボタンPTTは試験中です。Bluetooth接続後にONにしてください。アプリ再起動・Bluetooth再接続後はOFF→ONが必要です。有効中は音楽の再生操作がPTTに切り替わります。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button("この端末のユーザーを変更", role: .destructive) {
                 Task { await session.resetDeviceAssignment() }
             }

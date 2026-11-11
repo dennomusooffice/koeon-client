@@ -3,6 +3,7 @@ import Combine
 import CryptoKit
 import Foundation
 import PushToTalk
+import MediaPlayer
 import UIKit
 
 /// Shares the entire initialization, including restoration configuration.
@@ -1157,4 +1158,82 @@ extension ApplePushToTalkController: PTChannelManagerDelegate {
 private enum PushToTalkControllerError: LocalizedError {
     case notInitialized
     var errorDescription: String? { "Apple PushToTalk channel manager is unavailable." }
+}
+
+// AVRCP is not mapped by setAccessoryButtonEventsEnabled. See Apple DTS
+// thread/850343 answer 909261022. This bridge never activates an audio session.
+enum MediaPttCommand: String { case toggle, start, stop }
+enum MediaPttAction: Equatable { case start, stop, ignore }
+func mediaPttAction(command: MediaPttCommand, enabled: Bool, eligible: Bool,
+                    state: PttRequestGateState) -> MediaPttAction {
+    guard enabled else { return .ignore }
+    let active = state == .beginRequested || state == .transmitting
+    switch command {
+    case .stop: return active ? .stop : .ignore
+    case .start: return state == .idle && eligible ? .start : .ignore
+    case .toggle: return active ? .stop : (state == .idle && eligible ? .start : .ignore)
+    }
+}
+
+@MainActor
+final class HeadsetMediaPttBridge {
+    private var targets: [(MPRemoteCommand, Any)] = []
+    private(set) var enabled = false
+    private(set) var pendingBegin = false
+    private(set) var commandCount = 0
+    private(set) var lastCommand = "NONE"
+    private var generation = 0
+    private var registrationGeneration = 0
+    var onCommand: ((MediaPttCommand) -> Void)?
+    func update(enabled: Bool, transmitting: Bool) {
+        if self.enabled != enabled {
+            self.enabled = enabled
+            registrationGeneration += 1
+            let registration = registrationGeneration
+            if enabled {
+                let center = MPRemoteCommandCenter.shared()
+                for (command, kind) in [(center.togglePlayPauseCommand, MediaPttCommand.toggle),
+                                        (center.playCommand, .start), (center.pauseCommand, .stop),
+                                        (center.stopCommand, .stop)] {
+                    command.isEnabled = true
+                    let target = command.addTarget { [weak self] _ in
+                        Task { @MainActor in
+                            guard let self, self.enabled, self.registrationGeneration == registration else { return }
+                            self.commandCount += 1; self.lastCommand = kind.rawValue
+                            self.onCommand?(kind)
+                        }
+                        return .success
+                    }
+                    targets.append((command, target))
+                }
+            } else {
+                cancelPending()
+                for (command, target) in targets { command.removeTarget(target); command.isEnabled = false }
+                targets.removeAll()
+                MPNowPlayingInfoCenter.default().playbackState = .stopped
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            }
+        }
+        guard enabled else { return }
+        let playing = transmitting || pendingBegin
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: "KOEON PTT",
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0,
+        ]
+        MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
+    }
+    func prepareBegin(_ operation: @escaping @MainActor () -> Void) {
+        guard enabled, !pendingBegin else { return }
+        generation += 1; let expected = generation
+        pendingBegin = true
+        update(enabled: true, transmitting: true)
+        // DTS requires returning from the remote handler before requesting PTT.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.enabled, self.generation == expected else { return }
+            self.pendingBegin = false
+            operation()
+        }
+    }
+    func cancelPending() { generation += 1; pendingBegin = false }
 }

@@ -601,6 +601,10 @@ final class IntercomSessionController: ObservableObject {
     private var pttStoppedForAudioInterruption = false
     private var audioCancellable: AnyCancellable?
     private var pushToTalkCancellable: AnyCancellable?
+    private var mediaPttCancellable: AnyCancellable?
+    private let mediaPtt = HeadsetMediaPttBridge()
+    private var mediaPttArmed = false
+    private var mediaPttOwnsAttempt = false
     private var switchGeneration = 0
     private var restoreTask: Task<Void, Never>?
     private var restoreSingleFlight = RuntimeRestoreSingleFlightGate()
@@ -1059,6 +1063,10 @@ final class IntercomSessionController: ObservableObject {
             ) {
                 await self.ptt?.stopForSafety(reason: "Apple PushToTalk audio session deactivated.")
             }
+        }
+        mediaPtt.onCommand = { [weak self] command in self?.handleMediaPtt(command) }
+        mediaPttCancellable = objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshMediaPtt() }
         }
         Task { try? await pushToTalk.initialize() }
     }
@@ -1723,7 +1731,45 @@ final class IntercomSessionController: ObservableObject {
     }
 
     func setHeadsetPttEnabled(_ enabled: Bool) {
+        // Explicit arming after connection prevents automatic play-on-connect
+        // from being treated as consent to start transmitting.
+        mediaPttArmed = enabled && audio.route == .bluetooth
         pushToTalk.setHeadsetPttEnabled(enabled)
+        refreshMediaPtt()
+    }
+
+    private func refreshMediaPtt() {
+        if audio.route != .bluetooth { mediaPttArmed = false }
+        let enabled = mediaPttArmed && pushToTalk.headsetPttEnabled && isPoweredOn &&
+            joinedSession?.canPublish == true && pushToTalk.state == .joined
+        if !enabled, mediaPttOwnsAttempt {
+            mediaPttOwnsAttempt = false
+            endPttInput(usingIntent: true)
+        }
+        if pttRequestGate.state == .idle { mediaPttOwnsAttempt = false }
+        mediaPtt.update(enabled: enabled, transmitting:
+            pttRequestGate.state == .beginRequested || pttRequestGate.state == .transmitting)
+    }
+
+    private func handleMediaPtt(_ command: MediaPttCommand) {
+        let state = mediaPtt.pendingBegin ? PttRequestGateState.beginRequested : pttRequestGate.state
+        switch mediaPttAction(command: command, enabled: mediaPtt.enabled, eligible: canPressPTT, state: state) {
+        case .start:
+            let runtime = runtimeLiveness.generation
+            mediaPtt.prepareBegin { [weak self] in
+                guard let self else { return }
+                guard self.mediaPtt.enabled, self.runtimeLiveness.generation == runtime, self.canPressPTT,
+                      self.pttRequestGate.state == .idle else { self.refreshMediaPtt(); return }
+                self.mediaPttOwnsAttempt = true
+                self.beginPttInput(usingIntent: true)
+                self.refreshMediaPtt()
+            }
+        case .stop:
+            mediaPtt.cancelPending()
+            endPttInput(usingIntent: true)
+            refreshMediaPtt()
+        case .ignore: break
+        }
     }
 
     func setAudioPublishProfile(_ profile: AudioPublishProfile) {
@@ -3387,6 +3433,10 @@ final class IntercomSessionController: ObservableObject {
                 },
             ],
             "accessoryPtt": [
+                "mediaArmed": mediaPttArmed,
+                "mediaEnabled": mediaPtt.enabled,
+                "mediaCommandCount": mediaPtt.commandCount,
+                "lastMediaCommand": mediaPtt.lastCommand,
                 "settingEnabled": pushToTalk.headsetPttEnabled,
                 "eventsEnabled": pushToTalk.accessoryButtonEventsEnabled,
                 "configurationState": pushToTalk.accessoryConfigurationState,

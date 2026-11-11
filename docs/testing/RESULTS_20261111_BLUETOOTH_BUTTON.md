@@ -53,3 +53,33 @@
 Headset PTT Buttonは試験前のOFFへ戻し、画面0と保存値falseを確認。POWER ONと登録を維持し、Action buttonの既存PTT割り当て・opt-inは変更しなかった。アプリを終了しない設定で試験用Appium sessionをDELETEして終了。一時設定コピーを削除。製品修正・新規ビルド・配信・マージは行っていない。今回の許可枠を次回へ延長しない。
 
 今回の比較では、直前にAction buttonでPTTを使うだけではMFBの配送先はPTTへ切り替わらなかった。次は設定/適用/実イベントを同じ時刻で診断できる最小変更と、OS起点開始の安全な受理設計を別TASKで用意する。今回の結果だけでMPRemoteCommandCenter追加による背景PTTの実現や、このヘッドセットの完全非対応を断定しない。
+
+
+## 追加調査・修正（09:40–10:10 JST許可枠）
+
+所有者が原因調査・実装修正を許可。以降は前節の調査のみの範囲を拡張した。
+
+- 開発版2026111104、ソース `0a726e374d9b15a9ce8d79c78125508ffb28fdad`。設定表示通知、OS起点開始のopt-in/送信適格性ゲート、チャンネル整合性、アクセサリ診断を修正。270件中269成功・1スキップ。ローカル実機導入のみ、TestFlight未配信。
+- 利用者の1104前面MFB短押しは「無反応」。09:52:54 snapshotは設定ON/適用ENABLED/JOINED/CONNECTED/READY/IDLE、handsfree 0/0、source unknown。状態ゲート修正だけではAVRCP配送は解決しない。
+- 1104ソースに隔離fixtureを使用した無音声プローブ2026111105を一時導入。Appleチャンネルのアプリ側Control Beginはbegin/end 1/1、activation 1（09:57:08）。録音・音声送信なし。物理ボタン試験の回答は得られておらずNOT_RUN。これをヘッドセット非対応の証拠にしない。
+- 10:06–10:07頃、Leave Probe操作後に通常1104へ更新復元。POWER ON、Headset PTT Button OFFをUIで確認。Action button割り当ては変更なし。Appium sessionを終了。復元後の音声疎通・READY診断再取得は未実施。プローブを端末に残していない。
+
+### 原因説明の訂正と採用設計
+
+[Apple DTS回答850343](https://developer.apple.com/forums/thread/850343?answerId=909261022#909261022)と[856176](https://developer.apple.com/forums/thread/856176?answerId=915584022#915584022)は、現行PushToTalkのアクセサリ設定がAVRCPを直接取り込まないこと、アプリ側Now Playingイベント処理が必要なことを説明している。初期調査の「一般再生ボタンがアクセサリ通知へ直接配送される」という読み方を訂正する。今回の無通知と整合するが、手持ちヘッドセットで代替方式が成功した証拠ではない。
+
+DTSに従い、Now Playingのplaying状態を設定し、リモートコマンドのハンドラを返した後で通常PTT開始を要求する限定試作へ変更。Now Playing状態とAVAudioSessionのactivationは別で、音声所有権は引き続きApple PushToTalkに任せる。サイレント音源再生、音声session直接activate、CoreBluetooth権限追加は行わない。
+
+- 利用者がBluetooth接続後にHeadset設定を明示ONした場合のみメディア入力を有効化。アプリ再起動・経路離脱でメモリ上のarmingを失い、自動再接続のみでは再有効化しない。既存設定がONならOFF→ONが必要で、画面にも説明する。
+- playは開始、pause/stopは停止、togglePlayPauseは反転。待機中のstopから送信開始しない。連続playで再反転しない。停止・rearming中の新規開始を拒否する。
+- Floor/送信適格性/同一runtimeを確認する既存経路に入力する。ハンドラ登録世代と遅延開始世代を確認し、OFF・取消後の古い入力を拒否する。
+- タイトルは固定KOEON PTT。診断はarming/有効状態/件数/最後のコマンド分類のみ。音声や利用者・チャンネル情報をNow Playingへ出さない。
+- 音楽操作との競合、OS/ヘッドセットが自動発行するplayと人の押下を完全には区別できない限界は残る。既に有効な接続での自動playは実機受入れが必要。設定ONを無条件に安全と宣言しない。
+
+### 受入れ・残件
+
+自動試験ではコマンド分類、停止中拒否、遅延開始、OFF/ONを跨ぐ取消、二重開始抑制を確認する。実機では前面→背景→ロック→5分待機、相手の聴取、Music競合、再接続、自動play、電話割込みを確認する。コマンド受信と実音声到達を別々に判定する。
+
+Now Playing追加版は実機未導入・未検証であり、BluetoothボタンPTTの問題は未解決として#86を開いたままとする。受入れ条件が満たされるまで一般/内部/外部配信へ進まない。次の実機検証には新しい有効な時間枠が必要。Android変更、サーバー変更、マージはなし。
+
+Now Playing追加後の最終シミュレータ回帰: 272件中271成功・1スキップ・失敗0。実機成功を意味しない。診断fixtureは製品targetに含めていない。

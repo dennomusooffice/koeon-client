@@ -431,6 +431,48 @@ final class BackendContractTests: XCTestCase {
         XCTAssertEqual(gate.state, .idle)
     }
 
+    @MainActor
+    func testMediaBeginDefersAndCancellationSurvivesReenable() async {
+        let bridge = HeadsetMediaPttBridge()
+        bridge.update(enabled: true, transmitting: false)
+        var starts = 0
+        bridge.prepareBegin { starts += 1 }
+        XCTAssertEqual(starts, 0, "Must return from the remote handler before requesting PTT")
+        bridge.update(enabled: false, transmitting: false)
+        bridge.update(enabled: true, transmitting: false)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(starts, 0, "Old pending begin must not survive OFF/ON")
+        bridge.prepareBegin { starts += 1 }
+        bridge.prepareBegin { starts += 100 }
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(starts, 1, "One pending request is allowed")
+        bridge.prepareBegin { starts += 100 }
+        bridge.cancelPending()
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(starts, 1, "Stop before dispatch must cancel the request")
+        bridge.update(enabled: false, transmitting: false)
+    }
+
+    func testMediaCommandsPreserveExplicitStartStopAndSafetyGates() {
+        XCTAssertEqual(mediaPttAction(command: .start, enabled: true, eligible: true, state: .idle), .start)
+        XCTAssertEqual(mediaPttAction(command: .toggle, enabled: true, eligible: true, state: .idle), .start)
+        XCTAssertEqual(mediaPttAction(command: .stop, enabled: true, eligible: true, state: .idle), .ignore)
+        XCTAssertEqual(mediaPttAction(command: .start, enabled: true, eligible: true, state: .transmitting), .ignore)
+        XCTAssertEqual(mediaPttAction(command: .toggle, enabled: true, eligible: false, state: .transmitting), .stop)
+        XCTAssertEqual(mediaPttAction(command: .stop, enabled: true, eligible: false, state: .beginRequested), .stop)
+        XCTAssertEqual(mediaPttAction(command: .start, enabled: true, eligible: false, state: .idle), .ignore)
+        XCTAssertEqual(mediaPttAction(command: .toggle, enabled: false, eligible: true, state: .idle), .ignore)
+        for state in [PttRequestGateState.rearming, .endRequested] {
+            XCTAssertEqual(mediaPttAction(command: .toggle, enabled: true, eligible: true, state: state), .ignore)
+        }
+    }
+
     func testExternalBeginRequiresKnownSourceAndExplicitEligibility() {
         for source in ["unknown", "developerRequest", "unexpected"] {
             XCTAssertFalse(shouldAcceptExternalPttBegin(source: source, headsetEnabled: true, eligible: true))
