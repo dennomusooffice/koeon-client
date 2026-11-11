@@ -697,6 +697,7 @@ final class IntercomSessionController: ObservableObject {
         self.credentialStore = credentialStore
         self.deviceDisplayNameStore = deviceDisplayNameStore
         self.audioPublishDefaults = audioPublishDefaults
+        audioPublishDefaults.register(defaults: ["ptt.actionButtonEnabled": true])
         actionButtonPttEnabled = audioPublishDefaults.bool(forKey: "ptt.actionButtonEnabled")
         self.room = room
         self.audio = audio
