@@ -517,11 +517,11 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             ConsoleLamp("PTT", pttColor)
-            ConsoleLamp("RX", if (state.diagnostics.rx.state in setOf(com.dennomuso.koeon.core.ptt.RxState.RX_ACTIVE, com.dennomuso.koeon.core.ptt.RxState.RX_DRAINING)) Color(0xFF328BDF) else Color.Gray.copy(alpha = .4f))
+            ConsoleLamp("RX", if (state.diagnostics.rx.state in setOf(com.dennomuso.koeon.core.ptt.RxState.RX_ACTIVE, com.dennomuso.koeon.core.ptt.RxState.RX_DRAINING) || (state.diagnostics.rx.state != com.dennomuso.koeon.core.ptt.RxState.RX_IDLE && state.receiveLevelDbfs != null)) Color(0xFF328BDF) else Color.Gray.copy(alpha = .4f))
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             ConsoleMeter("TX IN", if (pttSemantic == PttSemanticState.TALKING) state.transmitInputLevelDbfs else null, KoeonSuccess)
-            ConsoleMeter("RX", if (state.diagnostics.rx.state in setOf(com.dennomuso.koeon.core.ptt.RxState.RX_ACTIVE, com.dennomuso.koeon.core.ptt.RxState.RX_DRAINING)) state.receiveLevelDbfs else null, Color(0xFF328BDF))
+            ConsoleMeter("RX", if (state.diagnostics.rx.state != com.dennomuso.koeon.core.ptt.RxState.RX_IDLE) state.receiveLevelDbfs else null, Color(0xFF328BDF))
         }
     }
     Text("CHANNEL SELECT", fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 2.sp)

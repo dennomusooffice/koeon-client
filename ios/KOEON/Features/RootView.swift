@@ -357,13 +357,13 @@ struct RootView: View {
         HStack(spacing: 20) {
             VStack(alignment: .leading, spacing: 5) {
                 ConsoleLamp(label: "PTT", color: lampColor)
-                ConsoleLamp(label: "RX", color: [.active, .endPending, .draining].contains(session.rxSnapshot.state) ? .blue : .gray.opacity(0.5))
+                ConsoleLamp(label: "RX", color: ([.active, .endPending, .draining].contains(session.rxSnapshot.state) || (session.rxSnapshot.state != .idle && session.room.receiveLevelDbfs != nil)) ? .blue : .gray.opacity(0.5))
             }
             VStack {
                 TimelineView(.periodic(from: .now, by: 0.1)) { _ in
                     VStack {
                         ConsoleMeter(label: "TX IN", db: session.pttSemanticState == .talking ? session.inputGain.currentLevelDbfs() : nil, color: .green)
-                        ConsoleMeter(label: "RX", db: [.active, .endPending, .draining].contains(session.rxSnapshot.state) ? session.room.receiveLevelDbfs : nil, color: .blue)
+                        ConsoleMeter(label: "RX", db: session.rxSnapshot.state != .idle ? session.room.receiveLevelDbfs : nil, color: .blue)
                     }
                 }
             }
