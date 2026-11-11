@@ -279,9 +279,9 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(1.dp)) {
                 ConsoleEmblem()
-                Text("KOEON", fontSize = 23.sp, lineHeight = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, maxLines = 1)
+                Text("KOEON", fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp, maxLines = 1)
             }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             androidx.compose.material3.ElevatedButton(onClick = { powerConfirm = true }, enabled = state.joined && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "POWER" }) { androidx.compose.material3.Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(26.dp)) }
@@ -1000,20 +1000,20 @@ private fun Modifier.channelLED(blue: Boolean, green: Boolean): Modifier {
 
 @Composable
 private fun ConsoleEmblem() {
-    Box(Modifier.size(26.dp, 28.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(34.dp, 30.dp), contentAlignment = Alignment.Center) {
         androidx.compose.foundation.Image(
             painter = androidx.compose.ui.res.painterResource(R.drawable.ic_launcher_monochrome),
             contentDescription = null,
-            modifier = Modifier.requiredSize(46.dp).graphicsLayer {
+            modifier = Modifier.requiredSize(56.dp).graphicsLayer {
                 compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
-                translationX = -1.2.dp.toPx()
+                translationX = -1.5.dp.toPx()
             }.drawWithCache {
-                val silver = androidx.compose.ui.graphics.Brush.linearGradient(
-                    0f to Color(0xFFFAFAFA), .35f to Color(0xFF999999),
-                    .46f to Color(0xFFF5F5F5), .51f to Color(0xFF6B6B6B),
-                    .82f to Color(0xFFD4D4D4), 1f to Color(0xFFFAFAFA)
+                val gold = androidx.compose.ui.graphics.Brush.linearGradient(
+                    0f to Color(0xFFFFF1B8), .35f to Color(0xFFB48430),
+                    .46f to Color(0xFFFFE6A0), .51f to Color(0xFF8F611C),
+                    .82f to Color(0xFFD9B65C), 1f to Color(0xFFFFF1B8)
                 )
-                onDrawWithContent { drawContent(); drawRect(silver, blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn) }
+                onDrawWithContent { drawContent(); drawRect(gold, blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn) }
             }
         )
     }

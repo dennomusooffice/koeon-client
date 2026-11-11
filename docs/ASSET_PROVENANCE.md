@@ -18,6 +18,6 @@ event screenshot、logo pack、その他のofficial brand assetは含めませ�
 
 ## 2026-11-11 Consoleエンブレム追加
 
-所有者の明示指示により、既存Androidアイコンの`android/app/src/main/res/drawable-xxxhdpi/ic_launcher_monochrome.png`を、iOSの`Assets.xcassets/ConsoleEmblem.imageset/ConsoleEmblem.png`へバイト単位で複製してヘッダーに再利用。新規生成/外部取得なし。Kと電波の既存シルエットへ実行時のシルバーグラデーションを重ねる。所有者・商標権は既存KOEONブランドと同じで、MPLによる商標権付与ではない。公開安全性: 既存ブランド図形のみ、個人情報/画面/音声/秘密なし。上記「iOS AppIconのみ」は初回基準時点の記録であり、現在のAndroidアイコンと本派生コピーを除外する意味ではない。
+所有者の明示指示により、既存Androidアイコンの`android/app/src/main/res/drawable-xxxhdpi/ic_launcher_monochrome.png`を、iOSの`Assets.xcassets/ConsoleEmblem.imageset/ConsoleEmblem.png`へバイト単位で複製してヘッダーに再利用。新規生成/外部取得なし。Kと電波の既存シルエットへ実行時の金属グラデーションを重ねる（初案シルバー、最終指示はゴールド）。所有者・商標権は既存KOEONブランドと同じで、MPLによる商標権付与ではない。公開安全性: 既存ブランド図形のみ、個人情報/画面/音声/秘密なし。上記「iOS AppIconのみ」は初回基準時点の記録であり、現在のAndroidアイコンと本派生コピーを除外する意味ではない。
 
 複製元/複製先SHA256: `b89e71ebb011d9b24922e2f9ceedb2e9da07f216bcb40c48e5d977bc5ae3d4e4`。

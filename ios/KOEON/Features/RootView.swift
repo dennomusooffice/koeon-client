@@ -267,12 +267,9 @@ struct RootView: View {
     }
     private var consoleHeader: some View {
         ZStack {
-            HStack(spacing: 6) {
-                ConsoleEmblem().frame(width: 26, height: 28)
-                VStack(spacing: 2) {
-                    Text("KOEON").font(.system(size: 24, weight: .black)).tracking(2).lineLimit(1).minimumScaleFactor(0.6)
-                    Text("VOICE COMMUNICATOR").font(.system(size: 8)).lineLimit(1).minimumScaleFactor(0.6)
-                }
+            VStack(spacing: 1) {
+                ConsoleEmblem().frame(width: 34, height: 30)
+                Text("KOEON").font(.system(size: 10, weight: .bold)).tracking(2).lineLimit(1)
             }.frame(maxWidth: .infinity).padding(.horizontal, 108)
             HStack {
             Button { showPowerConfirmation = true } label: {
@@ -884,14 +881,14 @@ private struct ChannelKeyLED: View {
 private struct ConsoleEmblem: View {
     var body: some View {
         LinearGradient(stops: [
-            .init(color: Color(white: 0.98), location: 0),
-            .init(color: Color(white: 0.60), location: 0.35),
-            .init(color: Color(white: 0.96), location: 0.46),
-            .init(color: Color(white: 0.42), location: 0.51),
-            .init(color: Color(white: 0.83), location: 0.82),
-            .init(color: Color(white: 0.98), location: 1)
+            .init(color: Color(red: 1, green: 0.945, blue: 0.722), location: 0),
+            .init(color: Color(red: 0.706, green: 0.518, blue: 0.188), location: 0.35),
+            .init(color: Color(red: 1, green: 0.902, blue: 0.627), location: 0.46),
+            .init(color: Color(red: 0.561, green: 0.380, blue: 0.110), location: 0.51),
+            .init(color: Color(red: 0.851, green: 0.714, blue: 0.361), location: 0.82),
+            .init(color: Color(red: 1, green: 0.941, blue: 0.667), location: 1)
         ], startPoint: .topLeading, endPoint: .bottomTrailing)
-        .mask(Image("ConsoleEmblem").resizable().frame(width: 46, height: 46).offset(x: -1.2))
+        .mask(Image("ConsoleEmblem").resizable().frame(width: 56, height: 56).offset(x: -1.5))
         .shadow(color: .black.opacity(0.45), radius: 0.5, x: 0, y: 1)
         .accessibilityHidden(true)
     }
