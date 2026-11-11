@@ -420,6 +420,42 @@ final class BackendContractTests: XCTestCase {
         )
     }
 
+    func testAuthorizedAccessoryBeginCanStartWithoutAnAppPress() {
+        var gate = PttRequestGate()
+        let allowed = shouldAcceptExternalPttBegin(source: "handsfreeButton", headsetEnabled: true, eligible: true)
+        XCTAssertEqual(gate.didBegin(acceptExternalBegin: allowed), [.beginFloor])
+        XCTAssertEqual(gate.state, .transmitting)
+        XCTAssertEqual(gate.didEnd(), [.finishFloor])
+        XCTAssertEqual(gate.state, .rearming)
+        XCTAssertEqual(gate.finishRearming(), [])
+        XCTAssertEqual(gate.state, .idle)
+    }
+
+    func testExternalBeginRequiresKnownSourceAndExplicitEligibility() {
+        for source in ["unknown", "developerRequest", "unexpected"] {
+            XCTAssertFalse(shouldAcceptExternalPttBegin(source: source, headsetEnabled: true, eligible: true))
+        }
+        XCTAssertFalse(shouldAcceptExternalPttBegin(source: "handsfreeButton", headsetEnabled: false, eligible: true))
+        XCTAssertFalse(shouldAcceptExternalPttBegin(source: "handsfreeButton", headsetEnabled: true, eligible: false))
+        XCTAssertFalse(shouldAcceptExternalPttBegin(source: "userRequest", headsetEnabled: true, eligible: false))
+        XCTAssertTrue(shouldAcceptExternalPttBegin(source: "userRequest", headsetEnabled: false, eligible: true))
+        var gate = PttRequestGate()
+        XCTAssertEqual(gate.didBegin(acceptExternalBegin: false), [.stopSystemTransmission])
+        XCTAssertFalse(gate.floorStarted)
+    }
+
+    func testExternalBeginCannotBypassCancellationOrRearming() {
+        var cancelled = PttRequestGate()
+        _ = cancelled.pressDown()
+        _ = cancelled.pressUp()
+        XCTAssertEqual(cancelled.didBegin(acceptExternalBegin: true), [.stopSystemTransmission])
+        XCTAssertFalse(cancelled.floorStarted)
+        var rearming = PttRequestGate()
+        _ = rearming.didEnd()
+        XCTAssertEqual(rearming.didBegin(acceptExternalBegin: true), [.stopSystemTransmission])
+        XCTAssertFalse(rearming.floorStarted)
+    }
+
     func testActionButtonRequiresOptInAndReadySession() {
         XCTAssertEqual(actionButtonPttDecision(enabled: false, state: .idle, eligible: true), .disabled)
         XCTAssertEqual(actionButtonPttDecision(enabled: true, state: .idle, eligible: false), .unavailable)

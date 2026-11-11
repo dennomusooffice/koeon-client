@@ -600,6 +600,7 @@ final class IntercomSessionController: ObservableObject {
     private var audioRecoveryTask: Task<Void, Never>?
     private var pttStoppedForAudioInterruption = false
     private var audioCancellable: AnyCancellable?
+    private var pushToTalkCancellable: AnyCancellable?
     private var switchGeneration = 0
     private var restoreTask: Task<Void, Never>?
     private var restoreSingleFlight = RuntimeRestoreSingleFlightGate()
@@ -710,6 +711,9 @@ final class IntercomSessionController: ObservableObject {
         audio.setOutputVolumeObservationEnabled(volumeProbeMode == .observeOnly)
         AudioManager.shared.capturePostProcessingDelegate = inputGain
 
+        pushToTalkCancellable = self.pushToTalk.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.objectWillChange.send() }
+        }
         audioCancellable = audio.objectWillChange.sink { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -940,7 +944,12 @@ final class IntercomSessionController: ObservableObject {
         }
         pushToTalk.onBeginTransmitting = { [weak self] source in
             guard let self else { return }
-            let actions = self.pttRequestGate.didBegin()
+            let acceptExternal = shouldAcceptExternalPttBegin(
+                source: source,
+                headsetEnabled: self.pushToTalk.headsetPttEnabled,
+                eligible: self.canPressPTT && self.pushToTalk.state == .joined
+            )
+            let actions = self.pttRequestGate.didBegin(acceptExternalBegin: acceptExternal)
             self.appAppleBeginReady = true
             let filtered = self.appPrearmAwaitingApple
                 ? actions.filter { $0 != .beginFloor }
@@ -2421,7 +2430,13 @@ final class IntercomSessionController: ObservableObject {
                     pushToTalk.stopTransmitting()
                 }
             case .beginFloor:
-                Task {
+                let runtime = runtimeLiveness.generation
+                let channel = pushToTalk.channelUUID
+                Task { [weak self] in
+                    guard let self, self.runtimeLiveness.generation == runtime,
+                          self.pushToTalk.channelUUID == channel,
+                          self.pttRequestGate.state == .transmitting,
+                          self.pttRequestGate.floorStarted else { return }
                     await ptt?.pttDown(
                         playReadyCue: false,
                         maximumReadyWaitMilliseconds: source == "developerRequest"
@@ -3370,6 +3385,17 @@ final class IntercomSessionController: ObservableObject {
                         "resultClass": event.resultClass,
                     ] as [String: Any]
                 },
+            ],
+            "accessoryPtt": [
+                "settingEnabled": pushToTalk.headsetPttEnabled,
+                "eventsEnabled": pushToTalk.accessoryButtonEventsEnabled,
+                "configurationState": pushToTalk.accessoryConfigurationState,
+                "frameworkState": pushToTalk.state.rawValue,
+                "handsfreeBeginCount": pushToTalk.handsfreeBeginCount,
+                "handsfreeEndCount": pushToTalk.handsfreeEndCount,
+                "lastTransmitSource": pushToTalk.lastTransmitRequestSource,
+                "lastHandsfreeBeginAt": timestamp(pushToTalk.lastHandsfreeBeginAt),
+                "lastHandsfreeEndAt": timestamp(pushToTalk.lastHandsfreeEndAt),
             ],
             "platformSpecific": [
                 "build": "\(version) (\(build))",

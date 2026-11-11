@@ -96,7 +96,12 @@ struct PttRequestGate: Equatable, Sendable {
         }
     }
 
-    mutating func didBegin() -> [PttRequestGateAction] {
+    mutating func didBegin(acceptExternalBegin: Bool = false) -> [PttRequestGateAction] {
+        // OS UI and accessories do not call pressDown(). Only an explicitly
+        // authorized external begin may enter from idle; never bypass rearming.
+        if state == .idle, acceptExternalBegin {
+            state = .beginRequested
+        }
         guard state == .beginRequested else {
             state = .endRequested
             return [.stopSystemTransmission]
@@ -231,6 +236,10 @@ func shouldEnablePttAccessoryEvents(
     frameworkState: PushToTalkFrameworkState
 ) -> Bool {
     settingEnabled && canPublish && frameworkState == .joined
+}
+
+func shouldAcceptExternalPttBegin(source: String, headsetEnabled: Bool, eligible: Bool) -> Bool {
+    eligible && (source == "userRequest" || (source == "handsfreeButton" && headsetEnabled))
 }
 
 struct PttIncomingEvent: Equatable, Sendable {
@@ -534,6 +543,7 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     @Published private(set) var lastIncomingPushLeaseId: String?
     @Published private(set) var lastTransmitRequestSource = "unknown"
     @Published private(set) var accessoryButtonEventsEnabled = false
+    @Published private(set) var accessoryConfigurationState = "NOT_CONFIGURED"
     @Published private(set) var headsetPttEnabled: Bool
     @Published private(set) var handsfreeBeginCount = 0
     @Published private(set) var handsfreeEndCount = 0
@@ -825,7 +835,7 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     func setHeadsetPttEnabled(_ enabled: Bool) {
         headsetPttEnabled = enabled
         if enabled, handsfreeBeginCount == 0 {
-            genericMfbSupportState = "GENERIC_MFB_NOT_SUPPORTED_BY_APPLE_PTT_IF_NO_CALLBACK"
+            genericMfbSupportState = "WAITING_FOR_ACCESSORY_EVENT"
         } else if !enabled {
             genericMfbSupportState = "DISABLED"
         }
@@ -899,8 +909,15 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
             canPublish: canPublish,
             frameworkState: state
         )
-        try await manager.setAccessoryButtonEventsEnabled(enabled, channelUUID: uuid)
+        accessoryConfigurationState = "APPLYING"
+        do {
+            try await manager.setAccessoryButtonEventsEnabled(enabled, channelUUID: uuid)
+        } catch {
+            accessoryConfigurationState = "FAILED"
+            throw error
+        }
         accessoryButtonEventsEnabled = enabled
+        accessoryConfigurationState = enabled ? "ENABLED" : "DISABLED"
     }
 
     private func submitTokenIfPossible() async {
@@ -915,6 +932,7 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
     }
 
     private func resetChannelState() {
+        accessoryConfigurationState = "NOT_CONFIGURED"
         state = manager == nil ? .initializing : .ready
         channelUUID = nil
         channelId = nil
@@ -993,8 +1011,9 @@ extension ApplePushToTalkController: PTChannelManagerDelegate {
         channelUUID: UUID,
         didBeginTransmittingFrom source: PTChannelTransmitRequestSource
     ) {
-        incomingState.setLocalTransmitting(true)
         Task { @MainActor in
+            guard self.channelUUID == channelUUID, self.state == .joined else { return }
+            incomingState.setLocalTransmitting(true)
             let label = Self.sourceLabel(source)
             lastTransmitRequestSource = label
             onTransmitRequestDidBegin?(label)
@@ -1013,8 +1032,9 @@ extension ApplePushToTalkController: PTChannelManagerDelegate {
         channelUUID: UUID,
         didEndTransmittingFrom source: PTChannelTransmitRequestSource
     ) {
-        incomingState.setLocalTransmitting(false)
         Task { @MainActor in
+            guard self.channelUUID == channelUUID else { return }
+            incomingState.setLocalTransmitting(false)
             let label = Self.sourceLabel(source)
             lastTransmitRequestSource = label
             if label == "handsfreeButton" {
