@@ -1,6 +1,6 @@
 # iPhoneのアクションボタンで送信する
 
-更新: 2026-11-11。**1.0（2026111103）を既存の内部・外部テスターへTestFlight配信済みです。** TestFlightでKOEONをこの版へ更新してから利用してください。既存のTestFlight版すべてで使用できるという案内ではありません。
+更新: 2026-11-11。**1.0（2026111107）を既存の内部・外部テスターへTestFlight配信済みです。** TestFlightでKOEONをこの版へ更新してから利用してください。既存のTestFlight版すべてで使用できるという案内ではありません。
 
 ## 最初の設定
 
@@ -36,4 +36,4 @@ KOEONの「アクションボタンPTT（試作）」をOFFにします。iPhone
 
 開発者向けの最新状況: [クライアントIssue #80](https://github.com/dennomusooffice/koeon-client/issues/80)。LPへの掲載依頼: [サーバーIssue #41](https://github.com/dennomusooffice/koeon/issues/41)。
 
-[Androidの音量長押しPTT](ANDROID_VOLUME_PTT_GUIDE.md) / [配信記録](RELEASE_20261111_ACTION_BUTTON.md)
+[Androidの音量長押しPTT](ANDROID_VOLUME_PTT_GUIDE.md) / [最新の配信記録](RELEASE_20261111_HARDWARE_PTT_DEFAULTS.md)

@@ -1,6 +1,6 @@
 # Androidの音量ボタンを長押しして送信する
 
-2026-11-11。対象は内部検証版1.0.19-ptt07（20）です。一般配信版への反映済みという案内ではありません。
+2026-11-11。**1.0.22（23）を[GitHub Release](https://github.com/dennomusooffice/koeon-client/releases/tag/android-v1.0.22-23)へ検証版として公開しました。** 長押し動作の実機確認は前段1.0.19-ptt07（20）での結果です。
 
 ## 設定
 
