@@ -363,7 +363,7 @@ struct RootView: View {
                 TimelineView(.periodic(from: .now, by: 0.1)) { _ in
                     VStack {
                         ConsoleMeter(label: "TX IN", db: session.pttSemanticState == .talking ? session.inputGain.currentLevelDbfs() : nil, color: .green)
-                        ConsoleMeter(label: "RX", db: session.rxSnapshot.state != .idle ? session.room.receiveLevelDbfs : nil, color: .blue)
+                        ConsoleMeter(label: "RX", db: session.room.receiveLevelDbfs, color: .blue)
                     }
                 }
             }
