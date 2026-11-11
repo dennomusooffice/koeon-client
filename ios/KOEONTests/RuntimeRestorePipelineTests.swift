@@ -9,8 +9,9 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let controller = IntercomSessionController(api: ResumeCleanupAPIStub(),
             pushToTalk: ApplePushToTalkController(defaults: defaults), audioPublishDefaults: defaults)
-        let disabled = await controller.toggleActionButtonPttFromIntent()
-        XCTAssertEqual(disabled, .disabled)
+        let unavailableByDefault = await controller.toggleActionButtonPttFromIntent()
+        XCTAssertEqual(unavailableByDefault, .unavailable)
+        XCTAssertTrue(controller.actionButtonPttEnabled)
         controller.setActionButtonPttEnabled(true)
         let unavailable = await controller.toggleActionButtonPttFromIntent()
         XCTAssertEqual(unavailable, .unavailable)
@@ -25,7 +26,8 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let controller = IntercomSessionController(api: ResumeCleanupAPIStub(),
             pushToTalk: ApplePushToTalkController(defaults: defaults), audioPublishDefaults: defaults)
-        XCTAssertEqual(controller.toggleActionButtonPtt(), .disabled)
+        XCTAssertTrue(controller.actionButtonPttEnabled)
+        XCTAssertEqual(controller.toggleActionButtonPtt(), .unavailable)
         controller.setActionButtonPttEnabled(true)
         controller.appLifecycleDidChange("background")
         for _ in 0..<5 { XCTAssertEqual(controller.toggleActionButtonPtt(), .unavailable) }
@@ -36,6 +38,18 @@ final class RuntimeRestorePipelineTests: XCTestCase {
         controller.setActionButtonPttEnabled(false)
         XCTAssertEqual(controller.toggleActionButtonPtt(), .disabled)
         XCTAssertFalse(defaults.bool(forKey: "ptt.actionButtonEnabled"))
+    }
+
+    func testSavedActionButtonOffIsNotOverriddenByDefault() {
+        let suite = "ActionButtonSavedOff-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(false, forKey: "ptt.actionButtonEnabled")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = IntercomSessionController(api: ResumeCleanupAPIStub(),
+            pushToTalk: ApplePushToTalkController(defaults: defaults), audioPublishDefaults: defaults)
+        XCTAssertFalse(controller.actionButtonPttEnabled)
+        XCTAssertEqual(controller.toggleActionButtonPtt(), .disabled)
+        XCTAssertFalse(controller.isPoweredOn)
     }
 
     func testFailedResumePreservesPushUntilExplicitPowerOff() async {
