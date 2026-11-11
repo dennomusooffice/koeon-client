@@ -1,6 +1,11 @@
 package com.dennomuso.koeon
 
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.ui.graphics.graphicsLayer
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -274,9 +279,12 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Text("KOEON", fontSize = 23.sp, lineHeight = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ConsoleEmblem()
+                Text("KOEON", fontSize = 23.sp, lineHeight = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, maxLines = 1)
+            }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            androidx.compose.material3.ElevatedButton(onClick = { powerConfirm = true }, enabled = state.joined && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "POWER" }) { Text("⏻", fontSize = 22.sp, lineHeight = 25.sp) }
+            androidx.compose.material3.ElevatedButton(onClick = { powerConfirm = true }, enabled = state.joined && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "POWER" }) { androidx.compose.material3.Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(26.dp)) }
             Spacer(Modifier.weight(1f))
             androidx.compose.material3.ElevatedButton(onClick = { overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
             androidx.compose.material3.ElevatedButton(onClick = { overlay = "Diagnostics" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "Diagnostics" }) { Text("DIAG", fontSize = 10.sp, lineHeight = 13.sp) }
@@ -534,7 +542,17 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             ConsoleMeter("RX", if (state.connectionState == IntercomConnectionState.CONNECTED) state.receiveLevelDbfs else null, Color(0xFF328BDF))
         }
     }
-    Text("CHANNEL SELECT", fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 2.sp)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("CHANNEL SELECT", fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 1.sp)
+        Spacer(Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.semantics { contentDescription = "10の位：緑、1の位：青" }) {
+            Box(Modifier.size(6.dp).background(Color(0xFF37B469), CircleShape))
+            Text("TENS", fontSize = 9.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(1.dp))
+            Box(Modifier.size(6.dp).background(Color(0xFF328BDF), CircleShape))
+            Text("ONES", fontSize = 9.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
     repeat(2) { row ->
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             repeat(5) { column ->
@@ -558,7 +576,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Button(onClick = { pendingChannelId = null; digitCount = 2; digits = "" }, enabled = channelEnabled, modifier = Modifier.weight(1f).channelLED(false, twoDigitActive)) { Text("2桁", fontSize = 11.sp, lineHeight = 14.sp) }
+        Button(onClick = { pendingChannelId = null; digitCount = 2; digits = "" }, enabled = channelEnabled, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), modifier = Modifier.weight(1f).height(44.dp).channelLED(false, twoDigitActive)) { Text("2桁", fontSize = 11.sp, lineHeight = 14.sp) }
         Button(onClick = { candidate?.let { manager.switchChannel(it.id) }; digits = null; pendingChannelId = null }, enabled = channelEnabled && candidate != null, modifier = Modifier.weight(1f)) { Text("確定", fontSize = 11.sp, lineHeight = 14.sp) }
         Button(onClick = { digits = null; pendingChannelId = null }, enabled = digits != null, modifier = Modifier.weight(1f)) { Text("取消", fontSize = 11.sp, lineHeight = 14.sp) }
     }
@@ -978,4 +996,25 @@ private fun Modifier.channelLED(blue: Boolean, green: Boolean): Modifier {
     return border(3.dp, androidx.compose.ui.graphics.Brush.horizontalGradient(
         0f to left, .499f to left, .5f to right, 1f to right
     ), androidx.compose.foundation.shape.RoundedCornerShape(7.dp))
+}
+
+@Composable
+private fun ConsoleEmblem() {
+    Box(Modifier.size(26.dp, 28.dp), contentAlignment = Alignment.Center) {
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.res.painterResource(R.drawable.ic_launcher_monochrome),
+            contentDescription = null,
+            modifier = Modifier.requiredSize(46.dp).graphicsLayer {
+                compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                translationX = -1.2.dp.toPx()
+            }.drawWithCache {
+                val silver = androidx.compose.ui.graphics.Brush.linearGradient(
+                    0f to Color(0xFFFAFAFA), .35f to Color(0xFF999999),
+                    .46f to Color(0xFFF5F5F5), .51f to Color(0xFF6B6B6B),
+                    .82f to Color(0xFFD4D4D4), 1f to Color(0xFFFAFAFA)
+                )
+                onDrawWithContent { drawContent(); drawRect(silver, blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn) }
+            }
+        )
+    }
 }

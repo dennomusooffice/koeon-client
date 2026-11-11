@@ -215,7 +215,17 @@ struct RootView: View {
     private var twoDigitActive: Bool { channelDigits != nil ? channelDigitCount == 2 : (currentChannelNumber ?? 0) >= 10 }
     private var channelKeys: some View {
         VStack(spacing: 5) {
-            Text("CHANNEL SELECT").font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Text("CHANNEL SELECT").font(.caption.monospaced())
+                Spacer()
+                HStack(spacing: 4) {
+                    Circle().fill(Color.green).frame(width: 6, height: 6)
+                    Text("TENS")
+                    Circle().fill(Color.blue).frame(width: 6, height: 6).padding(.leading, 5)
+                    Text("ONES")
+                }.font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .accessibilityElement(children: .ignore).accessibilityLabel("10の位：緑、1の位：青")
+            }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 5) {
                 ForEach(0..<10) { number in
                     Button {
@@ -257,9 +267,12 @@ struct RootView: View {
     }
     private var consoleHeader: some View {
         ZStack {
-            VStack(spacing: 2) {
-                Text("KOEON").font(.system(size: 24, weight: .black)).tracking(2).lineLimit(1).minimumScaleFactor(0.6)
-                Text("VOICE COMMUNICATOR").font(.system(size: 8)).lineLimit(1).minimumScaleFactor(0.6)
+            HStack(spacing: 6) {
+                ConsoleEmblem().frame(width: 26, height: 28)
+                VStack(spacing: 2) {
+                    Text("KOEON").font(.system(size: 24, weight: .black)).tracking(2).lineLimit(1).minimumScaleFactor(0.6)
+                    Text("VOICE COMMUNICATOR").font(.system(size: 8)).lineLimit(1).minimumScaleFactor(0.6)
+                }
             }.frame(maxWidth: .infinity).padding(.horizontal, 108)
             HStack {
             Button { showPowerConfirmation = true } label: {
@@ -865,5 +878,21 @@ private struct ChannelKeyLED: View {
                 .init(color: blue ? .blue : green ? .green : .clear, location: 1)
             ], startPoint: .leading, endPoint: .trailing), lineWidth: 3
         ).allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+private struct ConsoleEmblem: View {
+    var body: some View {
+        LinearGradient(stops: [
+            .init(color: Color(white: 0.98), location: 0),
+            .init(color: Color(white: 0.60), location: 0.35),
+            .init(color: Color(white: 0.96), location: 0.46),
+            .init(color: Color(white: 0.42), location: 0.51),
+            .init(color: Color(white: 0.83), location: 0.82),
+            .init(color: Color(white: 0.98), location: 1)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+        .mask(Image("ConsoleEmblem").resizable().frame(width: 46, height: 46).offset(x: -1.2))
+        .shadow(color: .black.opacity(0.45), radius: 0.5, x: 0, y: 1)
+        .accessibilityHidden(true)
     }
 }
