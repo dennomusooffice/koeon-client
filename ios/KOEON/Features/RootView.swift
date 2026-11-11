@@ -890,6 +890,7 @@ private struct ConsoleEmblem: View {
                     .init(color: Color(red: 0.851, green: 0.714, blue: 0.361), location: 0.82),
                     .init(color: Color(red: 1, green: 0.941, blue: 0.667), location: 1)
                 ], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: 34, height: 30)
                 .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color(red: 0.56, green: 0.38, blue: 0.11), lineWidth: 0.7))
             Image("ConsoleEmblem").resizable().frame(width: 42, height: 42)
                 .foregroundStyle(Color(red: 1, green: 0.95, blue: 0.73)).offset(x: -1.1, y: 0.7)
