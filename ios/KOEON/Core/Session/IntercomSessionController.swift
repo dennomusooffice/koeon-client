@@ -1119,6 +1119,40 @@ final class IntercomSessionController: ObservableObject {
         return canPressPTT ? .ready : .preparing
     }
 
+    @Published private(set) var channelChoicesRefreshing = false
+    @Published private(set) var channelChoicesRefreshFailed = false
+
+    private var channelChoiceScope: ChannelChoiceRefreshScope? {
+        guard let joined = joinedSession else { return nil }
+        return ChannelChoiceRefreshScope(sessionId: joined.sessionId, runtime: runtimeLiveness.generation,
+            userId: joined.user.id, workspaceId: joined.user.workspaceId)
+    }
+
+    /// Foreground UI metadata only: never reconnect or reset the active RX/PTT runtime.
+    func refreshChannelChoices() async {
+        guard operationalState == .active, !channelChoicesRefreshing,
+              let requested = channelChoiceScope, let credential = credentialStore.read() else { return }
+        channelChoicesRefreshing = true
+        channelChoicesRefreshFailed = false
+        defer { channelChoicesRefreshing = false }
+        do {
+            let me = try await api.me()
+            guard !Task.isCancelled, credentialStore.read() == credential,
+                  channelChoicesAreCurrent(requested: requested, current: channelChoiceScope, identity: me) else { return }
+            identity = me
+            let channels = me.channels.map { Channel(id: $0.id, workspaceId: me.workspace.id, name: $0.name) }
+            let user = User(id: me.user.id, workspaceId: me.workspace.id, name: me.user.displayName,
+                role: me.user.role, channelIds: channels.map(\.id))
+            fixture = FixtureResponse(tenant: Tenant(id: "authenticated", name: "KOEON"),
+                workspace: Workspace(id: me.workspace.id, tenantId: "authenticated", name: me.workspace.name),
+                channels: channels, users: [user])
+        } catch {
+            if !Task.isCancelled, requested == channelChoiceScope, credentialStore.read() == credential {
+                channelChoicesRefreshFailed = true
+            }
+        }
+    }
+
     func loadFixture() async {
         guard restoreTask == nil, fixture == nil, !isLoading else { return }
         guard let credential = credentialStore.read() else {

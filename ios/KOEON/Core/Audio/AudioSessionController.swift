@@ -115,6 +115,14 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
     }
     func startCalibration(now: Date = Date()) { lock.withLock { calibrationRms = []; calibrationUntil = now.addingTimeInterval(3); value.calibrationState = "MEASURING"; value.recommendationDb = nil } }
     func resetProfile() { lock.withLock { defaults.removeObject(forKey: key("manual", value.route)); defaults.removeObject(forKey: key("auto", value.route)); value.manualGainDb = 0; value.autoTrimDb = 0; value.recommendationDb = nil } }
+    private var liveMeterDbfs: Float?
+    private var liveMeterAt: TimeInterval?
+    func currentLevelDbfs(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Float? {
+        lock.withLock {
+            guard transmitting, !measurementsPaused, let at = liveMeterAt, now >= at, now - at <= 0.3 else { return nil }
+            return liveMeterDbfs
+        }
+    }
     func snapshot() -> InputGainSnapshot { lock.withLock { var copy = value; copy.effectiveGainDb = transmitting ? fixedGainDb : effectiveGain(); copy.rmsDbfs = rmsDbfs(); copy.peakDbfs = sampleCount > 0 ? dbfs(peak) : nil; return copy } }
 
     func audioProcessingProcess(audioBuffer: LKAudioBuffer) {
@@ -146,6 +154,9 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
                 }
             }
             guard frameSamples > 0 else { return }
+            let frameLevel = dbfs(sqrtf(Float(frameSquares / Double(frameSamples))))
+            liveMeterDbfs = frameLevel.isFinite ? max(-96, min(0, frameLevel)) : nil
+            liveMeterAt = ProcessInfo.processInfo.systemUptime
             if !measurementsPaused {
                 sumSquares += frameSquares
                 sampleCount += frameSamples
@@ -202,7 +213,7 @@ final class InputGainProcessor: NSObject, AudioCustomProcessingDelegate, @unchec
         case .auto: return clamp(value.autoTrimDb)
         }
     }
-    private func resetMeasurements() { sumSquares = 0; sampleCount = 0; peak = 0; value.limiterHits = 0 }
+    private func resetMeasurements() { liveMeterDbfs = nil; liveMeterAt = nil; sumSquares = 0; sampleCount = 0; peak = 0; value.limiterHits = 0 }
     private func rmsDbfs() -> Float? { sampleCount == 0 ? nil : dbfs(sqrtf(Float(sumSquares / Double(sampleCount)))) }
     private func dbfs(_ v: Float) -> Float { v <= 0 ? -120 : max(-120, 20 * log10f(v)) }
     private func clamp(_ v: Float, maximum: Float = 12) -> Float { v.isFinite ? min(maximum, max(-6, v)) : 0 }

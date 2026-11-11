@@ -3,6 +3,14 @@ import MediaPlayer
 
 struct RootView: View {
     @EnvironmentObject private var session: IntercomSessionController
+    @AppStorage("consoleDarkMode") private var darkConsole = false
+    @State private var showPowerConfirmation = false
+    @State private var showMembers = false
+    @State private var showChannels = false
+    @State private var channelDigits: String?
+    @State private var channelDigitCount = 1
+    @State private var pendingChannelID: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showDiagnostics = false
     @State private var showSettings = false
     @State private var showQRScanner = false
@@ -11,26 +19,53 @@ struct RootView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    brand
-                    #if DEBUG && targetEnvironment(simulator)
-                    if session.pushToTalk.isForegroundSimulatorSession {
-                        Text("SIMULATOR: foreground transport only · no Apple PTT/APNs")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                    #endif
-                    if session.isPoweredOn || session.isJoined { joinedView } else { selectionView }
-                    if let error = session.lastError {
-                        Text(error).font(.footnote).foregroundStyle(.red)
+            VStack(spacing: 8) {
+                consoleHeader
+                if session.isPoweredOn || session.isJoined {
+                    joinedView
+                } else {
+                    ScrollView {
+                        selectionView
+                        if let error = session.lastError { Text(error).font(.footnote).foregroundStyle(.red) }
                     }
                 }
-                .padding()
             }
-            .navigationTitle("KOEON")
-            .toolbar {
-                Button("Settings") { showSettings = true }
-                Button("Diagnostics") { showDiagnostics = true }
+            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(darkConsole ? Color(red: 0.11, green: 0.12, blue: 0.11) : Color(red: 0.96, green: 0.96, blue: 0.94))
+            .toolbar(.hidden, for: .navigationBar)
+            .confirmationDialog("接続を終了しますか？", isPresented: $showPowerConfirmation) {
+                Button("POWER OFF · 接続終了", role: .destructive) { Task { await session.leave(powerOff: true) } }
+            } message: { Text("送受信を終了します。利用登録は保持します。") }
+            .sheet(isPresented: $showMembers) {
+                NavigationStack {
+                    List(Array(session.room.participantNames.enumerated()), id: \.offset) { _, name in Text(name).font(.title2) }
+                    .navigationTitle("参加メンバー")
+                    .toolbar { Button("閉じる") { showMembers = false } }
+                }
+            }
+            .sheet(isPresented: $showChannels) {
+                NavigationStack {
+                    List {
+                        Button("前のCH") {
+                            if let current = session.joinedSession?.channel.id { switchRelative(-1, current: current) }
+                            showChannels = false
+                        }.disabled(!channelSelectionEnabled)
+                        Button("次のCH") {
+                            if let current = session.joinedSession?.channel.id { switchRelative(1, current: current) }
+                            showChannels = false
+                        }.disabled(!channelSelectionEnabled)
+                        ForEach(ChannelSwitchPolicy.ordered(session.fixture?.channels ?? [])) { channel in
+                            Button(channel.name) { stageChannel(channel.id); showChannels = false }
+                                .disabled(!channelSelectionEnabled)
+                        }
+                        if session.channelChoicesRefreshFailed {
+                            Button("CH一覧を再取得") { Task { await session.refreshChannelChoices() } }
+                        }
+                    }
+                    .navigationTitle("チャネル一覧")
+                    .toolbar { Button("閉じる") { showChannels = false } }
+                }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showDiagnostics) { DiagnosticsView() }
@@ -54,9 +89,12 @@ struct RootView: View {
                 .ignoresSafeArea()
             }
             .task { await session.loadFixture() }
+            .task(id: session.operationalState) {
+                if session.operationalState == .active { await session.refreshChannelChoices() }
+            }
         }
         .tint(KOEONPalette.cyan)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(darkConsole ? .dark : .light)
     }
 
     private var brand: some View {
@@ -142,114 +180,201 @@ struct RootView: View {
             }
         }
         .padding()
-        .background(KOEONPalette.lcd, in: RoundedRectangle(cornerRadius: 18))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(KOEONPalette.cyan.opacity(0.35)))
     }
 
     private var joinedView: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 8) {
             statusCard
+            statusLamps
+            channelKeys
             if session.needsRuntimeRecovery {
-                Text(session.isRestoringRuntime ? "接続を復旧しています…" : "接続を復旧できませんでした。再試行できます。")
-                    .font(.footnote).foregroundStyle(.orange)
                 Button("接続を再試行") { session.retryRuntimeRecovery() }
                     .disabled(session.isRestoringRuntime || session.isLoading)
             }
-            if session.audio.interruption.state != .ready {
-                VStack(spacing: 8) {
-                    Text("AUDIO INTERRUPTED").font(.headline).foregroundStyle(.orange)
-                    Text(session.audio.interruption.state == .recovering
-                         ? "音声を自動復旧しています…"
-                         : "通話・OS音声割り込み中はPTTを利用できません。")
-                        .font(.footnote)
-                    if session.audio.interruption.state == .recoveryFailed {
-                        Button("音声を再接続") { session.retryAudioRecovery() }
-                            .buttonStyle(.borderedProminent)
-                    }
-                }
-                .padding()
-                .frame(maxWidth: .infinity)
-                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+            if session.audio.interruption.state == .recoveryFailed {
+                Button("音声を再接続") { session.retryAudioRecovery() }
             }
-            pttButton
-            Button("POWER OFF", role: .destructive) {
-                Task { await session.leave(powerOff: true) }
+            GeometryReader { geometry in
+                pttButton(diameter: min(220, geometry.size.height, geometry.size.width))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .buttonStyle(.bordered)
-            .disabled(session.isLoading)
-            Toggle("Headset PTT Button", isOn: Binding(
-                get: { session.pushToTalk.headsetPttEnabled },
-                set: { session.setHeadsetPttEnabled($0) }
-            ))
-            Text("再生ボタンPTTは試験中です。Bluetooth接続後にONにしてください。アプリ再起動・Bluetooth再接続後はOFF→ONが必要です。有効中は音楽の再生操作がPTTに切り替わります。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("この端末のユーザーを変更", role: .destructive) {
-                Task { await session.resetDeviceAssignment() }
-            }
-            .buttonStyle(.bordered)
-            .disabled(session.isLoading || session.pttSnapshot.state != .idle)
         }
     }
+
+    private var channelKeys: some View {
+        VStack(spacing: 5) {
+            Text("CHANNEL SELECT").font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 5) {
+                ForEach(0..<10) { number in
+                    Button {
+                        pendingChannelID = nil
+                        if channelDigits != nil && channelDigitCount == 2 {
+                            if (channelDigits?.count ?? 0) < 2 { channelDigits?.append(String(number)) }
+                        } else { channelDigitCount = 1; channelDigits = String(number) }
+                    } label: {
+                        VStack(spacing: 4) {
+                            Capsule().fill(ChannelSwitchPolicy.number(session.joinedSession?.channel.name ?? "") == number && channelDigits == nil ? Color.blue : Color.gray.opacity(0.3)).frame(width: 16, height: 3)
+                            Text("\(number)").font(.title3.monospaced().bold())
+                        }.frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .disabled(!channelSelectionEnabled || (channelDigits == nil && numberedChannel(number) == nil))
+                    .accessibilityLabel("CH \(number)")
+                }
+            }
+            HStack {
+                Button("2桁入力") { pendingChannelID = nil; channelDigitCount = 2; channelDigits = "" }.disabled(!channelSelectionEnabled)
+                Button("確定") {
+                    if channelSelectionEnabled, let target = candidateChannel { Task { await session.switchChannel(to: target.id) } }
+                    cancelChannelEntry()
+                }.disabled(candidateChannel == nil || !channelSelectionEnabled)
+                Button("取消") { cancelChannelEntry() }.disabled(channelDigits == nil)
+            }.frame(minHeight: 44)
+
+        }
+        .buttonStyle(ConsoleKeyStyle())
+        .task(id: "\(channelDigits ?? "-")/\(pendingChannelID ?? "-")") {
+            guard channelDigits != nil else { return }
+            do { try await Task.sleep(for: .seconds(5)); cancelChannelEntry() } catch { }
+        }
+        .onChange(of: session.joinedSession?.channel.id) { _, _ in cancelChannelEntry() }
+    }
+    private var channelSelectionEnabled: Bool { session.operationalState == .active && session.pttSnapshot.state == .idle && !session.hapticSnapshot.inputPressed }
+    private func numberedChannel(_ number: Int) -> Channel? {
+        ChannelSwitchPolicy.numbered(session.fixture?.channels ?? [], number: number)
+    }
+    private var consoleHeader: some View {
+        HStack {
+            Button { showPowerConfirmation = true } label: {
+                Image(systemName: "power").frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("POWER")
+            .disabled(!session.isPoweredOn && !session.isJoined)
+            Spacer()
+            VStack(spacing: 2) {
+                Text("KOEON").font(.system(size: 24, weight: .black)).tracking(2)
+                Text("VOICE COMMUNICATOR").font(.system(size: 8))
+            }
+            Spacer()
+            Button { showSettings = true } label: {
+                VStack { Image(systemName: "slider.horizontal.3"); Text("SETTINGS").font(.system(size: 8)) }.frame(minWidth: 44, minHeight: 44)
+            }.accessibilityLabel("Settings")
+            Button { showDiagnostics = true } label: {
+                VStack { Image(systemName: "waveform.path.ecg"); Text("DIAG").font(.system(size: 8)) }.frame(minWidth: 44, minHeight: 44)
+            }.accessibilityLabel("Diagnostics")
+        }
+        .buttonStyle(ConsoleKeyStyle())
+        .disabled(session.hapticSnapshot.inputPressed)
+    }
+
+    private var warningActive: Bool {
+        session.audio.interruption.state != .ready || session.lastError != nil || session.pttSemanticState == .error
+    }
+    private var lampColor: Color {
+        if warningActive { return .red }
+        switch session.pttSemanticState {
+        case .talking: return .green
+        case .busyRemote, .preparing, .recovering: return .orange
+        default: return darkConsole ? Color(white: 0.26) : Color(white: 0.72)
+        }
+    }
+    private var consoleStatus: String {
+        warningActive ? "PAUSED · 要確認" : session.pttSemanticState.rawValue.replacingOccurrences(of: "_", with: " ")
+    }
+    private var candidateChannel: Channel? {
+        if let id = pendingChannelID { return session.fixture?.channels.first { $0.id == id } }
+        guard let digits = channelDigits, digits.count == channelDigitCount, let number = Int(digits) else { return nil }
+        return numberedChannel(number)
+    }
+    private func stageChannel(_ id: String) {
+        guard channelSelectionEnabled, let channel = session.fixture?.channels.first(where: { $0.id == id }) else { return }
+        pendingChannelID = id
+        channelDigits = ChannelSwitchPolicy.number(channel.name).map(String.init) ?? ""
+        channelDigitCount = max(1, channelDigits?.count ?? 1)
+    }
+    private func cancelChannelEntry() { channelDigits = nil; pendingChannelID = nil }
 
     private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let current = session.joinedSession?.channel.id {
-                HStack {
-                    Button { switchRelative(-1, current: current) } label: { Image(systemName: "chevron.left") }
-                        .disabled(session.operationalState != .active)
-                    Spacer()
-                    Text(session.joinedSession?.channel.name ?? session.selectedChannel?.name ?? "—")
-                        .font(.title2.monospaced().bold()).foregroundStyle(KOEONPalette.cyan)
-                    Spacer()
-                    Button { switchRelative(1, current: current) } label: { Image(systemName: "chevron.right") }
-                        .disabled(session.operationalState != .active)
-                }
-                .controlSize(.large)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(ChannelSwitchPolicy.ordered(session.fixture?.channels ?? [])) { channel in
-                            Button(channel.id == current ? "\(channel.name) · ACTIVE" : channel.name) {
-                                Task { await session.switchChannel(to: channel.id) }
+        VStack(alignment: .leading, spacing: 4) {
+            if let digits = channelDigits {
+                Text("CHANNEL CHANGE / CH変更").font(.caption.monospaced().bold())
+                Text("FROM / 現在").font(.caption2)
+                Text(session.joinedSession?.channel.name ?? "—").font(.title2.monospaced().bold()).lineLimit(1)
+                Text("TO / 変更先").font(.caption2)
+                TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                    HStack(spacing: 5) {
+                        Text("CH").font(.title2.monospaced())
+                        ForEach(0..<channelDigitCount, id: \.self) { index in
+                            let characters = Array(digits)
+                            let cursor = pendingChannelID == nil && index == characters.count
+                            VStack(spacing: 1) {
+                                Text(index < characters.count ? String(characters[index]) : "_").font(.system(size: 28, weight: .bold, design: .monospaced))
+                                Rectangle().frame(width: 22, height: 2).opacity(cursor && (reduceMotion || Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0) ? 1 : 0)
                             }
-                            .buttonStyle(.bordered)
-                            .disabled(channel.id == current || session.operationalState != .active)
                         }
+                        Spacer()
+                        Text(candidateChannel == nil ? (digits.count < channelDigitCount ? "入力中" : "未割当") : "確定待ち").font(.callout.bold())
+                    }
+                }
+                Text(candidateChannel?.name ?? "番号を選択してください").font(.title3).lineLimit(1)
+                Spacer(minLength: 0)
+            } else {
+                HStack {
+                    Text("CHANNEL / \(session.room.connectionState.rawValue)").font(.caption2)
+                    Spacer()
+                    Text(consoleStatus).font(.caption2.bold())
+                }.lineLimit(1)
+                Button { showChannels = true } label: {
+                    Text(session.joinedSession?.channel.name ?? "—").font(.title2.monospaced().bold()).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                }.disabled(!channelSelectionEnabled)
+                Text("SPEAKER / 発話者").font(.caption2)
+                Text(session.pttSemanticState == .talking ? "自分" : session.room.currentSpeaker ?? "—").font(.title2).lineLimit(1)
+                Text("MEMBERS / 参加者 \(session.room.participantNames.count)").font(.caption2)
+                Button { if !session.hapticSnapshot.inputPressed { showMembers = true } } label: {
+                    Text(session.room.participantNames.isEmpty ? "—" : session.room.participantNames.joined(separator: " · "))
+                        .font(.title2).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Divider().overlay(Color.brown.opacity(0.4))
+            HStack(alignment: .bottom) {
+                Text("AUDIO: \(session.audio.route.rawValue)").lineLimit(1)
+                Spacer(minLength: 4)
+                Text(ConsoleVersion.label).lineLimit(1)
+            }.font(.caption2)
+            if warningActive { Text(session.lastError ?? "音声中断 · 詳細はDiagnostics").font(.caption2).lineLimit(1) }
+        }
+        .foregroundStyle(Color(red: 0.18, green: 0.12, blue: 0.03))
+        .tint(Color(red: 0.18, green: 0.12, blue: 0.03))
+        .padding(12)
+        .frame(height: 218)
+        .background((darkConsole ? Color(red: 0.76, green: 0.55, blue: 0.24) : Color(red: 0.94, green: 0.75, blue: 0.40)).gradient, in: RoundedRectangle(cornerRadius: 6))
+        .padding(5)
+        .background(darkConsole ? Color(white: 0.10) : Color(white: 0.69), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var statusLamps: some View {
+        HStack(spacing: 20) {
+            VStack(alignment: .leading, spacing: 5) {
+                ConsoleLamp(label: "PTT", color: lampColor)
+                ConsoleLamp(label: "RX", color: [.active, .endPending, .draining].contains(session.rxSnapshot.state) ? .blue : .gray.opacity(0.5))
+            }
+            VStack {
+                TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                    VStack {
+                        ConsoleMeter(label: "TX IN", db: session.pttSemanticState == .talking ? session.inputGain.currentLevelDbfs() : nil, color: .green)
+                        ConsoleMeter(label: "RX", db: [.active, .endPending, .draining].contains(session.rxSnapshot.state) ? session.room.receiveLevelDbfs : nil, color: .blue)
                     }
                 }
             }
-            valueRow("System", session.operationalState.rawValue)
-            valueRow("Connection", session.room.connectionState.rawValue)
-            valueRow("Channel", session.joinedSession?.channel.name ?? session.selectedChannel?.name ?? "—")
-            valueRow("User", session.joinedSession?.user.name ?? session.selectedUser?.name ?? "—")
-            valueRow("Current speaker", session.room.currentSpeaker ?? "None")
-            valueRow("PTT", session.pttSnapshot.state.rawValue)
-            valueRow("RX", session.rxSnapshot.state.rawValue)
-            valueRow("Audio route", session.audio.route.rawValue)
-            valueRow("Audio availability", session.audio.interruption.state.rawValue)
-            valueRow("Participants", session.room.participantNames.joined(separator: ", "))
-            if session.pttSnapshot.state == .busy {
-                Text("BUSY — \(session.pttSnapshot.ownerName ?? "another user") is transmitting")
-                    .font(.headline).foregroundStyle(.orange)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(KOEONPalette.lcd, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(KOEONPalette.cyan.opacity(0.35)))
+        }.padding(.vertical, 2)
     }
 
-    private var pttButton: some View {
+    private func pttButton(diameter: CGFloat) -> some View {
         let rxOnly = session.joinedSession?.canPublish != true
         let inputPressed = session.hapticSnapshot.inputPressed
         let semantic = session.pttSemanticState
-        let fill: Color = switch semantic {
-        case .ready: Color(red: 0.12, green: 0.72, blue: 0.35)
-        case .talking: Color(red: 0.04, green: 0.90, blue: 0.38)
-        case .busyRemote, .preparing: Color(red: 1.0, green: 0.66, blue: 0.12)
-        case .error: Color.red
-        case .recovering, .offline, .rxOnly: Color.gray
-        }
+        let fill = lampColor
         let icon = switch semantic {
         case .talking: "waveform"
         case .busyRemote: "person.wave.2.fill"
@@ -261,15 +386,17 @@ struct RootView: View {
         case .ready: "mic.fill"
         }
         return ZStack {
-            Circle().fill(fill.gradient)
+            Circle().fill((darkConsole ? Color(white: 0.20) : Color(white: 0.93)).gradient)
+            Circle().strokeBorder(fill, lineWidth: 6)
             VStack(spacing: 8) {
-                Image(systemName: icon).font(.system(size: 50))
-                Text(semantic == .ready ? "PTT · READY" : semantic.rawValue.replacingOccurrences(of: "_", with: " "))
+                Text("PTT").font(.system(size: 42, weight: .bold)).tracking(3)
+                Image(systemName: icon).font(.title3)
+                Text(consoleStatus)
                     .font(.title3.bold())
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(darkConsole ? Color(white: 0.90) : Color(white: 0.20))
         }
-        .frame(width: 220, height: 220)
+        .frame(width: diameter, height: diameter)
         .scaleEffect(inputPressed ? 0.97 : 1)
         .offset(y: inputPressed ? 3 : 0)
         .shadow(radius: inputPressed ? 3 : 8, y: inputPressed ? 1 : 4)
@@ -282,15 +409,17 @@ struct RootView: View {
             .onEnded { _ in
                 if pttTouchEdgeGate.ended() { session.pttUp() }
             })
+        .onDisappear { if pttTouchEdgeGate.ended() { session.pttUp() } }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(rxOnly ? "Receive only" : "Push to talk")
         .accessibilityValue(semantic.rawValue)
         .accessibilityHint(rxOnly ? "This user cannot publish audio" : "Hold to transmit, release to stop")
-        .allowsHitTesting(!rxOnly && session.canPressPTT)
+        .allowsHitTesting(!rxOnly && session.canPressPTT && channelDigits == nil)
     }
 
     private func switchRelative(_ direction: Int, current: String) {
         guard let target = ChannelSwitchPolicy.adjacent(session.fixture?.channels ?? [], currentId: current, direction: direction) else { return }
-        Task { await session.switchChannel(to: target) }
+        stageChannel(target)
     }
 
     private func valueRow(_ label: String, _ value: String) -> some View {
@@ -304,12 +433,31 @@ struct RootView: View {
 }
 
 private struct SettingsView: View {
+    @State private var resetConfirmation = false
+    @AppStorage("consoleDarkMode") private var darkConsole = false
     @EnvironmentObject private var session: IntercomSessionController
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
+                Section("外観") {
+                    Picker("本体モード", selection: $darkConsole) {
+                        Text("ライト · ホワイト").tag(false)
+                        Text("ダーク · ブラック").tag(true)
+                    }.pickerStyle(.segmented)
+                    Text(ConsoleVersion.label).font(.caption)
+                    Text("メーターは音声の強さを表示します。端末の音量設定とは別です。「—」は計測なし。").font(.caption)
+                }
+                Section("ヘッドセットPTT") {
+                    Toggle("Headset PTT Button", isOn: Binding(get: { session.pushToTalk.headsetPttEnabled }, set: { session.setHeadsetPttEnabled($0) }))
+                    Text("再生ボタンPTTは試験中です。Bluetooth再接続・アプリ再起動後はOFF→ONが必要です。有効中は音楽の再生操作がPTTに切り替わります。")
+                }
+                Section("出力音量") { SystemVolumeControl().frame(height: 34) }
+                Section("アカウント") {
+                    Button("この端末のユーザーを変更", role: .destructive) { resetConfirmation = true }
+                        .disabled(session.isLoading || session.pttSnapshot.state != .idle)
+                }
                 Section("アクションボタンPTT（試作）") {
                     Toggle("ショートカットから送信を切り替える", isOn: Binding(
                         get: { session.actionButtonPttEnabled },
@@ -318,6 +466,7 @@ private struct SettingsView: View {
                     Text("「ショートカット」で「KOEON送信を切り替える」アクションを含むショートカットを作成し、iPhoneのアクションボタンに割り当てます。KOEONで接続後に使えます。長押しで開始、もう一度長押しで停止します。ロック中も操作できる設定です。実機での動作は検証中です。送信は最大60秒です。")
                         .font(.footnote)
                 }
+                InputGainSettings()
                 Section("音声品質") {
                     Picker("送信音声", selection: Binding(
                         get: { session.selectedAudioPublishProfile },
@@ -335,9 +484,12 @@ private struct SettingsView: View {
                     if session.isJoined {
                         Text("選択値は保存され、次回接続時に適用されます。")
                             .font(.footnote)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.red)
                     }
                 }
+            }
+            .confirmationDialog("この端末のユーザーを変更しますか？", isPresented: $resetConfirmation) {
+                Button("変更", role: .destructive) { Task { await session.resetDeviceAssignment(); dismiss() } }
             }
             .navigationTitle("Settings")
             .toolbar { Button("Done") { dismiss() } }
@@ -354,7 +506,7 @@ private struct SettingsView: View {
 }
 
 private enum KOEONPalette {
-    static let cyan = Color(red: 34 / 255, green: 223 / 255, blue: 243 / 255)
+    static let cyan = Color(red: 0.12, green: 0.42, blue: 0.68)
     static let lcd = Color(red: 3 / 255, green: 26 / 255, blue: 32 / 255)
     static let control = Color(red: 9 / 255, green: 38 / 255, blue: 54 / 255)
 }
@@ -394,29 +546,7 @@ private struct DiagnosticsView: View {
                     if let url = session.fieldJournalURL { ShareLink("Share Field Journal", item: url) }
                     if !session.fieldJournalStatus.isEmpty { Text(session.fieldJournalStatus) }
                 }
-                Section("Input Gain · TASK003G6") {
-                    let gain = session.inputGain.snapshot()
-                    Picker("Mode", selection: Binding(
-                        get: { gain.mode },
-                        set: { session.setInputGainMode($0) }
-                    )) {
-                        ForEach(InputGainMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
-                    Slider(
-                        value: Binding(
-                            get: { Double(session.inputGain.snapshot().manualGainDb) },
-                            set: { session.setManualInputGain(Float($0)) }
-                        ),
-                        in: -6...24,
-                        step: 1
-                    )
-                    row("Route / effective", "\(gain.route) / \(String(format: "%.1f", gain.effectiveGainDb)) dB")
-                    row("RMS / Peak", "\(gain.rmsDbfs.map { String(format: "%.1f", $0) } ?? "Unavailable") / \(gain.peakDbfs.map { String(format: "%.1f", $0) } ?? "Unavailable")")
-                    row("Limiter hits", "\(gain.limiterHits)")
-                    Button("Calibrate 3 seconds") { session.startInputGainCalibration() }
-                    Button("Reset route profile", role: .destructive) { session.resetInputGainProfile() }
-                    Text("TASK003G6B_AUDIO_ROUTE_SELECTION").font(.caption2).foregroundStyle(.secondary)
-                }
+                InputGainSettings()
                 Section("Session") {
                     row("Connection", session.room.connectionState.rawValue)
                     row("Room", session.joinedSession?.roomName ?? "—")
@@ -632,4 +762,81 @@ private struct SystemVolumeControl: UIViewRepresentable {
         return view
     }
     func updateUIView(_ uiView: MPVolumeView, context: Context) {}
+}
+
+private struct InputGainSettings: View {
+    @EnvironmentObject private var session: IntercomSessionController
+    var body: some View {
+                Section("マイクゲイン") {
+                    let gain = session.inputGain.snapshot()
+                    Picker("Mode", selection: Binding(
+                        get: { gain.mode },
+                        set: { session.setInputGainMode($0) }
+                    )) {
+                        ForEach(InputGainMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { Double(session.inputGain.snapshot().manualGainDb) },
+                            set: { session.setManualInputGain(Float($0)) }
+                        ),
+                        in: -6...24,
+                        step: 1
+                    )
+                    row("Route / effective", "\(gain.route) / \(String(format: "%.1f", gain.effectiveGainDb)) dB")
+                    row("RMS / Peak", "\(gain.rmsDbfs.map { String(format: "%.1f", $0) } ?? "Unavailable") / \(gain.peakDbfs.map { String(format: "%.1f", $0) } ?? "Unavailable")")
+                    row("Limiter hits", "\(gain.limiterHits)")
+                    Button("Calibrate 3 seconds") { session.startInputGainCalibration() }
+                    Button("Reset route profile", role: .destructive) { session.resetInputGainProfile() }
+                    Text("TASK003G6B_AUDIO_ROUTE_SELECTION").font(.caption2).foregroundStyle(.secondary)
+                }
+
+    }
+    private func row(_ label: String, _ value: String) -> some View { LabeledContent(label, value: value) }
+}
+
+private enum ConsoleVersion {
+    static var label: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+        return "v\(version) (\(build))"
+    }
+}
+
+private struct ConsoleKeyStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var scheme
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: 44, minHeight: 44)
+            .foregroundStyle(scheme == .dark ? Color(white: 0.9) : Color(white: 0.2))
+            .padding(.horizontal, 4)
+            .background((scheme == .dark ? Color(white: 0.20) : Color(white: 0.94)).gradient, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.gray.opacity(0.5)))
+            .shadow(color: .black.opacity(0.2), radius: 1, y: configuration.isPressed ? 0 : 3)
+            .offset(y: configuration.isPressed ? 2 : 0)
+    }
+}
+
+private struct ConsoleLamp: View {
+    let label: String
+    let color: Color
+    var body: some View {
+        HStack { Circle().fill(color).frame(width: 12, height: 12); Text(label).font(.caption.monospaced().bold()) }
+            .accessibilityElement(children: .combine)
+    }
+}
+
+private struct ConsoleMeter: View {
+    let label: String
+    let db: Float?
+    let color: Color
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(label).font(.system(size: 10, design: .monospaced)).frame(width: 35, alignment: .leading)
+            ForEach(0..<12) { index in
+                Rectangle().fill(db.map { $0.isFinite && Float(index) < max(0, min(12, ($0 + 60) / 5)) } == true ? (index >= 11 ? Color.red : color) : Color.gray.opacity(0.25)).frame(height: 8)
+            }
+            Text(db.map { $0.isFinite ? String(format: "%.0f", $0) : "—" } ?? "—").font(.caption2.monospaced()).frame(width: 25)
+        }.accessibilityElement(children: .ignore).accessibilityLabel("\(label): \(db.map { String(format: "%.0f dBFS", $0) } ?? "未取得")")
+    }
 }

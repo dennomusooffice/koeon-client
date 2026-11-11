@@ -117,6 +117,12 @@ class InputGainProcessor(
     private var calibrationUntilMs: Long? = null
     private val calibrationFrameRms = mutableListOf<Float>()
     private var recommendation: Float? = null
+    private var liveMeterDbfs: Float? = null
+    private var liveMeterAtNs: Long? = null
+    @Synchronized fun currentLevelDbfs(nowNs: Long = System.nanoTime()): Float? {
+        val at = liveMeterAtNs ?: return null
+        return if (transmissionActive && !measurementsPaused && nowNs - at in 0..300_000_000L) liveMeterDbfs else null
+    }
 
     override fun isEnabled() = true
     override fun getName() = "koeon_input_gain_v1"
@@ -261,6 +267,8 @@ class InputGainProcessor(
                 peak = maxOf(peak, framePeak)
             }
             val frameRms = sqrt(frameSquare / count).toFloat()
+            liveMeterDbfs = dbfs(frameRms).takeIf { it.isFinite() }?.coerceIn(-96f, 0f)
+            liveMeterAtNs = System.nanoTime()
             calibrationUntilMs?.let { deadline ->
                 calibrationFrameRms += dbfs(frameRms)
                 if (System.currentTimeMillis() >= deadline) finishCalibration()
@@ -305,7 +313,7 @@ class InputGainProcessor(
         return sign * minOf(ceiling, compressed)
     }
 
-    private fun resetUtterance() { sumSquares = 0.0; postSumSquares = 0.0; sampleCount = 0; peak = 0f; postPeak = 0f; limiterHits = 0 }
+    private fun resetUtterance() { liveMeterDbfs = null; liveMeterAtNs = null; sumSquares = 0.0; postSumSquares = 0.0; sampleCount = 0; peak = 0f; postPeak = 0f; limiterHits = 0 }
     private fun makeSnapshot() = InputGainSnapshot(
         route = route, mode = mode, manualGainDb = profile.manualGainDb, autoTrimDb = profile.autoTrimDb,
         effectiveGainDb = if (transmissionActive) fixedTransmissionGainDb else effectiveGainDb(),

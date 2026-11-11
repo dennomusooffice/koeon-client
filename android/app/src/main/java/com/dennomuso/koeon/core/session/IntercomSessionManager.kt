@@ -194,6 +194,8 @@ data class SessionDiagnostics(
 )
 
 data class IntercomUiState(
+    val receiveLevelDbfs: Float? = null,
+    val transmitInputLevelDbfs: Float? = null,
     val loading: Boolean = false,
     val fixture: FixtureResponse? = null,
     val identity: MeResponse? = null,
@@ -438,6 +440,8 @@ class IntercomSessionManager(
                     it.copy(
                         connectionState = liveKit.connectionState,
                         participants = liveKit.participantNames,
+                        receiveLevelDbfs = liveKit.receiveLevelDbfs,
+                        transmitInputLevelDbfs = liveKit.transmitInputLevelDbfs,
                         currentSpeaker = resolvedSpeaker(),
                         diagnostics = it.diagnostics.copy(
                             reconnectCount = liveKit.reconnectCount,

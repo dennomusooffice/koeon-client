@@ -103,6 +103,10 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     private lazy var remotePcmObserver = RemotePcmTimestampObserver { [weak self] timestamp in
         Task { @MainActor in self?.onRemotePcm?(timestamp) }
     }
+    var receiveLevelDbfs: Float? {
+        guard connectionState == .connected, remotePcmObserverInstalled else { return nil }
+        return remotePcmObserver.levelMeter.value(now: ProcessInfo.processInfo.systemUptime)
+    }
     private var remotePcmObserverInstalled = false
     private var remoteAudioSubscriptionGate = RemoteAudioSubscriptionGenerationGate()
     private let rxReadyBarrier = PttRxReadyBarrier()
@@ -671,12 +675,14 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
 
     private func installRemotePcmObserverIfNeeded() {
         guard !remotePcmObserverInstalled else { return }
+        remotePcmObserver.levelMeter.setEnabled(true)
         AudioManager.shared.add(remoteAudioRenderer: remotePcmObserver)
         remotePcmObserverInstalled = true
     }
 
     private func removeRemotePcmObserverIfNeeded() {
         guard remotePcmObserverInstalled else { return }
+        remotePcmObserver.levelMeter.setEnabled(false)
         AudioManager.shared.remove(remoteAudioRenderer: remotePcmObserver)
         remotePcmObserverInstalled = false
     }
@@ -737,16 +743,18 @@ final class LiveKitRoomController: NSObject, ObservableObject, MicrophoneControl
     }
 }
 
-/// Timestamp-only observer. It never copies, queues, modifies, or replays PCM.
+/// Timestamp and bounded RMS observer. Never copies, queues, modifies, or replays PCM.
 private final class RemotePcmTimestampObserver: AudioRenderer, @unchecked Sendable {
     private let lock = NSLock()
     private var lastDispatch = Date.distantPast
+    let levelMeter = ReceiveLevelMeter()
     private let onPcm: @Sendable (Date) -> Void
 
     init(onPcm: @escaping @Sendable (Date) -> Void) { self.onPcm = onPcm }
 
     func render(pcmBuffer: AVAudioPCMBuffer) {
         guard pcmBuffer.frameLength > 0 else { return }
+        levelMeter.record(pcmBuffer, now: ProcessInfo.processInfo.systemUptime)
         let now = Date()
         let shouldDispatch = lock.withLock {
             guard now.timeIntervalSince(lastDispatch) >= 0.02 else { return false }
@@ -766,5 +774,51 @@ private enum LiveKitRoomError: LocalizedError {
         case .notConnected: "LiveKit Room is not connected."
         case .publishForbidden: "This session is RX-only."
         }
+    }
+}
+
+/// Ephemeral mixed decoded PCM RMS, before device output volume. No PCM retention.
+final class ReceiveLevelMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = false
+    private var lastAt: TimeInterval?
+    private var db: Float?
+
+    func setEnabled(_ value: Bool) {
+        lock.withLock { enabled = value; lastAt = nil; db = nil }
+    }
+    func record(_ buffer: AVAudioPCMBuffer, now: TimeInterval) {
+        lock.withLock {
+            guard enabled else { return }
+            if let lastAt, now - lastAt >= 0, now - lastAt < 0.1 { return }
+            lastAt = now
+            db = Self.rmsDbfs(buffer)
+        }
+    }
+    func value(now: TimeInterval) -> Float? {
+        lock.withLock {
+            guard enabled, let lastAt, now >= lastAt, now - lastAt <= 0.3 else { return nil }
+            return db
+        }
+    }
+    static func rmsDbfs(_ buffer: AVAudioPCMBuffer) -> Float? {
+        let frames = Int(buffer.frameLength), channels = Int(buffer.format.channelCount)
+        guard frames > 0, channels > 0, channels <= 8, frames <= 8192 / channels else { return nil }
+        var energy = 0.0
+        let interleaved = buffer.format.isInterleaved
+        for channel in 0..<channels {
+            for frame in 0..<frames {
+                let index = interleaved ? frame * channels + channel : frame
+                let sample: Double
+                if let data = buffer.floatChannelData {
+                    sample = Double(data[interleaved ? 0 : channel][index])
+                } else if let data = buffer.int16ChannelData {
+                    sample = Double(data[interleaved ? 0 : channel][index]) / 32768.0
+                } else { return nil }
+                guard sample.isFinite else { return nil }
+                energy += sample * sample
+            }
+        }
+        return energy == 0 ? -96 : Float(max(-96, min(0, 10 * log10(energy / Double(frames * channels)))))
     }
 }

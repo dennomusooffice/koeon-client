@@ -8,6 +8,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InputGainProcessorTest {
+    @Test fun `live meter follows latest frame and clears outside transmission`() {
+        val processor = InputGainProcessor()
+        processor.processPcm16(samples(16384, -16384))
+        assertEquals(null, processor.currentLevelDbfs())
+        processor.beginTransmission()
+        processor.processPcm16(samples(16384, -16384))
+        assertEquals(-6.0206f, processor.currentLevelDbfs()!!, .001f)
+        processor.processPcm16(samples(0, 0))
+        assertEquals(-96f, processor.currentLevelDbfs()!!, 0f)
+        assertEquals(null, processor.currentLevelDbfs(System.nanoTime() + 400_000_000L))
+        processor.endTransmission(learn = false)
+        assertEquals(null, processor.currentLevelDbfs())
+        processor.beginTransmission()
+        assertEquals(null, processor.currentLevelDbfs())
+    }
+
     @Test
     fun `LiveKit float input overload trains only next utterance and retains route profile`() {
         val gain = InputGainProcessor(MemoryProfiles(), initialMode = InputGainMode.AUTO)

@@ -11,6 +11,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -28,6 +36,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -82,7 +92,6 @@ import com.dennomuso.koeon.core.haptics.PttHapticFeedbackController
 import com.dennomuso.koeon.core.audio.AudioAvailabilityState
 import com.dennomuso.koeon.core.ptt.PttState
 import com.dennomuso.koeon.core.ptt.PttSemanticState
-import com.dennomuso.koeon.core.ptt.isParentScrollEnabledWhileTouchPtt
 import com.dennomuso.koeon.core.ptt.localPttEligible
 import com.dennomuso.koeon.core.ptt.pttSemanticState
 import com.dennomuso.koeon.core.permission.JoinPermissionPolicy
@@ -153,26 +162,75 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val KoeonBlack = Color(0xFF020D2C)
-private val KoeonPanel = Color(0xFF06111F)
-private val KoeonLcd = Color(0xFF031A20)
-private val KoeonGreen = Color(0xFF22DFF3)
-private val KoeonSuccess = Color(0xFF65DB68)
-private val KoeonRed = Color(0xFFFF665E)
+private val LocalConsoleDark = staticCompositionLocalOf { false }
+private val KoeonBlack: Color @Composable get() = MaterialTheme.colorScheme.background
+private val KoeonPanel: Color @Composable get() = MaterialTheme.colorScheme.surfaceVariant
+private val KoeonLcd: Color @Composable get() = if (LocalConsoleDark.current) Color(0xFFC28D3D) else Color(0xFFF0C472)
+private val KoeonGreen: Color @Composable get() = MaterialTheme.colorScheme.primary
+private val KoeonSuccess = Color(0xFF37B469)
+private val KoeonRed = Color(0xFFED5148)
 
 @Composable
 private fun KoeonApp(manager: IntercomSessionManager) {
     val state by manager.state.collectAsStateWithLifecycle()
-    MaterialTheme {
-        Surface(color = KoeonBlack, contentColor = Color.White, modifier = Modifier.fillMaxSize()) {
-            KoeonScreen(state, manager)
+    val context = LocalContext.current
+    val preferences = remember { context.getSharedPreferences("console_appearance", android.content.Context.MODE_PRIVATE) }
+    var dark by remember { mutableStateOf(preferences.getBoolean("dark", false)) }
+    val colors = if (dark) darkColorScheme(
+        background = Color(0xFF1C1E1C), surface = Color(0xFF22271F), surfaceVariant = Color(0xFF30352D),
+        onBackground = Color(0xFFE2E4DF), onSurface = Color(0xFFE2E4DF), onSurfaceVariant = Color(0xFFE2E4DF),
+        primary = Color(0xFF8CBDEC), onPrimary = Color(0xFF142B3F), error = Color(0xFFFF9B91),
+    ) else lightColorScheme(
+        background = Color(0xFFF5F5F0), surface = Color(0xFFF8F9F4), surfaceVariant = Color(0xFFE5E8DF),
+        onBackground = Color(0xFF343B39), onSurface = Color(0xFF343B39), onSurfaceVariant = Color(0xFF343B39),
+        primary = Color(0xFF23699E), onPrimary = Color.White, error = Color(0xFFB32626),
+    )
+    MaterialTheme(colorScheme = colors) {
+        CompositionLocalProvider(LocalConsoleDark provides dark) {
+            Surface(color = KoeonBlack, contentColor = MaterialTheme.colorScheme.onBackground, modifier = Modifier.fillMaxSize()) {
+                KoeonScreen(state, manager, dark) { value ->
+                    dark = value
+                    preferences.edit().putBoolean("dark", value).apply()
+                }
+            }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager) {
+private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager, dark: Boolean, onDarkChange: (Boolean) -> Unit) {
+    var overlay by remember { mutableStateOf<String?>(null) }
+    var powerConfirm by remember { mutableStateOf(false) }
+    var resetConfirm by remember { mutableStateOf(false) }
+    if (powerConfirm) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { powerConfirm = false }, title = { Text("接続を終了しますか？") },
+        text = { Text("送受信を終了します。利用登録は保持します。") },
+        confirmButton = { Button(onClick = { powerConfirm = false; manager.leaveAsync() }) { Text("POWER OFF") } },
+        dismissButton = { Button(onClick = { powerConfirm = false }) { Text("取消") } },
+    )
+    if (resetConfirm) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { resetConfirm = false }, title = { Text("この端末のユーザーを変更しますか？") },
+        confirmButton = { Button(onClick = { resetConfirm = false; overlay = null; manager.resetDeviceAssignment() }) { Text("変更") } },
+        dismissButton = { Button(onClick = { resetConfirm = false }) { Text("取消") } },
+    )
+    overlay?.let { title ->
+        ConsoleOverlay(title, { overlay = null }) {
+            if (title == "Settings") {
+                Text("外観", fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (dark) "ダーク · ブラック" else "ライト · ホワイト", modifier = Modifier.weight(1f))
+                    Switch(checked = dark, onCheckedChange = onDarkChange, modifier = Modifier.semantics { contentDescription = "ダークモード" })
+                }
+                Text("v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", fontSize = 12.sp, lineHeight = 15.sp)
+                Text("メーターは音声の強さを表示します。端末の音量設定とは別です。「—」は計測なし。", fontSize = 12.sp, lineHeight = 15.sp)
+                HeadsetPttSettings(state, manager)
+                AudioBitrateSettings(state, manager)
+                HardwareAndGainSettings(state, manager)
+                Button(onClick = { resetConfirm = true }, enabled = !state.loading && state.ptt.state == PttState.IDLE) { Text("この端末のユーザーを変更") }
+            } else Diagnostics(state)
+        }
+    }
     val context = androidx.compose.ui.platform.LocalContext.current
     var selectedUserId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedChannelId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -208,20 +266,22 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
     }
 
     Column(
-        modifier = Modifier.fillMaxSize()
-            .verticalScroll(
-                rememberScrollState(),
-                enabled = isParentScrollEnabledWhileTouchPtt(state.diagnostics.appTouchPressed),
-            )
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxSize().safeDrawingPadding()
+            .then(if (!state.joined) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text("KOEON", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-        Text("声を、いつでもONに。", color = Color(0xFFB6C1BA))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            androidx.compose.material3.ElevatedButton(onClick = { powerConfirm = true }, enabled = state.joined && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "POWER" }) { Text("⏻", fontSize = 22.sp, lineHeight = 25.sp) }
+            Text("KOEON", fontSize = 23.sp, lineHeight = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, modifier = Modifier.weight(1f))
+            androidx.compose.material3.ElevatedButton(onClick = { overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
+            androidx.compose.material3.ElevatedButton(onClick = { overlay = "Diagnostics" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).semantics { contentDescription = "Diagnostics" }) { Text("DIAG", fontSize = 10.sp, lineHeight = 13.sp) }
+        }
+
 
         if (!state.joined) {
             if (state.enrollmentRequired) {
-                Text("KOEONを利用登録", color = KoeonGreen, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                Text("KOEONを利用登録", color = KoeonGreen, fontSize = 26.sp, lineHeight = 29.sp, fontWeight = FontWeight.Bold)
                 Text("運営から届いた招待コードを入力してください。")
                 OutlinedTextField(
                     value = inviteInput,
@@ -235,7 +295,7 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
                     enabled = inviteInput.trim().length >= 10 && !state.loading,
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                 ) { Text(if (state.loading) "登録中…" else "この端末を登録") }
-                Text("QRコードを使う場合", color = Color(0xFFB6C1BA), fontSize = 14.sp)
+                Text("QRコードを使う場合", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp, lineHeight = 17.sp)
                 Button(
                     onClick = {
                         val options = GmsBarcodeScannerOptions.Builder()
@@ -309,8 +369,6 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
                 enabled = selectedUser != null && selectedChannel != null && !state.loading,
                 modifier = Modifier.fillMaxWidth().height(54.dp),
             ) { Text(if (state.loading) "CONNECTING…" else "POWER ON · START") }
-            HeadsetPttSettings(state, manager)
-            AudioBitrateSettings(state, manager)
             Button(
                 onClick = manager::resetDeviceAssignment,
                 enabled = !state.loading,
@@ -321,8 +379,8 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
             SessionPanel(state, manager)
         }
 
-        state.error?.let { error ->
-            Text(error, color = KoeonRed)
+        state.error?.takeIf { !state.joined }?.let { error ->
+            Text(error, color = MaterialTheme.colorScheme.error)
             if (error.contains("Microphone permission")) {
                 Button(
                     onClick = {
@@ -333,7 +391,6 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager)
                 ) { Text("App Settings") }
             }
         }
-        Diagnostics(state)
     }
 }
 
@@ -374,67 +431,136 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         pttState = state.ptt.state,
         audioAvailability = state.diagnostics.audioAvailabilityState,
     )
+    var digits by remember(joined.channel.id) { mutableStateOf<String?>(null) }
+    var digitCount by remember { mutableStateOf(1) }
+    var pendingChannelId by remember(joined.channel.id) { mutableStateOf<String?>(null) }
+    var channelListOpen by remember { mutableStateOf(false) }
+    val channels = state.fixture?.channels.orEmpty()
+    val channelEnabled = state.operationalState == OperationalState.ACTIVE && state.ptt.state == PttState.IDLE && !inputPressed
+    val candidate = pendingChannelId?.let { id -> channels.firstOrNull { it.id == id } }
+        ?: digits?.takeIf { it.length == digitCount }?.toIntOrNull()?.let { ChannelSwitchPolicy.numbered(channels, it) }
+    fun stageChannel(id: String) {
+        val channel = channels.firstOrNull { it.id == id } ?: return
+        pendingChannelId = id
+        digits = ChannelSwitchPolicy.number(channel.name)?.toString().orEmpty()
+        digitCount = maxOf(1, digits!!.length)
+    }
+    LaunchedEffect(digits, pendingChannelId, joined.channel.id) {
+        if (digits != null) { kotlinx.coroutines.delay(5000); digits = null; pendingChannelId = null }
+    }
+    if (channelListOpen) ConsoleOverlay("チャネル一覧", { channelListOpen = false }) {
+        Row {
+            Button(onClick = { ChannelSwitchPolicy.adjacent(channels, joined.channel.id, -1)?.let(::stageChannel); channelListOpen = false }, enabled = channelEnabled) { Text("前のCH") }
+            Button(onClick = { ChannelSwitchPolicy.adjacent(channels, joined.channel.id, 1)?.let(::stageChannel); channelListOpen = false }, enabled = channelEnabled) { Text("次のCH") }
+        }
+        ChannelSwitchPolicy.ordered(channels).forEach { channel ->
+            Button(onClick = { stageChannel(channel.id); channelListOpen = false }, enabled = channelEnabled && channel.id != joined.channel.id, modifier = Modifier.fillMaxWidth()) { Text(channel.name) }
+        }
+    }
     // Preserve the current gesture until UP, but only READY can start a new one.
     val interactionEnabled = canTransmit && (inputPressed || pttSemantic == PttSemanticState.READY)
-    val pttEnabled = interactionEnabled && pttSemantic == PttSemanticState.READY
+    val pttEnabled = interactionEnabled && pttSemantic == PttSemanticState.READY && digits == null
     val touchDownEligible by rememberUpdatedState(pttEnabled)
-    val pttColor = when (pttSemantic) {
-        PttSemanticState.READY -> Color(0xFF1DB954)
+    val pttColor = if (state.error != null || !audioReady) KoeonRed else when (pttSemantic) {
+        PttSemanticState.READY -> Color.Gray.copy(alpha = .4f)
         PttSemanticState.TALKING -> Color(0xFF16E05D)
         PttSemanticState.BUSY_REMOTE, PttSemanticState.PREPARING -> Color(0xFFFFB020)
         PttSemanticState.ERROR -> Color(0xFFE53935)
-        PttSemanticState.INTERRUPTED, PttSemanticState.RECOVERING, PttSemanticState.OFFLINE, PttSemanticState.RX_ONLY -> Color(0xFF626B67)
+        PttSemanticState.INTERRUPTED -> KoeonRed
+        PttSemanticState.RECOVERING -> Color(0xFFFFB020)
+        PttSemanticState.OFFLINE, PttSemanticState.RX_ONLY -> Color.Gray.copy(alpha = .4f)
     }
-    Card(colors = CardDefaults.cardColors(containerColor = KoeonLcd), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            Text("CURRENT CHANNEL", color = KoeonGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            val channels = ChannelSwitchPolicy.ordered(state.fixture?.channels.orEmpty())
-            val previous = ChannelSwitchPolicy.adjacent(channels, joined.channel.id, -1)
-            val next = ChannelSwitchPolicy.adjacent(channels, joined.channel.id, 1)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Button(onClick = { previous?.let(manager::switchChannel) }, enabled = previous != null && state.operationalState == OperationalState.ACTIVE) { Text("‹") }
-                Text(joined.channel.name, color = KoeonGreen, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                Button(onClick = { next?.let(manager::switchChannel) }, enabled = next != null && state.operationalState == OperationalState.ACTIVE) { Text("›") }
-            }
-            Text("${joined.user.name} · ${joined.user.role}")
-            Text("${state.operationalState} · ${state.connectionState}", color = if (state.connectionState == IntercomConnectionState.CONNECTED) KoeonSuccess else Color.White)
-            Text("Current speaker: ${state.currentSpeaker ?: "None"}")
-            if (!audioReady) {
-                Text(
-                    if (state.diagnostics.audioAvailabilityState == AudioAvailabilityState.RECOVERING) {
-                        "AUDIO INTERRUPTED · 音声を復旧しています…"
-                    } else {
-                        "AUDIO INTERRUPTED · 他の音声が終了したら音声を再接続してください"
-                    },
-                    color = Color(0xFFFFB020),
-                    fontWeight = FontWeight.Bold,
-                )
-                if (state.diagnostics.audioAvailabilityState in setOf(AudioAvailabilityState.INTERRUPTED, AudioAvailabilityState.RECOVERY_FAILED)) {
-                    Button(onClick = manager::retryAudioRecovery, modifier = Modifier.fillMaxWidth()) {
-                        Text("音声を再接続")
+    var membersOpen by remember { mutableStateOf(false) }
+    if (membersOpen) ConsoleOverlay("参加メンバー", { membersOpen = false }) {
+        state.participants.forEach { Text(it, fontSize = 22.sp, lineHeight = 25.sp) }
+    }
+    val reduceMotion = android.provider.Settings.Global.getFloat(LocalContext.current.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    var cursorOn by remember { mutableStateOf(true) }
+    LaunchedEffect(digits, reduceMotion) {
+        cursorOn = true
+        if (digits != null && !reduceMotion) while (true) { kotlinx.coroutines.delay(500); cursorOn = !cursorOn }
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = KoeonLcd, contentColor = Color(0xFF382B10)), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().height(202.dp).border(5.dp, if (LocalConsoleDark.current) Color(0xFF10140E) else Color(0xFFAEB5A6), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            if (digits != null) {
+                Text("CHANNEL EDIT / 変更元 → 変更先", fontSize = 11.sp, lineHeight = 14.sp)
+                Text("FROM  ${joined.channel.name}", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("TO CH", fontSize = 24.sp, lineHeight = 27.sp)
+                    repeat(digitCount) { index ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(digits!!.getOrNull(index)?.toString() ?: "_", fontSize = 30.sp, lineHeight = 33.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                            Box(Modifier.width(20.dp).height(3.dp).background(if (pendingChannelId == null && index == digits!!.length && cursorOn) Color(0xFF382B10) else Color.Transparent))
+                        }
                     }
+                    Text(if (candidate != null) "確定待ち" else if (digits!!.length < digitCount) "入力中" else "未割当", fontSize = 14.sp, lineHeight = 17.sp)
                 }
+                Text(candidate?.name ?: "番号を選択してください", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1)
+            } else {
+                Text("CHANNEL / ${state.connectionState} · ${pttSemantic.name}", fontSize = 11.sp, lineHeight = 14.sp)
+                Text(joined.channel.name, fontSize = 24.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.clickable(enabled = channelEnabled) { channelListOpen = true })
+                Text("SPEAKER / 発話者", fontSize = 10.sp, lineHeight = 13.sp)
+                Text(if (pttSemantic == PttSemanticState.TALKING) "自分" else state.currentSpeaker ?: "—", fontSize = 22.sp, lineHeight = 25.sp, maxLines = 1)
+                Text("MEMBERS / 参加者 ${state.participants.size}", fontSize = 10.sp, lineHeight = 13.sp)
+                Text(state.participants.joinToString(" · ").ifBlank { "—" }, fontSize = 22.sp, lineHeight = 25.sp, maxLines = 1, modifier = Modifier.clickable { membersOpen = true })
             }
-            Text("Participants: ${state.participants.joinToString().ifBlank { "None" }}")
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                channels.forEach { channel ->
-                    Button(
-                        onClick = { manager.switchChannel(channel.id) },
-                        enabled = channel.id != joined.channel.id && state.operationalState == OperationalState.ACTIVE,
-                    ) {
-                        Text(if (channel.id == joined.channel.id) "${channel.name} · ACTIVE" else channel.name)
+            Spacer(Modifier.weight(1f))
+            Text(state.error ?: if (!audioReady) "AUDIO INTERRUPTED" else "AUDIO: ${state.diagnostics.audioRoute}", fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1)
+            Text("v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1)
+        }
+    }
+    if (!audioReady) {
+        if (state.diagnostics.audioAvailabilityState in setOf(AudioAvailabilityState.INTERRUPTED, AudioAvailabilityState.RECOVERY_FAILED)) {
+            Button(onClick = manager::retryAudioRecovery) { Text("音声を再接続") }
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            ConsoleLamp("PTT", pttColor)
+            ConsoleLamp("RX", if (state.diagnostics.rx.state in setOf(com.dennomuso.koeon.core.ptt.RxState.RX_ACTIVE, com.dennomuso.koeon.core.ptt.RxState.RX_DRAINING)) Color(0xFF328BDF) else Color.Gray.copy(alpha = .4f))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            ConsoleMeter("TX IN", if (pttSemantic == PttSemanticState.TALKING) state.transmitInputLevelDbfs else null, KoeonSuccess)
+            ConsoleMeter("RX", if (state.diagnostics.rx.state in setOf(com.dennomuso.koeon.core.ptt.RxState.RX_ACTIVE, com.dennomuso.koeon.core.ptt.RxState.RX_DRAINING)) state.receiveLevelDbfs else null, Color(0xFF328BDF))
+        }
+    }
+    Text("CHANNEL SELECT", fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 2.sp)
+    repeat(2) { row ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            repeat(5) { column ->
+                val number = row * 5 + column
+                val target = ChannelSwitchPolicy.numbered(channels, number)
+                androidx.compose.material3.ElevatedButton(
+                    onClick = {
+                        pendingChannelId = null
+                        if (digits != null && digitCount == 2) { if (digits!!.length < 2) digits += number.toString() }
+                        else { digitCount = 1; digits = number.toString() }
+                    },
+                    enabled = channelEnabled && (digits != null || target != null),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.elevatedButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurface),
+                    modifier = Modifier.weight(1f).height(44.dp),
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.width(16.dp).height(3.dp).background(if (ChannelSwitchPolicy.number(joined.channel.name) == number && digits == null) Color(0xFF328BDF) else Color.Gray.copy(alpha = .3f)))
+                        Text(number.toString(), fontSize = 20.sp, lineHeight = 23.sp)
                     }
                 }
             }
         }
     }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Button(onClick = { pendingChannelId = null; digitCount = 2; digits = "" }, enabled = channelEnabled, modifier = Modifier.weight(1f)) { Text("2桁入力", fontSize = 11.sp, lineHeight = 14.sp) }
+        Button(onClick = { candidate?.let { manager.switchChannel(it.id) }; digits = null; pendingChannelId = null }, enabled = channelEnabled && candidate != null, modifier = Modifier.weight(1f)) { Text("確定", fontSize = 11.sp, lineHeight = 14.sp) }
+        Button(onClick = { digits = null; pendingChannelId = null }, enabled = digits != null, modifier = Modifier.weight(1f)) { Text("取消", fontSize = 11.sp, lineHeight = 14.sp) }
+    }
+    Text("押している間、送信", modifier = Modifier.align(Alignment.CenterHorizontally), fontSize = 12.sp, lineHeight = 15.sp)
+    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+    val diameter = minOf(maxHeight, maxWidth, 220.dp)
     Box(
         modifier = Modifier
-            .align(Alignment.CenterHorizontally)
-            .size(220.dp)
+            .size(diameter)
             .shadow(if (inputPressed) 3.dp else 14.dp, CircleShape, clip = false)
             .graphicsLayer {
                 val pressScale = if (inputPressed) 0.97f else 1f
@@ -442,7 +568,8 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 scaleY = pressScale
                 translationY = if (inputPressed) 3.dp.toPx() else 0f
             }
-            .background(pttColor, CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+            .border(6.dp, pttColor, CircleShape)
             .semantics {
                 contentDescription = "Push to talk, ${pttSemantic.name.replace('_', ' ')}"
                 if (!pttEnabled) disabled()
@@ -486,23 +613,13 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            pttSemantic.name.replace('_', ' '),
-            color = KoeonBlack,
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Black,
-            textAlign = TextAlign.Center,
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("PTT", color = MaterialTheme.colorScheme.onSurface, fontSize = 42.sp, lineHeight = 45.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
+            Text(pttSemantic.name.replace('_', ' '), color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        }
     }
-    Button(onClick = manager::leaveAsync, enabled = !inputPressed && state.operationalState in setOf(OperationalState.ACTIVE, OperationalState.RECOVERING_SESSION), modifier = Modifier.fillMaxWidth()) { Text("POWER OFF", color = KoeonRed) }
-    HeadsetPttSettings(state, manager)
-    AudioBitrateSettings(state, manager)
-    HardwareAndGainSettings(state, manager)
-    Button(
-        onClick = manager::resetDeviceAssignment,
-        enabled = !inputPressed && !state.loading,
-        modifier = Modifier.fillMaxWidth(),
-    ) { Text("この端末のユーザーを変更") }
+
+    }
 }
 
 @Composable
@@ -550,13 +667,13 @@ private fun AudioBitrateSettings(state: IntercomUiState, manager: IntercomSessio
     }
     Text(
         "LiveKitの送信音質と通信量を変更します。速度制限中は低音質（12kbps）を選んでください。",
-        color = Color(0xFF82909A),
-        fontSize = 10.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 10.sp, lineHeight = 13.sp,
     )
     Text(
         "選択値は保存され、次回接続時に適用されます。",
-        color = Color(0xFF82909A),
-        fontSize = 10.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 10.sp, lineHeight = 13.sp,
     )
 }
 
@@ -573,7 +690,7 @@ private fun HardwareAndGainSettings(state: IntercomUiState, manager: IntercomSes
                 if (enabled) showBackgroundConsent = true else manager.setBackgroundVolumePttEnabled(false)
             }, modifier = Modifier.semantics { contentDescription = "Background Volume PTT" })
     }
-    Text("約0.6秒以上の長押しで開始・次の長押しで停止。短押しは音量調整。背景設定OFFでは前面のみ。背景利用にはTOGGLEとOSサービスの有効化が必要です。消灯時の動作は機種によって異なります。", fontSize = 11.sp)
+    Text("約0.6秒以上の長押しで開始・次の長押しで停止。短押しは音量調整。背景設定OFFでは前面のみ。背景利用にはTOGGLEとOSサービスの有効化が必要です。消灯時の動作は機種によって異なります。", fontSize = 11.sp, lineHeight = 14.sp)
     if (diagnostics.backgroundVolumePttEnabled) {
         Text(if (diagnostics.backgroundVolumeServiceConnected) "OSサービス: 接続済み" else "OSサービス: 未接続")
         Button(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("背景PTTのOS設定") }
@@ -620,8 +737,8 @@ private fun HardwareAndGainSettings(state: IntercomUiState, manager: IntercomSes
         }
         Text(
             if (profileSwitchEnabled) "READY / IDLE · profile switching enabled" else "Profile switching locked: requires READY / IDLE",
-            color = Color(0xFF82909A),
-            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 10.sp, lineHeight = 13.sp,
         )
     }
     Text("MIC GAIN · ${diagnostics.inputGain.route}", fontWeight = FontWeight.Bold)
@@ -646,7 +763,7 @@ private fun HardwareAndGainSettings(state: IntercomUiState, manager: IntercomSes
         Button(onClick = manager::resetInputGainProfile, modifier = Modifier.weight(1f)) { Text("RESET PROFILE") }
     }
     diagnostics.inputGain.recommendedGainDb?.let { Text("Recommended ${"%+.1f".format(it)} dB") }
-    Text("TASK003G6B_AUDIO_ROUTE_SELECTION", color = Color(0xFF82909A), fontSize = 10.sp)
+    Text("TASK003G6B_AUDIO_ROUTE_SELECTION", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, lineHeight = 13.sp)
 }
 
 private fun AudioCaptureProfile.profileLabel(): String = when (this) {
@@ -805,7 +922,43 @@ private fun Diagnostics(state: IntercomUiState) {
 @Composable
 private fun DiagnosticRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = Color(0xFFB6C1BA))
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, textAlign = TextAlign.End)
+    }
+}
+
+@Composable
+private fun ConsoleOverlay(title: String, close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = close, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(color = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.onSurface, shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, fontSize = 22.sp, lineHeight = 25.sp, modifier = Modifier.weight(1f))
+                    Button(onClick = close) { Text("閉じる") }
+                }
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConsoleLamp(label: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(12.dp).background(color, CircleShape))
+        Text(label, fontSize = 12.sp, lineHeight = 15.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun ConsoleMeter(label: String, db: Float?, color: Color) {
+    val level = db?.takeIf { it.isFinite() }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.semantics { contentDescription = "$label: ${level?.let { "$it dBFS" } ?: "未取得"}" }) {
+        Text(label, fontSize = 10.sp, lineHeight = 13.sp, modifier = Modifier.width(35.dp))
+        repeat(12) { index ->
+            val active = level != null && index < ((level + 60) / 5).coerceIn(0f, 12f)
+            Box(Modifier.weight(1f).height(8.dp).background(if (active) { if (index >= 11) KoeonRed else color } else MaterialTheme.colorScheme.onSurface.copy(alpha = .18f)))
+        }
+        Text(level?.let { "%.0f".format(it) } ?: "—", fontSize = 10.sp, lineHeight = 13.sp, modifier = Modifier.width(26.dp))
     }
 }

@@ -88,6 +88,8 @@ data class LiveKitSnapshot(
     val audioRoute: String = "Unavailable",
     val remoteAudioTracks: Int = 0,
     val remotePcm: RemotePcmSnapshot = RemotePcmSnapshot(),
+    val receiveLevelDbfs: Float? = null,
+    val transmitInputLevelDbfs: Float? = null,
     val microphoneTrackState: String = "not_published",
     val remoteAudioState: String = "no_tracks",
     val rxReadyExpectedCount: Int = 0,
@@ -259,15 +261,20 @@ class LiveKitRoomController(
     private var eventJob: Job? = null
     private var remotePcmJob: Job? = null
     private val remotePcmDiagnostics = RemotePcmDiagnostics()
+    private val receiveLevelMeter = ReceiveLevelMeter()
+    private val receiveLevelTokens = mutableMapOf<RemoteAudioTrack, Long>()
     private val remotePcmSinks = mutableMapOf<RemoteAudioTrack, Pair<Long, AudioTrackSink>>()
 
     private fun observeRemotePcm(track: RemoteAudioTrack) {
         if (track in remotePcmSinks) return
         val token = remotePcmDiagnostics.attach()
+        val levelToken = receiveLevelMeter.attach()
+        receiveLevelTokens[track] = levelToken
         val sink = object : AudioTrackSink {
             override fun onData(audioData: ByteBuffer, bitsPerSample: Int, sampleRate: Int,
                 numberOfChannels: Int, numberOfFrames: Int, absoluteCaptureTimestampMs: Long) {
-                // Never copy or inspect the user's audio; do not update UI on the audio thread.
+                // Read bounded samples for ephemeral RMS only; never retain PCM or update UI on this thread.
+                receiveLevelMeter.record(levelToken, audioData, bitsPerSample, numberOfChannels, numberOfFrames, android.os.SystemClock.elapsedRealtime())
                 remotePcmDiagnostics.record(token, numberOfFrames, sampleRate, System.currentTimeMillis())
             }
         }
@@ -276,12 +283,14 @@ class LiveKitRoomController(
             remotePcmSinks[track] = token to sink
         } catch (_: Exception) {
             remotePcmDiagnostics.detach(token)
+            receiveLevelTokens.remove(track)?.let(receiveLevelMeter::detach)
         }
     }
 
     private fun stopObservingRemotePcm(track: RemoteAudioTrack) {
         val entry = remotePcmSinks.remove(track) ?: return
         remotePcmDiagnostics.detach(entry.first)
+        receiveLevelTokens.remove(track)?.let(receiveLevelMeter::detach)
         runCatching { track.removeSink(entry.second) }
     }
 
@@ -352,8 +361,8 @@ class LiveKitRoomController(
         )
         remotePcmJob = scope.launch {
             while (isActive && room === nextRoom) {
-                _snapshot.value = _snapshot.value.copy(remotePcm = remotePcmDiagnostics.snapshot())
-                delay(1_000)
+                _snapshot.value = _snapshot.value.copy(remotePcm = remotePcmDiagnostics.snapshot(), receiveLevelDbfs = receiveLevelMeter.value(android.os.SystemClock.elapsedRealtime()), transmitInputLevelDbfs = inputGainProcessor?.currentLevelDbfs())
+                delay(100)
             }
         }
         eventJob = scope.launch {
@@ -553,6 +562,7 @@ class LiveKitRoomController(
         remotePcmJob = null
         remotePcmSinks.keys.toList().forEach(::stopObservingRemotePcm)
         remotePcmDiagnostics.reset()
+        receiveLevelMeter.reset()
         cancelReceiverReadyPublication()
         runCatching { prewarmedTrack?.stopPrewarm() }
         prewarmedTrack = null

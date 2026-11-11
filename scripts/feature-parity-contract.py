@@ -167,7 +167,7 @@ def main() -> int:
         and "awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)" in android_ui
         and "awaitPointerEvent(pass = PointerEventPass.Initial)" in android_ui
         and "change.consume()" in android_ui
-        and "isParentScrollEnabledWhileTouchPtt(state.diagnostics.appTouchPressed)" in android_ui
+        and "if (!state.joined) Modifier.verticalScroll(rememberScrollState()) else Modifier" in android_ui
         and "tryAwaitRelease()" not in android_ui
         and "appTouchPttCancel(\"pointer_cancel\")" not in android_ui
         and all(

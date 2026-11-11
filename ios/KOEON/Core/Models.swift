@@ -238,6 +238,18 @@ enum PostCallRearmState: String, Sendable {
 }
 
 enum ChannelSwitchPolicy {
+    /// Only an explicit CH prefix is a shortcut; list order never defines identity.
+    static func number(_ name: String) -> Int? {
+        guard let expression = try? NSRegularExpression(pattern: "^CH\\s*([0-9]{1,2})(?=$|[\\s_:：\\-・])", options: [.caseInsensitive]),
+              let match = expression.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+              let range = Range(match.range(at: 1), in: name) else { return nil }
+        return Int(name[range])
+    }
+    static func numbered(_ channels: [Channel], number: Int) -> Channel? {
+        let matches = channels.filter { self.number($0.name) == number }
+        return matches.count == 1 ? matches.first : nil
+    }
+
     static func ordered(_ channels: [Channel]) -> [Channel] {
         channels.sorted { left, right in
             let comparison = left.name.localizedStandardCompare(right.name)
@@ -616,4 +628,16 @@ struct PTTSnapshot: Sendable {
         guard let pttDownAt, let trackEnabledAt else { return nil }
         return max(0, Int(trackEnabledAt.timeIntervalSince(pttDownAt) * 1_000))
     }
+}
+
+
+struct ChannelChoiceRefreshScope: Equatable {
+    let sessionId: String
+    let runtime: Int
+    let userId: String
+    let workspaceId: String
+}
+
+func channelChoicesAreCurrent(requested: ChannelChoiceRefreshScope, current: ChannelChoiceRefreshScope?, identity: MeResponse) -> Bool {
+    requested == current && identity.user.id == requested.userId && identity.workspace.id == requested.workspaceId
 }
