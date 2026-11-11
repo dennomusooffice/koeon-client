@@ -239,6 +239,11 @@ enum PostCallRearmState: String, Sendable {
 }
 
 enum ChannelSwitchPolicy {
+    static func canConfirm(entry: String?, count: Int, named: Bool) -> Bool {
+        if named { return true }
+        guard let entry, (1...2).contains(count), entry.count == count, let value = Int(entry) else { return false }
+        return number(value) != nil
+    }
     static func number(_ value: Int?) -> Int? {
         guard let value, (0...99).contains(value) else { return nil }
         return value

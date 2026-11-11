@@ -3,6 +3,9 @@ package com.dennomuso.koeon.core.session
 import com.dennomuso.koeon.core.model.Channel
 
 object ChannelSwitchPolicy {
+    fun canConfirm(entry: String?, count: Int, named: Boolean): Boolean =
+        named || (entry != null && count in 1..2 && entry.length == count && number(entry.toIntOrNull()) != null)
+
     fun number(value: Int?): Int? = value?.takeIf { it in 0..99 }
     data class Digits(val ones: Int?, val tens: Int?)
     fun digits(number: Int?, entry: String?, count: Int): Digits {

@@ -1,5 +1,6 @@
 import SwiftUI
 import MediaPlayer
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var session: IntercomSessionController
@@ -8,6 +9,9 @@ struct RootView: View {
     @State private var showMembers = false
     @State private var showChannels = false
     @State private var channelDigits: String?
+    @State private var channelEntryRejected = false
+    @State private var channelRejectionSequence = 0
+    @State private var channelFlashRed = false
     @State private var channelDigitCount = 1
     @State private var pendingChannelID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -229,6 +233,7 @@ struct RootView: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 5) {
                 ForEach(0..<10) { number in
                     Button {
+                        resetChannelRejection()
                         pendingChannelID = nil
                         if channelDigits != nil && channelDigitCount == 2 {
                             if (channelDigits?.count ?? 0) < 2 { channelDigits?.append(String(number)) }
@@ -237,27 +242,51 @@ struct RootView: View {
                         Text("\(number)").font(.title3.monospaced().bold())
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
-                    .disabled(!channelSelectionEnabled || (channelDigits == nil && numberedChannel(number) == nil))
-                    .overlay(ChannelKeyLED(blue: keyDigits.ones == number, green: keyDigits.tens == number))
+                    .disabled(!channelSelectionEnabled)
+                    .overlay(ChannelKeyLED(blue: keyDigits.ones == number, green: keyDigits.tens == number, red: channelFlashRed))
                     .accessibilityLabel("CH \(number)")
                     .accessibilityValue(keyDigits.ones == number && keyDigits.tens == number ? "1の位・10の位" : keyDigits.ones == number ? "1の位" : keyDigits.tens == number ? "10の位" : "消灯")
                 }
             }
             HStack {
-                Button("2桁") { pendingChannelID = nil; channelDigitCount = 2; channelDigits = "" }.disabled(!channelSelectionEnabled)
+                Button("2桁") { resetChannelRejection(); pendingChannelID = nil; channelDigitCount = 2; channelDigits = "" }.disabled(!channelSelectionEnabled)
                     .overlay(ChannelKeyLED(blue: false, green: twoDigitActive))
                 Button("確定") {
-                    if channelSelectionEnabled, let target = candidateChannel { Task { await session.switchChannel(to: target.id) } }
-                    cancelChannelEntry()
-                }.disabled(candidateChannel == nil || !channelSelectionEnabled)
+                    guard channelSelectionEnabled else { return }
+                    if let target = candidateChannel {
+                        Task { await session.switchChannel(to: target.id) }
+                        cancelChannelEntry()
+                    } else {
+                        channelEntryRejected = true
+                        channelRejectionSequence += 1
+                        UIAccessibility.post(notification: .announcement, argument: "未割り当てのCHです")
+                    }
+                }.disabled(!ChannelSwitchPolicy.canConfirm(entry: channelDigits, count: channelDigitCount, named: pendingChannelID != nil && candidateChannel != nil) || !channelSelectionEnabled)
                 Button("取消") { cancelChannelEntry() }.disabled(channelDigits == nil)
             }.frame(minHeight: 44)
 
         }
         .buttonStyle(ConsoleKeyStyle())
-        .task(id: "\(channelDigits ?? "-")/\(pendingChannelID ?? "-")") {
+        .task(id: "\(channelDigits ?? "-")/\(pendingChannelID ?? "-")/\(channelRejectionSequence)") {
             guard channelDigits != nil else { return }
             do { try await Task.sleep(for: .seconds(5)); cancelChannelEntry() } catch { }
+        }
+        .task(id: channelRejectionSequence) {
+            guard channelRejectionSequence > 0 else { return }
+            do {
+                if reduceMotion {
+                    channelFlashRed = true
+                    try await Task.sleep(for: .milliseconds(1200))
+                    channelFlashRed = false
+                } else {
+                    for _ in 0..<3 {
+                        channelFlashRed = true
+                        try await Task.sleep(for: .milliseconds(200))
+                        channelFlashRed = false
+                        try await Task.sleep(for: .milliseconds(200))
+                    }
+                }
+            } catch { }
         }
         .onChange(of: session.joinedSession?.channel.id) { _, _ in cancelChannelEntry() }
     }
@@ -311,11 +340,13 @@ struct RootView: View {
     }
     private func stageChannel(_ id: String) {
         guard channelSelectionEnabled, let channel = session.fixture?.channels.first(where: { $0.id == id }) else { return }
+        resetChannelRejection()
         pendingChannelID = id
         channelDigits = ChannelSwitchPolicy.number(channel.channelNumber).map(String.init) ?? ""
         channelDigitCount = max(1, channelDigits?.count ?? 1)
     }
-    private func cancelChannelEntry() { channelDigits = nil; pendingChannelID = nil }
+    private func resetChannelRejection() { channelEntryRejected = false; channelRejectionSequence = 0; channelFlashRed = false }
+    private func cancelChannelEntry() { resetChannelRejection(); channelDigits = nil; pendingChannelID = nil }
 
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -336,10 +367,10 @@ struct RootView: View {
                             }
                         }
                         Spacer()
-                        Text(candidateChannel == nil ? (digits.count < channelDigitCount ? "入力中" : "未割当") : "確定待ち").font(.callout.bold())
+                        Text(channelEntryRejected ? "未割当" : digits.count < channelDigitCount && pendingChannelID == nil ? "入力中" : "確定待ち").font(.callout.bold())
                     }
                 }
-                Text(candidateChannel?.name ?? "番号を選択してください").font(.title3).lineLimit(1)
+                Text(channelEntryRejected ? "このCHは未割り当てです" : candidateChannel?.name ?? "番号を選択して確定してください").font(.title3).lineLimit(1)
                 Spacer(minLength: 0)
             } else {
                 HStack {
@@ -866,13 +897,14 @@ private struct ConsoleMeter: View {
 private struct ChannelKeyLED: View {
     let blue: Bool
     let green: Bool
+    var red: Bool = false
     var body: some View {
         RoundedRectangle(cornerRadius: 7).strokeBorder(
             LinearGradient(stops: [
-                .init(color: green ? .green : blue ? .blue : .clear, location: 0),
-                .init(color: green ? .green : blue ? .blue : .clear, location: 0.499),
-                .init(color: blue ? .blue : green ? .green : .clear, location: 0.5),
-                .init(color: blue ? .blue : green ? .green : .clear, location: 1)
+                .init(color: red ? .red : green ? .green : blue ? .blue : .clear, location: 0),
+                .init(color: red ? .red : green ? .green : blue ? .blue : .clear, location: 0.499),
+                .init(color: red ? .red : blue ? .blue : green ? .green : .clear, location: 0.5),
+                .init(color: red ? .red : blue ? .blue : green ? .green : .clear, location: 1)
             ], startPoint: .leading, endPoint: .trailing), lineWidth: 3
         ).allowsHitTesting(false).accessibilityHidden(true)
     }

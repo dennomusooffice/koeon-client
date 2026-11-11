@@ -445,6 +445,10 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         audioAvailability = state.diagnostics.audioAvailabilityState,
     )
     var digits by remember(joined.channel.id) { mutableStateOf<String?>(null) }
+    var entryRejected by remember(joined.channel.id) { mutableStateOf(false) }
+    var rejectionSequence by remember(joined.channel.id) { mutableStateOf(0) }
+    var flashRed by remember(joined.channel.id) { mutableStateOf(false) }
+    fun resetRejection() { entryRejected = false; rejectionSequence = 0; flashRed = false }
     var digitCount by remember { mutableStateOf(1) }
     var pendingChannelId by remember(joined.channel.id) { mutableStateOf<String?>(null) }
     var channelListOpen by remember { mutableStateOf(false) }
@@ -454,12 +458,13 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         ?: digits?.takeIf { it.length == digitCount }?.toIntOrNull()?.let { ChannelSwitchPolicy.numbered(channels, it) }
     fun stageChannel(id: String) {
         val channel = channels.firstOrNull { it.id == id } ?: return
+        resetRejection()
         pendingChannelId = id
         digits = ChannelSwitchPolicy.number(channel.channelNumber)?.toString().orEmpty()
         digitCount = maxOf(1, digits!!.length)
     }
-    LaunchedEffect(digits, pendingChannelId, joined.channel.id) {
-        if (digits != null) { kotlinx.coroutines.delay(5000); digits = null; pendingChannelId = null }
+    LaunchedEffect(digits, pendingChannelId, joined.channel.id, rejectionSequence) {
+        if (digits != null) { kotlinx.coroutines.delay(5000); resetRejection(); digits = null; pendingChannelId = null }
     }
     if (channelListOpen) ConsoleOverlay("チャネル一覧", { channelListOpen = false }) {
         Row {
@@ -493,6 +498,13 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         state.participants.forEach { Text(it, fontSize = 22.sp, lineHeight = 25.sp) }
     }
     val reduceMotion = android.provider.Settings.Global.getFloat(LocalContext.current.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    LaunchedEffect(rejectionSequence) {
+        if (rejectionSequence > 0) {
+            if (reduceMotion) { flashRed = true; kotlinx.coroutines.delay(1200); flashRed = false }
+            else repeat(3) { flashRed = true; kotlinx.coroutines.delay(200); flashRed = false; kotlinx.coroutines.delay(200) }
+        }
+    }
+
     var cursorOn by remember { mutableStateOf(true) }
     LaunchedEffect(digits, reduceMotion) {
         cursorOn = true
@@ -511,9 +523,9 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                             Box(Modifier.width(20.dp).height(3.dp).background(if (pendingChannelId == null && index == digits!!.length && cursorOn) Color(0xFF382B10) else Color.Transparent))
                         }
                     }
-                    Text(if (candidate != null) "確定待ち" else if (digits!!.length < digitCount) "入力中" else "未割当", fontSize = 14.sp, lineHeight = 17.sp)
+                    Text(if (entryRejected) "未割当" else if (digits!!.length < digitCount && pendingChannelId == null) "入力中" else "確定待ち", fontSize = 14.sp, lineHeight = 17.sp)
                 }
-                Text(candidate?.name ?: "番号を選択してください", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1)
+                Text(if (entryRejected) "このCHは未割り当てです" else candidate?.name ?: "番号を選択して確定してください", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1)
             } else {
                 Text("${currentNumber?.let { "CH$it" } ?: "CH —"} / ${state.connectionState} · ${pttSemantic.name}", fontSize = 11.sp, lineHeight = 14.sp)
                 Text(joined.channel.name, fontSize = 24.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.clickable(enabled = channelEnabled) { channelListOpen = true })
@@ -557,18 +569,18 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             repeat(5) { column ->
                 val number = row * 5 + column
-                val target = ChannelSwitchPolicy.numbered(channels, number)
                 androidx.compose.material3.ElevatedButton(
                     onClick = {
+                        resetRejection()
                         pendingChannelId = null
                         if (digits != null && digitCount == 2) { if (digits!!.length < 2) digits += number.toString() }
                         else { digitCount = 1; digits = number.toString() }
                     },
-                    enabled = channelEnabled && (digits != null || target != null),
+                    enabled = channelEnabled,
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp),
                     colors = androidx.compose.material3.ButtonDefaults.elevatedButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurface),
-                    modifier = Modifier.weight(1f).height(44.dp).channelLED(keyDigits.ones == number, keyDigits.tens == number).semantics { stateDescription = if (keyDigits.ones == number && keyDigits.tens == number) "1の位・10の位" else if (keyDigits.ones == number) "1の位" else if (keyDigits.tens == number) "10の位" else "消灯" },
+                    modifier = Modifier.weight(1f).height(44.dp).channelLED(keyDigits.ones == number, keyDigits.tens == number, flashRed).semantics { stateDescription = if (keyDigits.ones == number && keyDigits.tens == number) "1の位・10の位" else if (keyDigits.ones == number) "1の位" else if (keyDigits.tens == number) "10の位" else "消灯" },
                 ) {
                     Text(number.toString(), fontSize = 20.sp, lineHeight = 23.sp)
                 }
@@ -576,11 +588,13 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         }
     }
     Row(Modifier.fillMaxWidth().height(48.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
-        ConsoleActionKey("2桁", channelEnabled, twoDigitActive) { pendingChannelId = null; digitCount = 2; digits = "" }
-        ConsoleActionKey("確定", channelEnabled && candidate != null) { candidate?.let { manager.switchChannel(it.id) }; digits = null; pendingChannelId = null }
-        ConsoleActionKey("取消", digits != null) { digits = null; pendingChannelId = null }
+        ConsoleActionKey("2桁", channelEnabled, twoDigitActive) { resetRejection(); pendingChannelId = null; digitCount = 2; digits = "" }
+        ConsoleActionKey("確定", channelEnabled && ChannelSwitchPolicy.canConfirm(digits, digitCount, pendingChannelId != null && candidate != null)) {
+            if (candidate != null) { manager.switchChannel(candidate.id); resetRejection(); digits = null; pendingChannelId = null }
+            else { entryRejected = true; rejectionSequence += 1; view.announceForAccessibility("未割り当てのCHです") }
+        }
+        ConsoleActionKey("取消", digits != null) { resetRejection(); digits = null; pendingChannelId = null }
     }
-    Text("押している間、送信", modifier = Modifier.align(Alignment.CenterHorizontally), fontSize = 12.sp, lineHeight = 15.sp)
     BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
     val diameter = minOf(maxHeight, maxWidth, 220.dp)
     Box(
@@ -989,10 +1003,10 @@ private fun ConsoleMeter(label: String, db: Float?, color: Color) {
     }
 }
 
-private fun Modifier.channelLED(blue: Boolean, green: Boolean): Modifier {
-    if (!blue && !green) return this
-    val left = if (green) Color(0xFF37B469) else Color(0xFF328BDF)
-    val right = if (blue) Color(0xFF328BDF) else Color(0xFF37B469)
+private fun Modifier.channelLED(blue: Boolean, green: Boolean, red: Boolean = false): Modifier {
+    if (!blue && !green && !red) return this
+    val left = if (red) KoeonRed else if (green) Color(0xFF37B469) else Color(0xFF328BDF)
+    val right = if (red) KoeonRed else if (blue) Color(0xFF328BDF) else Color(0xFF37B469)
     return border(3.dp, androidx.compose.ui.graphics.Brush.horizontalGradient(
         0f to left, .499f to left, .5f to right, 1f to right
     ), androidx.compose.foundation.shape.RoundedCornerShape(7.dp))

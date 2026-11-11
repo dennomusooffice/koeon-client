@@ -82,6 +82,16 @@ final class InviteHandoffTests: XCTestCase {
         XCTAssertNil(partial.ones); XCTAssertEqual(partial.tens, 1)
     }
 
+    func testUnassignedEntryCanConfirmButCannotResolveAChannel() {
+        XCTAssertTrue(ChannelSwitchPolicy.canConfirm(entry: "9", count: 1, named: false))
+        XCTAssertTrue(ChannelSwitchPolicy.canConfirm(entry: "99", count: 2, named: false))
+        XCTAssertFalse(ChannelSwitchPolicy.canConfirm(entry: "9", count: 2, named: false))
+        XCTAssertFalse(ChannelSwitchPolicy.canConfirm(entry: nil, count: 1, named: false))
+        XCTAssertFalse(ChannelSwitchPolicy.canConfirm(entry: "", count: 1, named: false))
+        XCTAssertTrue(ChannelSwitchPolicy.canConfirm(entry: "", count: 1, named: true))
+        XCTAssertNil(ChannelSwitchPolicy.numbered([], number: 99))
+    }
+
     func testChannelSelectorHasStableOrderAndWraps() {
         let channels = [
             Channel(id: "reception", workspaceId: "w", name: "04 受付"),

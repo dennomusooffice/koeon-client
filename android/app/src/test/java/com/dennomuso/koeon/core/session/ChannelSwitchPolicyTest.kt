@@ -33,6 +33,16 @@ class ChannelSwitchPolicyTest {
         }
     }
 
+    @Test fun `complete unassigned entry can confirm while incomplete entry cannot`() {
+        assertEquals(true, ChannelSwitchPolicy.canConfirm("9", 1, false))
+        assertEquals(true, ChannelSwitchPolicy.canConfirm("99", 2, false))
+        assertEquals(false, ChannelSwitchPolicy.canConfirm("9", 2, false))
+        assertEquals(false, ChannelSwitchPolicy.canConfirm(null, 1, false))
+        assertEquals(false, ChannelSwitchPolicy.canConfirm("", 1, false))
+        assertEquals(true, ChannelSwitchPolicy.canConfirm("", 1, true))
+        assertEquals(null, ChannelSwitchPolicy.numbered(emptyList(), 99))
+    }
+
     private val channels = listOf(
         Channel("reception", "workspace", "04 受付"),
         Channel("stage", "workspace", "02 ステージ"),
