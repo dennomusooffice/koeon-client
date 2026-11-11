@@ -16,4 +16,4 @@ STOPはSHA/版/hash/配信状態/制限をIssueと配信記録へ保存。外部
 
 ## 結果
 
-10eb3deからAndroid1.0.23(24) GitHub prerelease公開、iOS1.0(2026111133) Apple VALID・外部IN_BETA_TESTING/既存外部グループ関連付け確認。内部はREADY_FOR_BETA_TESTING/全ビルドアクセス設定だが明示関連付け未確認、Appleが手動追加を拒否したため残件として区別する。自動回帰・署名/hash・既存補助検査の古い固定値/試験用aliasによる不一致は[配信記録](../RELEASE_20261111_CONSOLE_UI.md)参照。実機操作/mainマージなし。
+10eb3deからAndroid1.0.23(24) GitHub prerelease公開、iOS1.0(2026111133) Apple VALID・内部/外部ともIN_BETA_TESTING、既存内部2/外部1グループすべての関連付け確認。内部の自動反映待ちは最終再取得で解消。自動回帰・署名/hash・既存補助検査の古い固定値/試験用aliasによる不一致は[配信記録](../RELEASE_20261111_CONSOLE_UI.md)参照。実機操作/mainマージなし。

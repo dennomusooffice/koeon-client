@@ -26,7 +26,7 @@
 - アップロードIPA SHA256: `628cbd1525b247cf5e54eeb580b65f176575d2e1120865752084cfa4379a7316`
 - Apple processing=VALID、external=IN_BETA_TESTING。ベータ審査申請成功後、既存外部1グループのbuild関係を読み取り照合し、外部テスター利用可能を確認。自動通知ON、新規テスター/公開リンク作成なし。
 - 直近5版の暗号化申告falseを照合し、暗号化依存/方式に変更がないため引き継いだ。UI変更と確認ポイントをテスト内容へ登録。
-- 内部はREADY_FOR_BETA_TESTING、既存2グループは全ビルドアクセス設定。明示build関係はまだなく、手動追加はAppleが「Cannot add internal group to a build」で拒否。内部の利用開始を確認済みとはしない。外部のIN_BETA_TESTING/関連付け成功とは分けて記録する。
+- 最終再取得でinternal/externalともIN_BETA_TESTING、既存内部2/外部1グループすべてのbuild関係を確認。内部は一時READY_FOR_BETA_TESTINGで、全ビルドアクセスグループへの手動追加はAppleに拒否されたが、その後の自動反映を読み取り確認した。内部の配布残件は解消。
 
 ## 実機証拠・残件
 
