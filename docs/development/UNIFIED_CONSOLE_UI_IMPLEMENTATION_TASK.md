@@ -68,3 +68,7 @@ Android実機ではSDK入力形式が16bit/mono/480frames/pos0/limit960と確認
 ## 最終引継ぎ
 
 [限定受入れ結果](../testing/RESULTS_20261111_CONSOLE_UI.md)に最終SHA/両build、218件・277件の自動検証、PTT位置/CH確認/外観/メーター/電源取消と未検証条件を記録。最終候補でAndroid RX -56dBFS、Android TX IN/iOS RX -96dBFSを観測。人の聴取品質は未確認。両端末CH12/READYで引継ぎ、公開配信/mainマージなし。所有者レビューを残して#88/#89はOpen維持。
+
+## 正式番号・最終意匠の追加更新
+
+[追加TASK](CHANNEL_NUMBER_LED_TASK.md)により正式channelNumber対応、桁別LED/凡例、ゴールド彫り込みプレート、Android操作キーと赤リング復帰、全数字入力と未割当確定時の赤3回通知を追加。最新候補・SHA・結果は[追加検証記録](../testing/RESULTS_20261111_CHANNEL_NUMBER_LED.md)を正とし、前段候補の状態と区別する。
