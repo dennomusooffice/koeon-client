@@ -569,7 +569,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             repeat(5) { column ->
                 val number = row * 5 + column
-                androidx.compose.material3.ElevatedButton(
+                Button(
                     onClick = {
                         resetRejection()
                         pendingChannelId = null
@@ -579,10 +579,14 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                     enabled = channelEnabled,
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp),
-                    colors = androidx.compose.material3.ButtonDefaults.elevatedButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurface),
-                    modifier = Modifier.weight(1f).height(44.dp).channelLED(keyDigits.ones == number, keyDigits.tens == number, flashRed).semantics { stateDescription = if (keyDigits.ones == number && keyDigits.tens == number) "1の位・10の位" else if (keyDigits.ones == number) "1の位" else if (keyDigits.tens == number) "10の位" else "消灯" },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent, disabledContainerColor = Color.Transparent,
+                        contentColor = if (LocalConsoleDark.current) Color(0xFFE6E6E6) else Color(0xFF333333),
+                        disabledContentColor = Color(0xFF888888)
+                    ),
+                    modifier = Modifier.weight(1f).height(44.dp).consoleKeyFace().channelLED(keyDigits.ones == number, keyDigits.tens == number, flashRed).semantics { stateDescription = if (keyDigits.ones == number && keyDigits.tens == number) "1の位・10の位" else if (keyDigits.ones == number) "1の位" else if (keyDigits.tens == number) "10の位" else "消灯" },
                 ) {
-                    Text(number.toString(), fontSize = 20.sp, lineHeight = 23.sp)
+                    Text(number.toString(), fontSize = 20.sp, lineHeight = 23.sp, fontWeight = FontWeight.Bold, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                 }
             }
         }
@@ -1040,9 +1044,6 @@ private fun ConsoleEmblem() {
 private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = false, onClick: () -> Unit) {
     val dark = LocalConsoleDark.current
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
-    val face = androidx.compose.ui.graphics.Brush.verticalGradient(
-        if (dark) listOf(Color(0xFF3C3C3C), Color(0xFF292929)) else listOf(Color(0xFFF7F7F7), Color(0xFFD9D9D9))
-    )
     Button(
         onClick = onClick, enabled = enabled, shape = shape,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp),
@@ -1051,7 +1052,16 @@ private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = f
             contentColor = if (dark) Color(0xFFE6E6E6) else Color(0xFF333333),
             disabledContentColor = Color(0xFF888888)
         ),
-        modifier = Modifier.width(52.dp).height(44.dp).shadow(2.dp, shape)
-            .background(face, shape).border(1.dp, Color.Gray.copy(alpha = .5f), shape).channelLED(false, green)
+        modifier = Modifier.width(52.dp).height(44.dp).consoleKeyFace().channelLED(false, green)
     ) { Text(label, fontSize = 17.sp, lineHeight = 20.sp) }
+}
+
+@Composable
+private fun Modifier.consoleKeyFace(): Modifier {
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
+    val face = androidx.compose.ui.graphics.Brush.verticalGradient(
+        if (LocalConsoleDark.current) listOf(Color(0xFF3C3C3C), Color(0xFF292929))
+        else listOf(Color(0xFFF7F7F7), Color(0xFFD9D9D9))
+    )
+    return shadow(2.dp, shape).background(face, shape).border(1.dp, Color.Gray.copy(alpha = .5f), shape)
 }
