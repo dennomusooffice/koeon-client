@@ -106,3 +106,19 @@ Now Playing試作のソースは `591bdc6885e1b53e4ba1966418a76d8c23b677d8`、�
 1106前面実ボタンの利用者結果も「無反応」。終了直前snapshotはCONNECTED/READY/IDLE、mediaArmed/Enabled true、mediaCommandCount=0、handsfree0/0。利用者返答は設定復元の操作中に届いたため、押下の厳密な時刻は不明。既存の結果と合わせ、Now Playing情報・コマンド登録だけでメディア所有権を獲得できたとは言えず、修正完了としない。
 
 10:20:13までにHeadset設定OFF（UI value0）、POWER ON維持、Appium session DELETE完了。通常アプリ1106を残し、Action button設定を維持。OFF後の追加音声試験はなし。次の切り分けは、Now Playing情報の登録とOSが選ぶメディア操作対象を分離し、正式APIでの所有権確立条件を調べること。無音再生やApple音声所有権迂回で通知を奪わない。前面/背景/ロックの成功・相手への音声到達は未達のまま。
+
+
+## 設定OFFの可能性を除外する再試験（追加10分）
+
+利用者が前回の1106押下時に設定OFFだった可能性を指摘し、さらに10分を許可（操作ガード10:31:00 JST）。前回1106の結果はINCONCLUSIVEへ訂正する。
+
+新しい試験では、押下依頼直前・返答直後の両方でUI switch1を確認。診断も両方settingEnabled/mediaArmed/mediaEnabled=true、Bluetooth/CONNECTED/READY/IDLEだった。設定を変えずに利用者の「無反応」回答を受け取り、再生コマンド0、handsfree0/0を照合した。この再試験についてはOFFとの混同を除外できた。
+
+ホームでコントロールセンターを開いて読むと、KOEON PTTの表示はなく既存音楽のメディア情報が残っていた（曲名等は公開記録に転記しない）。受付登録有効とOSのNow Playing対象への選定は別である。Apple WWDC22 [media metadata](https://developer.apple.com/videos/play/wwdc2022/110338/)はリモートハンドラとnon-mixable audio category/optionsを適格性の条件として説明している。現在のPTT activation設定はplayAndRecord/voiceChat/allowBluetoothHFP、mixWithOthersなし。条件設定だけで対象選定を保証したと扱わない。
+
+
+続いてONを保って背景へ移し、利用者がAction button開始/停止→MFB操作を実施。Actionは正常、MFBは最初無反応・何度か押すと音楽再生と報告。診断のmediaCommandCountは0→2、lastMediaCommand=start。Apple開始要求は10:25:52、didBegin/didActivate/Floor/micUnmuteなし、失敗コード`PTChannelError(rawValue: 6)`、operation=begin。Xcode SDKのPTErrors.hで6はAppNotForegroundと確認。入力受信と背景開始の許可は別である。
+
+この後、前面へ戻してONのまま利用者が再試験すると音楽再生となった。診断はmediaCommandCount2のまま、setting/mediaArmed/mediaEnabled true、CONNECTED/READY/IDLE。したがって再生ボタンをKOEONへ安定して割り当てる問題と、受信した背景開始が拒否される問題が残る。旧1102のAction後比較と違い、1106でメディア入力2件の受信自体は観測できたが、PTT送信成功ではない。2件それぞれの時刻と種類を保持していないため、全押下との一対一対応は未確定。
+
+10:29:03までに設定OFF（UI0）、POWER ON維持、Appium session終了。通常アプリ1106とAction button設定を残した。プローブは残っていない。次はNow Playing対象の取得/維持、remote handler内の状態更新とハンドラ復帰後の開始要求の順序を、Apple DTS説明と照合して限定修正する。勝手な音声session activationや無音keepaliveは行わない。実機再試験は別の有効枠で実施する。今回の最終状態は実装/自動試験/ローカル導入済み、Bluetooth PTT受入れ未達、TestFlight未配信・未マージ。
