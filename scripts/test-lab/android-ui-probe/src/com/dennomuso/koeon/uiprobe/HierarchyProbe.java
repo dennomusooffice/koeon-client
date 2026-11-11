@@ -22,8 +22,14 @@ public final class HierarchyProbe extends Instrumentation {
         try {
             if (file.exists() && !file.delete()) throw new IllegalStateException();
             UiAutomation automation = getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
-            try { automation.waitForIdle(100, 3000); } catch (java.util.concurrent.TimeoutException ignored) { }
-            AccessibilityNodeInfo root = automation.getRootInActiveWindow();
+            // Live meters intentionally update while receiving. Do not require
+            // a quiet UI to observe the active PTT state.
+            try { automation.waitForIdle(50, 250); } catch (java.util.concurrent.TimeoutException ignored) { }
+            AccessibilityNodeInfo root = null;
+            for (int attempt = 0; attempt < 5 && root == null; attempt++) {
+                root = automation.getRootInActiveWindow();
+                if (root == null) SystemClock.sleep(100);
+            }
             if (root == null) throw new IllegalStateException();
             deadline = SystemClock.elapsedRealtime() + 15000;
             try (FileOutputStream out = new FileOutputStream(file)) {
@@ -33,8 +39,8 @@ public final class HierarchyProbe extends Instrumentation {
             } finally { root.recycle(); }
             result.putString("stream", "Hierarchy saved privately; nodes=" + count);
             finish(0, result);
-        } catch (Exception ignored) {
-            file.delete(); result.putString("stream", "Hierarchy acquisition failed"); finish(1, result);
+        } catch (Exception error) {
+            file.delete(); result.putString("stream", "Hierarchy acquisition failed: " + error.getClass().getSimpleName()); finish(1, result);
         }
     }
     private void node(XmlSerializer xml, AccessibilityNodeInfo n, int depth) throws Exception {
