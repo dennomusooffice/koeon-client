@@ -440,7 +440,7 @@ struct RootView: View {
         }
         return ZStack {
             Circle().fill(ConsoleKeySurface.face(dark: darkConsole))
-            Circle().fill(RadialGradient(stops: [.init(color: .clear, location: 0.7), .init(color: fill.opacity(0.12), location: 0.88), .init(color: fill.opacity(0.48), location: 1)], center: .center, startRadius: 0, endRadius: diameter / 2))
+            Circle().fill(RadialGradient(stops: [.init(color: .clear, location: 0.48), .init(color: fill.opacity(0.24), location: 0.86), .init(color: fill.opacity(0.6), location: 1)], center: .center, startRadius: 0, endRadius: diameter / 2))
             Circle().strokeBorder(fill.opacity(0.8), lineWidth: 5)
             Circle().strokeBorder(ConsoleKeySurface.rim, lineWidth: 1)
             VStack(spacing: 8) {
@@ -875,8 +875,8 @@ private struct ConsoleKeyStyle: ButtonStyle {
 private enum ConsoleKeySurface {
     static func face(dark: Bool) -> LinearGradient {
         LinearGradient(colors: dark
-            ? [Color(red: 0.45, green: 0.47, blue: 0.46).opacity(0.67), Color(white: 0.20).opacity(0.73), Color(white: 0.15).opacity(0.8)]
-            : [.white.opacity(0.94), Color(red: 0.80, green: 0.82, blue: 0.81).opacity(0.67), Color(white: 0.88).opacity(0.87)], startPoint: .top, endPoint: .bottom)
+            ? [Color(red: 0.45, green: 0.47, blue: 0.46).opacity(0.4), Color(white: 0.20).opacity(0.25), Color(white: 0.15).opacity(0.44)]
+            : [.white.opacity(0.5), Color(red: 0.80, green: 0.82, blue: 0.81).opacity(0.25), Color(white: 0.88).opacity(0.4)], startPoint: .top, endPoint: .bottom)
     }
     static var rim: LinearGradient {
         LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08), .black.opacity(0.22)], startPoint: .top, endPoint: .bottom)
@@ -919,9 +919,9 @@ private struct ChannelKeyLED: View {
                 .init(color: red ? .red : blue ? .blue : green ? .green : .clear, location: 1)
             ], startPoint: .leading, endPoint: .trailing)
         ZStack {
-            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.08), lineWidth: 16).blur(radius: 3)
-            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.12), lineWidth: 9).blur(radius: 2)
-            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.22), lineWidth: 5).blur(radius: 1)
+            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.18), lineWidth: 16).blur(radius: 3)
+            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.24), lineWidth: 9).blur(radius: 2)
+            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.32), lineWidth: 5).blur(radius: 1)
             RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.8), lineWidth: 1.5)
             RoundedRectangle(cornerRadius: 7).strokeBorder(ConsoleKeySurface.rim, lineWidth: 0.7)
         }.clipShape(RoundedRectangle(cornerRadius: 7)).allowsHitTesting(false).accessibilityHidden(true)

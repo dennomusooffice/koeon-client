@@ -618,7 +618,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 translationY = if (inputPressed) 3.dp.toPx() else 0f
             }
             .consoleKeyFace(CircleShape)
-            .background(androidx.compose.ui.graphics.Brush.radialGradient(0f to Color.Transparent, .72f to Color.Transparent, .90f to pttColor.copy(alpha = .12f), 1f to pttColor.copy(alpha = .48f)), CircleShape)
+            .background(androidx.compose.ui.graphics.Brush.radialGradient(0f to Color.Transparent, .48f to Color.Transparent, .86f to pttColor.copy(alpha = .24f), 1f to pttColor.copy(alpha = .6f)), CircleShape)
             .border(5.dp, pttColor.copy(alpha = .8f), CircleShape)
             .semantics {
                 contentDescription = "Push to talk, ${pttSemantic.name.replace('_', ' ')}"
@@ -1024,9 +1024,9 @@ private fun Modifier.channelLED(blue: Boolean, green: Boolean, red: Boolean = fa
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
     return clip(shape).drawWithContent {
         // Nested translucent bands diffuse the embedded edge LED toward the centre.
-        for ((width, opacity) in listOf(22f to .035f, 16f to .055f, 11f to .09f, 7f to .16f, 3f to .70f)) {
+        for (width in 2..30) {
             drawRoundRect(brush, cornerRadius = androidx.compose.ui.geometry.CornerRadius(7.dp.toPx()),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width.dp.toPx()), alpha = opacity)
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width.dp.toPx()), alpha = if (width < 4) .22f else .025f)
         }
         drawContent()
     }
@@ -1075,8 +1075,8 @@ private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = f
 @Composable
 private fun Modifier.consoleKeyFace(shape: androidx.compose.ui.graphics.Shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)): Modifier {
     val face = androidx.compose.ui.graphics.Brush.verticalGradient(
-        if (LocalConsoleDark.current) listOf(Color(0xAA727975), Color(0xBB303733), Color(0xCC242A27))
-        else listOf(Color(0xEFFFFFFF), Color(0xAACBD2CE), Color(0xDDDEE3DF))
+        if (LocalConsoleDark.current) listOf(Color(0x667D8981), Color(0x40303733), Color(0x70242A27))
+        else listOf(Color(0x80FFFFFF), Color(0x40CBD2CE), Color(0x66DEE3DF))
     )
     return shadow(3.dp, shape, clip = false).background(face, shape)
         .border(1.dp, androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.White.copy(alpha = .75f), Color.White.copy(alpha = .08f), Color.Black.copy(alpha = .22f))), shape)
