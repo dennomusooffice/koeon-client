@@ -17,6 +17,11 @@ class ReceiveLevelMeterTest {
         assertNull(ReceiveLevelMeter.pcm16Dbfs(buffer, 16, 1, 9))
         assertNull(ReceiveLevelMeter.pcm16Dbfs(buffer, 16, 8, Int.MAX_VALUE))
     }
+    @Test fun sdkBufferPositionDoesNotHideCompleteFrames() {
+        val buffer = pcm().apply { position(limit()) }
+        assertEquals(-6.0206f, ReceiveLevelMeter.pcm16Dbfs(buffer, 16, 1, 8)!!, .001f)
+        assertEquals(16, buffer.position())
+    }
     @Test fun rateLimitFreshnessAndDetachedGenerations() {
         val meter = ReceiveLevelMeter(); val first = meter.attach()
         meter.record(first, pcm(), 16, 1, 8, 1000)

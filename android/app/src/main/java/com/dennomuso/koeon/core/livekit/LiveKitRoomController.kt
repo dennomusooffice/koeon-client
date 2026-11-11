@@ -89,6 +89,7 @@ data class LiveKitSnapshot(
     val remoteAudioTracks: Int = 0,
     val remotePcm: RemotePcmSnapshot = RemotePcmSnapshot(),
     val receiveLevelDbfs: Float? = null,
+    val receiveLevelFormat: String = "未取得",
     val transmitInputLevelDbfs: Float? = null,
     val microphoneTrackState: String = "not_published",
     val remoteAudioState: String = "no_tracks",
@@ -361,7 +362,7 @@ class LiveKitRoomController(
         )
         remotePcmJob = scope.launch {
             while (isActive && room === nextRoom) {
-                _snapshot.value = _snapshot.value.copy(remotePcm = remotePcmDiagnostics.snapshot(), receiveLevelDbfs = receiveLevelMeter.value(android.os.SystemClock.elapsedRealtime()), transmitInputLevelDbfs = inputGainProcessor?.currentLevelDbfs())
+                _snapshot.value = _snapshot.value.copy(remotePcm = remotePcmDiagnostics.snapshot(), receiveLevelDbfs = receiveLevelMeter.value(android.os.SystemClock.elapsedRealtime()), transmitInputLevelDbfs = inputGainProcessor?.currentLevelDbfs(), receiveLevelFormat = receiveLevelMeter.format())
                 delay(100)
             }
         }

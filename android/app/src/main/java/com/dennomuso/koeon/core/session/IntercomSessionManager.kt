@@ -195,6 +195,7 @@ data class SessionDiagnostics(
 
 data class IntercomUiState(
     val receiveLevelDbfs: Float? = null,
+    val receiveLevelFormat: String = "未取得",
     val transmitInputLevelDbfs: Float? = null,
     val loading: Boolean = false,
     val fixture: FixtureResponse? = null,
@@ -441,6 +442,7 @@ class IntercomSessionManager(
                         connectionState = liveKit.connectionState,
                         participants = liveKit.participantNames,
                         receiveLevelDbfs = liveKit.receiveLevelDbfs,
+                        receiveLevelFormat = liveKit.receiveLevelFormat,
                         transmitInputLevelDbfs = liveKit.transmitInputLevelDbfs,
                         currentSpeaker = resolvedSpeaker(),
                         diagnostics = it.diagnostics.copy(

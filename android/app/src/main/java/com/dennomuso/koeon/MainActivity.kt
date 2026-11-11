@@ -797,6 +797,7 @@ private fun Diagnostics(state: IntercomUiState) {
     Card(colors = CardDefaults.cardColors(containerColor = KoeonPanel), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Diagnostics", color = KoeonGreen, fontWeight = FontWeight.Bold)
+            DiagnosticRow("RX meter input", state.receiveLevelFormat)
             Button(onClick = {
                 val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 clipboard.setPrimaryClip(android.content.ClipData.newPlainText("KOEON Field Diagnostic", (context.applicationContext as KoeonApplication).intercomSession.fieldDiagnosticJson()))
