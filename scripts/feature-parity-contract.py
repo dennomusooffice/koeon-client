@@ -167,7 +167,7 @@ def main() -> int:
         and "awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)" in android_ui
         and "awaitPointerEvent(pass = PointerEventPass.Initial)" in android_ui
         and "change.consume()" in android_ui
-        and "if (!state.joined) Modifier.verticalScroll(rememberScrollState()) else Modifier" in android_ui
+        and "if (state.join == null && state.channelSwitchSource == null) Modifier.verticalScroll(rememberScrollState()) else Modifier" in android_ui
         and "tryAwaitRelease()" not in android_ui
         and "appTouchPttCancel(\"pointer_cancel\")" not in android_ui
         and all(
@@ -186,9 +186,9 @@ def main() -> int:
     )
     require(
         'applicationId = "com.dennomuso.koeon"' in gradle
-        and 'versionCode = 24' in gradle
-        and 'versionName = "1.0.23"' in gradle,
-        "ANDROID_1_0_23_IDENTITY_VERSION_CONTRACT",
+        and 'versionCode = 25' in gradle
+        and 'versionName = "1.0.24"' in gradle,
+        "ANDROID_1_0_24_IDENTITY_VERSION_CONTRACT",
     )
     require(
         "KOEON_API_BASE_URL" in gradle
