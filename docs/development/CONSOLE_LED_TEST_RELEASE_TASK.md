@@ -5,3 +5,5 @@
 受入れ: 固定コミットでparity、Android/iOS候補署名、版/entitlement/digestを検証。Android release公開とApple VALID・内部/外部テスター群のbuild関係を確認。実機の操作は今回の配布依頼に含まれず、所有者が実機テストを行う。既存の合成音声可聴再生未合格を配布ノートに残す。App Store/Play一般公開とmainマージは対象外。
 
 STOP CONDITION: SHA、ビルド番号、hash、配布状態、未検証をIssue/PR/配布記録へ記載。候補検証失敗時は公開しない。Codex利用枠残量3%到達時は新規テストを停止し状態を記録する。
+
+結果: `af37062d`からAndroid1.0.25(26) GitHub prerelease公開、iOS1.0(2026111137) Apple VALID・内部/外部IN_BETA_TESTING、既存3群の関連付けを確認。[配布記録](../RELEASE_20261113_CONSOLE_LED.md)。実機確認は所有者の後続テスト。
