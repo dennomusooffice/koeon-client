@@ -186,9 +186,9 @@ def main() -> int:
     )
     require(
         'applicationId = "com.dennomuso.koeon"' in gradle
-        and 'versionCode = 25' in gradle
-        and 'versionName = "1.0.24"' in gradle,
-        "ANDROID_1_0_24_IDENTITY_VERSION_CONTRACT",
+        and 'versionCode = 26' in gradle
+        and 'versionName = "1.0.25"' in gradle,
+        "ANDROID_1_0_25_IDENTITY_VERSION_CONTRACT",
     )
     require(
         "KOEON_API_BASE_URL" in gradle
