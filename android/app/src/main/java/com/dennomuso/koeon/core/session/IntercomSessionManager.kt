@@ -822,6 +822,15 @@ class IntercomSessionManager(
         )) }
     }
 
+    fun setOutputVolume(level: Int) {
+        val maximum = systemAudioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL).coerceAtLeast(0)
+        systemAudioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, level.coerceIn(0, maximum), AudioManager.FLAG_SHOW_UI)
+        _state.update { it.copy(diagnostics = it.diagnostics.copy(
+            outputVolume = systemAudioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL),
+            outputVolumeMax = maximum,
+        )) }
+    }
+
     fun setInputGainMode(mode: InputGainMode) {
         devicePreferences.edit().putString("input_gain_mode", mode.name).apply()
         gainProcessor.setMode(mode)

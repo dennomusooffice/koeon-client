@@ -1,6 +1,7 @@
 import SwiftUI
 import MediaPlayer
 import UIKit
+import AVFoundation
 
 struct RootView: View {
     @EnvironmentObject private var session: IntercomSessionController
@@ -35,6 +36,9 @@ struct RootView: View {
     @State private var lcdChoiceIndex = 0
     @State private var lcdMenuLevel = 0
     @State private var lcdConfirmYes = false
+    @State private var pendingOutputVolume: Float = 0
+    @State private var lcdVolumeError = false
+    @State private var lcdVolumeView = MPVolumeView(frame: .zero)
     @State private var showQRScanner = false
     @State private var inviteInput = ""
     @State private var pttTouchEdgeGate = AppPttTouchEdgeGate()
@@ -399,7 +403,7 @@ struct RootView: View {
             .init(title: "ボタン色", value: darkKeys ? "ブラック系" : "ホワイト系", choices: ["ホワイト系", "ブラック系"], selected: darkKeys ? 1 : 0, apply: { selectedKeyColor = ["white", "black"][$0] }),
             .init(title: "LCD", value: blueLCD ? "ディープブルー" : "アンバー", choices: ["アンバー", "ディープブルー"], selected: blueLCD ? 1 : 0, apply: { selectedLCDColor = ["amber", "blue"][$0] }),
             .init(title: "ヘッドセットPTT", value: session.pushToTalk.headsetPttEnabled ? "ON" : "OFF", choices: ["OFF", "ON"], selected: session.pushToTalk.headsetPttEnabled ? 1 : 0, apply: { session.setHeadsetPttEnabled($0 == 1) }),
-            .init(title: "出力音量", value: String(format: "%.0f%%", session.audio.outputVolume * 100), action: { lcdMenuLevel = 3 }),
+            .init(title: "出力音量", value: String(format: "%.0f%%", AVAudioSession.sharedInstance().outputVolume * 100), action: { pendingOutputVolume = AVAudioSession.sharedInstance().outputVolume; lcdVolumeError = false; lcdMenuLevel = 3 }),
             .init(title: "アクションボタンPTT", value: session.actionButtonPttEnabled ? "ON" : "OFF", choices: ["OFF", "ON"], selected: session.actionButtonPttEnabled ? 1 : 0, apply: { session.setActionButtonPttEnabled($0 == 1) }),
             .init(title: "送信音声", value: session.selectedAudioPublishProfile.displayName, choices: AudioPublishProfile.allCases.map(\.displayName), selected: AudioPublishProfile.allCases.firstIndex(of: session.selectedAudioPublishProfile) ?? 0, apply: { session.setAudioPublishProfile(AudioPublishProfile.allCases[$0]) }),
             .init(title: "マイクゲイン", value: session.inputGain.snapshot().mode.rawValue, choices: InputGainMode.allCases.map(\.rawValue), selected: InputGainMode.allCases.firstIndex(of: session.inputGain.snapshot().mode) ?? 0, apply: { session.setInputGainMode(InputGainMode.allCases[$0]) }),
@@ -416,6 +420,11 @@ struct RootView: View {
     private func lcdStep(_ direction: Int) {
         if lcdMode == .power || lcdMenuLevel == 2 { lcdConfirmYes = direction > 0; return }
         if lcdMode != .settings { return }
+        if lcdMenuLevel == 3 {
+            pendingOutputVolume = min(1, max(0, (pendingOutputVolume * 20).rounded() / 20 + Float(direction) / 20))
+            lcdVolumeError = false
+            return
+        }
         let entries = lcdSettings
         if lcdMenuLevel == 0 { lcdSettingIndex = (lcdSettingIndex + direction + entries.count) % entries.count }
         else if !entries.isEmpty {
@@ -432,7 +441,13 @@ struct RootView: View {
         let entries = lcdSettings
         guard !entries.isEmpty else { return }
         let item = entries[min(lcdSettingIndex, entries.count - 1)]
-        if lcdMenuLevel == 3 { return }
+        if lcdMenuLevel == 3 {
+            guard let slider = findVolumeSlider(in: lcdVolumeView) else { lcdVolumeError = true; return }
+            slider.setValue(pendingOutputVolume, animated: false)
+            slider.sendActions(for: .valueChanged)
+            lcdMenuLevel = 0
+            return
+        }
         if lcdMenuLevel == 1 { if item.choices.indices.contains(lcdChoiceIndex) { item.apply?(lcdChoiceIndex) }; lcdMenuLevel = 0 }
         else if lcdMenuLevel == 2 { if lcdConfirmYes { item.action?() }; lcdMenuLevel = 0 }
         else if !item.choices.isEmpty { lcdChoiceIndex = item.selected; lcdMenuLevel = 1 }
@@ -443,11 +458,16 @@ struct RootView: View {
         if lcdMode == .settings && lcdMenuLevel > 0 { lcdMenuLevel = 0 }
         else { lcdMode = .normal }
     }
+    private func findVolumeSlider(in view: UIView) -> UISlider? {
+        if let slider = view as? UISlider { return slider }
+        for child in view.subviews { if let slider = findVolumeSlider(in: child) { return slider } }
+        return nil
+    }
     @ViewBuilder private var lcdMenuContent: some View {
         if lcdMode == .power {
             Text("POWER / 電源を切る").font(.caption.monospaced().bold())
             Text("送受信を終了します").font(.title3.bold()).lineLimit(1)
-            Text(lcdConfirmYes ? "NO    ▶ YES" : "▶ NO    YES").font(.title2.monospaced().bold())
+            LCDYesNoSelector(yes: lcdConfirmYes)
             Text("外周で選択 · 中央/確定で決定").font(.caption2)
         } else if lcdMode == .settings {
             let entries = lcdSettings
@@ -456,10 +476,11 @@ struct RootView: View {
                 Text("SETTINGS  \(lcdSettingIndex + 1)/\(entries.count)").font(.caption.monospaced().bold())
                 Text(item.title).font(.title2.monospaced().bold()).lineLimit(1)
                 if lcdMenuLevel == 3 {
-                    SystemVolumeControl().frame(height: 34)
-                    Text("スライダーまたは端末の音量ボタン").font(.caption2).lineLimit(1)
+                    Text(String(repeating: "■", count: min(10, Int((pendingOutputVolume * 10).rounded()))) + String(repeating: "-", count: max(0, 10 - Int((pendingOutputVolume * 10).rounded())))).font(.system(size: 20, weight: .bold, design: .monospaced)).lineLimit(1)
+                        .background(ConsoleVolumeHost(view: lcdVolumeView).opacity(0.02).allowsHitTesting(false))
+                    Text(String(format: "%.0f%%  ·  \(lcdVolumeError ? "音量操作を再試行" : "外周で調整、中央/確定で反映")", pendingOutputVolume * 100)).font(.caption2).lineLimit(1)
                 } else if lcdMenuLevel == 1 { Text(item.choices.indices.contains(lcdChoiceIndex) ? "▶ \(item.choices[lcdChoiceIndex])" : item.value).font(.title3.bold()).lineLimit(1) }
-                else if lcdMenuLevel == 2 { Text(lcdConfirmYes ? "NO    ▶ YES" : "▶ NO    YES").font(.title2.monospaced().bold()) }
+                else if lcdMenuLevel == 2 { LCDYesNoSelector(yes: lcdConfirmYes) }
                 else { Text(item.value).font(.title3).lineLimit(1) }
                 Text(lcdMenuLevel == 3 ? "音量を調整 · 取消で戻る" : lcdMenuLevel == 0 ? "外周: 項目  中央/確定: 選択" : "外周: 値  中央/確定: 決定").font(.caption2).lineLimit(1)
                 Text("取消: \(lcdMenuLevel == 0 ? "終了" : "戻る")").font(.caption2)
@@ -629,6 +650,28 @@ private struct LCDSettingEntry {
     var apply: ((Int) -> Void)? = nil
     var action: (() -> Void)? = nil
     var confirm = false
+}
+
+private struct LCDYesNoSelector: View {
+    let yes: Bool
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(yes ? " " : "▶").frame(width: 24)
+            Text("NO").frame(width: 52, alignment: .leading)
+            Spacer().frame(width: 18)
+            Text(yes ? "▶" : " ").frame(width: 24)
+            Text("YES").frame(width: 52, alignment: .leading)
+        }
+        .font(.title2.monospaced().bold())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(yes ? "YESを選択" : "NOを選択")
+    }
+}
+
+private struct ConsoleVolumeHost: UIViewRepresentable {
+    let view: MPVolumeView
+    func makeUIView(context: Context) -> MPVolumeView { view }
+    func updateUIView(_ uiView: MPVolumeView, context: Context) {}
 }
 
 private struct LCDWheelPad: View {

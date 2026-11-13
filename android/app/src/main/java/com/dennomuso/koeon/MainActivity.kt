@@ -518,6 +518,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     var menuLevel by remember(lcdMode, lcdEpoch) { mutableStateOf(0) }
     var choiceIndex by remember(lcdMode, lcdEpoch) { mutableStateOf(0) }
     var confirmYes by remember(lcdMode, lcdEpoch) { mutableStateOf(false) }
+    var pendingVolume by remember(lcdMode, lcdEpoch) { mutableStateOf(0) }
     var showBackgroundConsent by remember { mutableStateOf(false) }
     val menuContext = LocalContext.current
     val menuEntries = buildList {
@@ -530,7 +531,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         add(LCDMenuEntry("音量ボタンPTT", state.diagnostics.hardwareVolumePttMode.name, listOf("OFF", "TOGGLE"), if (state.diagnostics.hardwareVolumePttMode == HardwareVolumePttMode.OFF) 0 else 1, onChoice = { manager.setHardwareVolumePttMode(if (it == 0) HardwareVolumePttMode.OFF else HardwareVolumePttMode.TOGGLE) }))
         add(LCDMenuEntry("背景音量PTT", if (state.diagnostics.backgroundVolumePttEnabled) "ON" else "OFF", listOf("OFF", "ON"), if (state.diagnostics.backgroundVolumePttEnabled) 1 else 0, onChoice = { if (it == 1) showBackgroundConsent = true else manager.setBackgroundVolumePttEnabled(false) }))
         if (state.diagnostics.backgroundVolumePttEnabled) add(LCDMenuEntry("背景PTTのOS設定", "決定でOS設定へ", action = { menuContext.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }))
-        add(LCDMenuEntry("受信音量", "${state.diagnostics.outputVolume}/${state.diagnostics.outputVolumeMax}", listOf("− 1段階", "+ 1段階"), 0, onChoice = { manager.adjustOutputVolume(if (it == 0) -1 else 1) }))
+        add(LCDMenuEntry("受信音量", "${state.diagnostics.outputVolume}/${state.diagnostics.outputVolumeMax}", action = { pendingVolume = state.diagnostics.outputVolume; menuLevel = 3 }))
         add(LCDMenuEntry("マイクゲイン", state.diagnostics.inputGain.mode.name, InputGainMode.entries.map { it.name }, InputGainMode.entries.indexOf(state.diagnostics.inputGain.mode), onChoice = { manager.setInputGainMode(InputGainMode.entries[it]) }))
         add(LCDMenuEntry("手動ゲイン dB", "${state.diagnostics.inputGain.manualGainDb}", (-6..24).map { it.toString() }, (state.diagnostics.inputGain.manualGainDb.toInt() + 6).coerceIn(0, 30), onChoice = { manager.setManualInputGain((it - 6).toFloat()) }))
         add(LCDMenuEntry("ゲイン測定", "3秒間測定", action = manager::startInputCalibration))
@@ -546,12 +547,18 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     fun menuStep(direction: Int) {
         if (lcdMode == "power" || menuLevel == 2) { confirmYes = direction > 0; return }
         if (lcdMode != "settings") return
+        if (menuLevel == 3) { pendingVolume = (pendingVolume + direction).coerceIn(0, state.diagnostics.outputVolumeMax.coerceAtLeast(0)); return }
         if (menuLevel == 0) settingIndex = (settingIndex + direction + menuEntries.size) % menuEntries.size
         else { val count = menuEntries[settingIndex.coerceAtMost(menuEntries.lastIndex)].choices.size; if (count > 0) choiceIndex = (choiceIndex + direction + count) % count }
     }
     fun menuSelect() {
         if (lcdMode == "power") { if (confirmYes) manager.leaveAsync(); onLcdModeChange(null); return }
         if (lcdMode != "settings") return
+        if (menuLevel == 3) {
+            manager.setOutputVolume(pendingVolume)
+            menuLevel = 0
+            return
+        }
         val item = menuEntries[settingIndex.coerceAtMost(menuEntries.lastIndex)]
         when (menuLevel) {
             1 -> { if (choiceIndex in item.choices.indices) item.onChoice?.invoke(choiceIndex); menuLevel = 0 }
@@ -593,13 +600,19 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             if (lcdMode == "power") {
                 Text("POWER / 電源を切る", fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold)
                 Text("送受信を終了します", fontSize = 22.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold)
-                Text(if (confirmYes) "NO    ▶ YES" else "▶ NO    YES", fontSize = 24.sp, lineHeight = 30.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                ConsoleYesNoSelector(confirmYes)
                 Text("外周で選択 · 中央/確定で決定", fontSize = 12.sp, lineHeight = 16.sp)
             } else if (lcdMode == "settings") {
                 val item = menuEntries[settingIndex.coerceAtMost(menuEntries.lastIndex)]
                 Text("SETTINGS  ${settingIndex + 1}/${menuEntries.size}", fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold)
                 Text(item.title, fontSize = 22.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(when (menuLevel) { 1 -> item.choices.getOrNull(choiceIndex)?.let { "▶ $it" } ?: item.value; 2 -> if (confirmYes) "NO    ▶ YES" else "▶ NO    YES"; else -> item.value }, fontSize = 20.sp, lineHeight = 25.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (menuLevel == 2) ConsoleYesNoSelector(confirmYes)
+                else if (menuLevel == 3) {
+                    val maximum = state.diagnostics.outputVolumeMax.coerceAtLeast(1)
+                    val filled = ((pendingVolume * 10f / maximum).toInt()).coerceIn(0, 10)
+                    Text("■".repeat(filled) + "-".repeat(10 - filled), fontSize = 20.sp, lineHeight = 25.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
+                    Text("${pendingVolume * 100 / maximum}% · 外周で調整", fontSize = 12.sp, lineHeight = 15.sp)
+                } else Text(if (menuLevel == 1) item.choices.getOrNull(choiceIndex)?.let { "▶ $it" } ?: item.value else item.value, fontSize = 20.sp, lineHeight = 25.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (menuLevel == 0) "外周: 項目  中央/確定: 選択" else "外周: 値  中央/確定: 決定", fontSize = 11.sp, lineHeight = 14.sp)
                 Text("取消: ${if (menuLevel == 0) "終了" else "戻る"}", fontSize = 11.sp, lineHeight = 14.sp)
             } else if (digits != null) {
@@ -775,6 +788,17 @@ private data class LCDMenuEntry(
     val action: (() -> Unit)? = null,
     val confirm: Boolean = false,
 )
+
+@Composable
+private fun ConsoleYesNoSelector(yes: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics { contentDescription = if (yes) "YESを選択" else "NOを選択" }) {
+        Text(if (yes) " " else "▶", modifier = Modifier.width(24.dp), fontSize = 22.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+        Text("NO", modifier = Modifier.width(52.dp), fontSize = 22.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+        Spacer(Modifier.width(18.dp))
+        Text(if (yes) "▶" else " ", modifier = Modifier.width(24.dp), fontSize = 22.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+        Text("YES", modifier = Modifier.width(52.dp), fontSize = 22.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+    }
+}
 
 @Composable
 private fun ConsoleWheelPad(diameter: androidx.compose.ui.unit.Dp, onStep: (Int) -> Unit, onSelect: () -> Unit) {
