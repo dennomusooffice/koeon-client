@@ -619,8 +619,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 translationY = if (inputPressed) 3.dp.toPx() else 0f
             }
             .consoleKeyFace(CircleShape)
-            .background(androidx.compose.ui.graphics.Brush.radialGradient(0f to Color.Transparent, .48f to Color.Transparent, .86f to pttColor.copy(alpha = .24f), 1f to pttColor.copy(alpha = .6f)), CircleShape)
-            .border(5.dp, pttColor.copy(alpha = .8f), CircleShape)
+            .pttLED(pttColor)
             .semantics {
                 contentDescription = "Push to talk, ${pttSemantic.name.replace('_', ' ')}"
                 if (!pttEnabled) disabled()
@@ -1024,13 +1023,26 @@ private fun Modifier.channelLED(blue: Boolean, green: Boolean, red: Boolean = fa
     )
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
     return clip(shape).drawWithContent {
-        // Nested translucent bands diffuse the embedded edge LED toward the centre.
-        for (width in 2..30) {
-            drawRoundRect(brush, cornerRadius = androidx.compose.ui.geometry.CornerRadius(7.dp.toPx()),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width.dp.toPx()), alpha = if (width < 4) .22f else .025f)
+        // The LED line sits inside the key; each stroke spreads equally inward and outward.
+        val inset = 6.dp.toPx()
+        val ledSize = androidx.compose.ui.geometry.Size(size.width - inset * 2, size.height - inset * 2)
+        for (width in 12 downTo 2 step 2) {
+            drawRoundRect(brush, topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = ledSize,
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(5.dp.toPx()),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width.dp.toPx()),
+                alpha = if (width == 2) .85f else .065f)
         }
         drawContent()
     }
+}
+
+private fun Modifier.pttLED(color: Color): Modifier = clip(CircleShape).drawWithContent {
+    val radius = size.minDimension / 2 - 9.dp.toPx()
+    for (width in 18 downTo 2 step 2) {
+        drawCircle(color, radius = radius, style = androidx.compose.ui.graphics.drawscope.Stroke(width.dp.toPx()),
+            alpha = if (width == 2) .85f else .055f)
+    }
+    drawContent()
 }
 
 @Composable

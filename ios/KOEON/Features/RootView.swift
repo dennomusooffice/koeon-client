@@ -440,8 +440,9 @@ struct RootView: View {
         }
         return ZStack {
             Circle().fill(ConsoleKeySurface.face(dark: darkConsole))
-            Circle().fill(RadialGradient(stops: [.init(color: .clear, location: 0.48), .init(color: fill.opacity(0.24), location: 0.86), .init(color: fill.opacity(0.6), location: 1)], center: .center, startRadius: 0, endRadius: diameter / 2))
-            Circle().strokeBorder(fill.opacity(0.8), lineWidth: 5)
+            Circle().stroke(fill.opacity(0.15), lineWidth: 17).blur(radius: 3).padding(9)
+            Circle().stroke(fill.opacity(0.25), lineWidth: 11).blur(radius: 2).padding(9)
+            Circle().stroke(fill.opacity(0.85), lineWidth: 5).padding(9)
             Circle().strokeBorder(ConsoleKeySurface.rim, lineWidth: 1)
             VStack(spacing: 8) {
                 Text("PTT").font(.system(size: 42, weight: .bold)).tracking(3)
@@ -452,6 +453,7 @@ struct RootView: View {
             .foregroundStyle(darkConsole ? Color(white: 0.90) : Color(white: 0.20))
         }
         .frame(width: diameter, height: diameter)
+        .clipShape(Circle())
         .scaleEffect(inputPressed ? 0.97 : 1)
         .offset(y: inputPressed ? 3 : 0)
         .shadow(radius: inputPressed ? 3 : 8, y: inputPressed ? 1 : 4)
@@ -919,10 +921,9 @@ private struct ChannelKeyLED: View {
                 .init(color: red ? .red : blue ? .blue : green ? .green : .clear, location: 1)
             ], startPoint: .leading, endPoint: .trailing)
         ZStack {
-            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.18), lineWidth: 16).blur(radius: 3)
-            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.24), lineWidth: 9).blur(radius: 2)
-            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.32), lineWidth: 5).blur(radius: 1)
-            RoundedRectangle(cornerRadius: 7).strokeBorder(light.opacity(0.8), lineWidth: 1.5)
+            RoundedRectangle(cornerRadius: 5).stroke(light.opacity(0.18), lineWidth: 12).blur(radius: 2).padding(6)
+            RoundedRectangle(cornerRadius: 5).stroke(light.opacity(0.28), lineWidth: 7).blur(radius: 1).padding(6)
+            RoundedRectangle(cornerRadius: 5).stroke(light.opacity(0.85), lineWidth: 1.5).padding(6)
             RoundedRectangle(cornerRadius: 7).strokeBorder(ConsoleKeySurface.rim, lineWidth: 0.7)
         }.clipShape(RoundedRectangle(cornerRadius: 7)).allowsHitTesting(false).accessibilityHidden(true)
     }
