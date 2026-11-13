@@ -516,6 +516,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         cursorOn = true
         if (digits != null && !reduceMotion) while (true) { kotlinx.coroutines.delay(500); cursorOn = !cursorOn }
     }
+    ConsoleSectionDivider("INDICATOR", Color(0xFFE66D9E))
     Card(colors = CardDefaults.cardColors(containerColor = KoeonLcd, contentColor = Color(0xFF382B10)), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().requiredHeight(202.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).border(5.dp, if (LocalConsoleDark.current) Color(0xFF10140E) else Color(0xFFAEB5A6), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
         Column(Modifier.fillMaxSize().padding(12.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(2.dp)), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (digits != null) {
@@ -552,19 +553,18 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             Button(onClick = manager::retryAudioRecovery) { Text("音声を再接続") }
         }
     }
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            ConsoleLamp("PTT", pttColor)
-            ConsoleLamp("RX", if (state.diagnostics.rx.state in setOf(com.dennomuso.koeon.core.ptt.RxState.RX_ACTIVE, com.dennomuso.koeon.core.ptt.RxState.RX_DRAINING) || (state.diagnostics.rx.state != com.dennomuso.koeon.core.ptt.RxState.RX_IDLE && state.receiveLevelDbfs != null)) Color(0xFF328BDF) else Color.Gray.copy(alpha = .4f))
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(70.dp)) { ConsoleLamp("PTT", pttColor) }
+            Box(Modifier.weight(1f)) { ConsoleMeter("TX IN", if (pttSemantic == PttSemanticState.TALKING) state.transmitInputLevelDbfs else null, KoeonSuccess) }
         }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            ConsoleMeter("TX IN", if (pttSemantic == PttSemanticState.TALKING) state.transmitInputLevelDbfs else null, KoeonSuccess)
-            ConsoleMeter("RX", if (state.connectionState == IntercomConnectionState.CONNECTED) state.receiveLevelDbfs else null, Color(0xFF328BDF))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(70.dp)) { ConsoleLamp("RX", if (state.diagnostics.rx.state in setOf(com.dennomuso.koeon.core.ptt.RxState.RX_ACTIVE, com.dennomuso.koeon.core.ptt.RxState.RX_DRAINING) || (state.diagnostics.rx.state != com.dennomuso.koeon.core.ptt.RxState.RX_IDLE && state.receiveLevelDbfs != null)) Color(0xFF328BDF) else Color.Gray.copy(alpha = .4f)) }
+            Box(Modifier.weight(1f)) { ConsoleMeter("RX", if (state.connectionState == IntercomConnectionState.CONNECTED) state.receiveLevelDbfs else null, Color(0xFF328BDF)) }
         }
     }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("CHANNEL SELECT", fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 1.sp)
-        Spacer(Modifier.weight(1f))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ConsoleSectionDivider("CHANNEL SELECT", Color(0xFF64C9E6), Modifier.weight(1f))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.semantics { contentDescription = "10の位：緑、1の位：青" }) {
             Box(Modifier.size(6.dp).background(Color(0xFF37B469), CircleShape))
             Text("TENS", fontSize = 9.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -607,6 +607,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         }
         ConsoleActionKey("取消", digits != null) { resetRejection(); digits = null; pendingChannelId = null }
     }
+    ConsoleSectionDivider("ACTION", if (LocalConsoleDark.current) Color(0xFF8B918D) else Color.Black)
     BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
     val diameter = minOf(maxHeight, maxWidth, 220.dp)
     Box(
@@ -990,6 +991,14 @@ private fun ConsoleOverlay(title: String, close: () -> Unit, content: @Composabl
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
             }
         }
+    }
+}
+
+@Composable
+private fun ConsoleSectionDivider(title: String, ruleColor: Color, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth().semantics { contentDescription = title }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, color = ruleColor, fontSize = 11.sp, lineHeight = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
+        Box(Modifier.weight(1f).height(1.dp).background(ruleColor.copy(alpha = .8f)))
     }
 }
 

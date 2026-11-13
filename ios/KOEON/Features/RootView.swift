@@ -190,6 +190,7 @@ struct RootView: View {
 
     private var joinedView: some View {
         VStack(spacing: 8) {
+            ConsoleSectionDivider(title: "INDICATOR", color: Color(red: 0.90, green: 0.43, blue: 0.62))
             statusCard
             statusLamps
             channelKeys
@@ -200,6 +201,7 @@ struct RootView: View {
             if session.audio.interruption.state == .recoveryFailed {
                 Button("音声を再接続") { session.retryAudioRecovery() }
             }
+            ConsoleSectionDivider(title: "ACTION", color: darkConsole ? Color(white: 0.55) : .black)
             GeometryReader { geometry in
                 pttButton(diameter: min(220, geometry.size.height, geometry.size.width))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -219,9 +221,8 @@ struct RootView: View {
     private var twoDigitActive: Bool { channelDigits != nil ? channelDigitCount == 2 : (currentChannelNumber ?? 0) >= 10 }
     private var channelKeys: some View {
         VStack(spacing: 5) {
-            HStack {
-                Text("CHANNEL SELECT").font(.caption.monospaced())
-                Spacer()
+            HStack(spacing: 6) {
+                ConsoleSectionDivider(title: "CHANNEL SELECT", color: Color(red: 0.39, green: 0.79, blue: 0.90))
                 HStack(spacing: 4) {
                     Circle().fill(Color.green).frame(width: 6, height: 6)
                     Text("TENS")
@@ -407,17 +408,15 @@ struct RootView: View {
     }
 
     private var statusLamps: some View {
-        HStack(spacing: 20) {
-            VStack(alignment: .leading, spacing: 5) {
-                ConsoleLamp(label: "PTT", color: lampColor)
-                ConsoleLamp(label: "RX", color: ([.active, .endPending, .draining].contains(session.rxSnapshot.state) || (session.rxSnapshot.state != .idle && session.room.receiveLevelDbfs != nil)) ? .blue : .gray.opacity(0.5))
-            }
-            VStack {
-                TimelineView(.periodic(from: .now, by: 0.1)) { _ in
-                    VStack {
-                        ConsoleMeter(label: "TX IN", db: session.pttSemanticState == .talking ? session.inputGain.currentLevelDbfs() : nil, color: .green)
-                        ConsoleMeter(label: "RX", db: session.room.receiveLevelDbfs, color: .blue)
-                    }
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            VStack(spacing: 5) {
+                HStack(spacing: 8) {
+                    ConsoleLamp(label: "PTT", color: lampColor).frame(width: 65, alignment: .leading)
+                    ConsoleMeter(label: "TX IN", db: session.pttSemanticState == .talking ? session.inputGain.currentLevelDbfs() : nil, color: .green)
+                }
+                HStack(spacing: 8) {
+                    ConsoleLamp(label: "RX", color: ([.active, .endPending, .draining].contains(session.rxSnapshot.state) || (session.rxSnapshot.state != .idle && session.room.receiveLevelDbfs != nil)) ? .blue : .gray.opacity(0.5)).frame(width: 65, alignment: .leading)
+                    ConsoleMeter(label: "RX", db: session.room.receiveLevelDbfs, color: .blue)
                 }
             }
         }.padding(.vertical, 2)
@@ -882,6 +881,17 @@ private enum ConsoleKeySurface {
     }
     static var rim: LinearGradient {
         LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08), .black.opacity(0.22)], startPoint: .top, endPoint: .bottom)
+    }
+}
+
+private struct ConsoleSectionDivider: View {
+    let title: String
+    let color: Color
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(color).lineLimit(1)
+            Rectangle().fill(color.opacity(0.8)).frame(height: 1)
+        }.accessibilityElement(children: .ignore).accessibilityLabel(title)
     }
 }
 
