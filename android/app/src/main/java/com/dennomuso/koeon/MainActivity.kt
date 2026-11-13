@@ -997,8 +997,11 @@ private fun ConsoleOverlay(title: String, close: () -> Unit, content: @Composabl
 @Composable
 private fun ConsoleSectionDivider(title: String, ruleColor: Color, modifier: Modifier = Modifier) {
     Row(modifier.fillMaxWidth().semantics { contentDescription = title }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(title, color = ruleColor, fontSize = 11.sp, lineHeight = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
-        Box(Modifier.weight(1f).height(1.dp).background(ruleColor.copy(alpha = .8f)))
+        Text(title, color = ruleColor, fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
+        Box(Modifier.weight(1f).height(3.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(2.dp))
+            .background(androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(ruleColor, ruleColor.copy(alpha = .85f), ruleColor.copy(alpha = .55f))))) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = .22f)))
+        }
     }
 }
 

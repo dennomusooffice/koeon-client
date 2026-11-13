@@ -889,8 +889,10 @@ private struct ConsoleSectionDivider: View {
     let color: Color
     var body: some View {
         HStack(spacing: 6) {
-            Text(title).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(color).lineLimit(1)
-            Rectangle().fill(color.opacity(0.8)).frame(height: 1)
+            Text(title).font(.system(size: 11, weight: .semibold, design: .monospaced)).tracking(1).foregroundStyle(color).lineLimit(1)
+            Capsule().fill(LinearGradient(colors: [color, color.opacity(0.85), color.opacity(0.55)], startPoint: .leading, endPoint: .trailing))
+                .frame(height: 3)
+                .overlay(alignment: .top) { Capsule().fill(.white.opacity(0.22)).frame(height: 1) }
         }.accessibilityElement(children: .ignore).accessibilityLabel(title)
     }
 }
