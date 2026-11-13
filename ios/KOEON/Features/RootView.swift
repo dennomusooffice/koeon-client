@@ -4,7 +4,20 @@ import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var session: IntercomSessionController
-    @AppStorage("consoleDarkMode") private var darkConsole = false
+    @AppStorage("consoleDarkMode") private var legacyDarkConsole = false
+    @AppStorage("consoleBodyColor") private var selectedBodyColor = "legacy"
+    @AppStorage("consoleKeyColor") private var selectedKeyColor = "legacy"
+    @AppStorage("consoleLCDColor") private var selectedLCDColor = "amber"
+    private var bodyColorID: String { selectedBodyColor == "legacy" ? (legacyDarkConsole ? "black" : "white") : selectedBodyColor }
+    private var darkConsole: Bool { bodyColorID != "white" }
+    private var darkKeys: Bool { selectedKeyColor == "legacy" ? darkConsole : selectedKeyColor == "black" }
+    private var blueLCD: Bool { selectedLCDColor == "blue" }
+    private var chassisColor: Color { switch bodyColorID {
+        case "black": Color(red: 0.11, green: 0.12, blue: 0.11)
+        case "burgundy": Color(red: 0.32, green: 0.14, blue: 0.19)
+        case "navy": Color(red: 0.09, green: 0.17, blue: 0.27)
+        default: Color(red: 0.96, green: 0.96, blue: 0.94)
+    } }
     @State private var showPowerConfirmation = false
     @State private var showMembers = false
     @State private var showChannels = false
@@ -36,7 +49,8 @@ struct RootView: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(darkConsole ? Color(red: 0.11, green: 0.12, blue: 0.11) : Color(red: 0.96, green: 0.96, blue: 0.94))
+            .background(chassisColor)
+            .environment(\.colorScheme, darkConsole ? .dark : .light)
             .toolbar(.hidden, for: .navigationBar)
             .confirmationDialog("接続を終了しますか？", isPresented: $showPowerConfirmation) {
                 Button("POWER OFF · 接続終了", role: .destructive) { Task { await session.leave(powerOff: true) } }
@@ -194,17 +208,18 @@ struct RootView: View {
             statusCard
             statusLamps
             channelKeys
-            if session.needsRuntimeRecovery {
-                Button("接続を再試行") { session.retryRuntimeRecovery() }
-                    .disabled(session.isRestoringRuntime || session.isLoading)
-            }
-            if session.audio.interruption.state == .recoveryFailed {
-                Button("音声を再接続") { session.retryAudioRecovery() }
-            }
             ConsoleSectionDivider(title: "ACTION", color: darkConsole ? Color(white: 0.55) : .black, dark: darkConsole)
             GeometryReader { geometry in
-                pttButton(diameter: min(220, geometry.size.height, geometry.size.width))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                let diameter = min(220, geometry.size.height, geometry.size.width - 100)
+                let keyWidth = max(44, min(96, (geometry.size.width - diameter) / 2 - 6))
+                let keyHeight = min(90, geometry.size.height / 2 - 4)
+                ZStack {
+                    CornerMockButton("LOG", corner: .topLeading, dark: darkKeys, width: keyWidth, height: keyHeight, action: mockLog).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    CornerMockButton("AI", corner: .topTrailing, dark: darkKeys, width: keyWidth, height: keyHeight, action: mockAI).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    CornerMockButton("MODE", corner: .bottomLeading, dark: darkKeys, width: keyWidth, height: keyHeight, action: mockMode).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    CornerMockButton("Fn", corner: .bottomTrailing, dark: darkKeys, width: keyWidth, height: keyHeight, action: mockFn).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    pttButton(diameter: diameter)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
@@ -249,7 +264,10 @@ struct RootView: View {
                     .accessibilityValue(keyDigits.ones == number && keyDigits.tens == number ? "1の位・10の位" : keyDigits.ones == number ? "1の位" : keyDigits.tens == number ? "10の位" : "消灯")
                 }
             }
-            HStack {
+            HStack(spacing: 0) {
+                Button("※", action: mockMark).frame(width: 52).accessibilityIdentifier("mock.mark")
+                Spacer(minLength: 4)
+                HStack(spacing: 8) {
                 Button("2桁") { resetChannelRejection(); pendingChannelID = nil; channelDigitCount = 2; channelDigits = "" }.disabled(!channelSelectionEnabled)
                     .overlay(ChannelKeyLED(blue: false, green: twoDigitActive))
                 Button("確定") {
@@ -264,6 +282,9 @@ struct RootView: View {
                     }
                 }.disabled(!ChannelSwitchPolicy.canConfirm(entry: channelDigits, count: channelDigitCount, named: pendingChannelID != nil && candidateChannel != nil) || !channelSelectionEnabled)
                 Button("取消") { cancelChannelEntry() }.disabled(channelDigits == nil)
+                }
+                Spacer(minLength: 4)
+                Button("#", action: mockHash).frame(width: 52).accessibilityIdentifier("mock.hash")
             }.frame(minHeight: 44)
 
         }
@@ -396,13 +417,16 @@ struct RootView: View {
                 Spacer(minLength: 4)
                 Text(ConsoleVersion.label).lineLimit(1)
             }.font(.caption2)
-            if warningActive { Text(session.lastError ?? "音声中断 · 詳細はDiagnostics").font(.caption2).lineLimit(1) }
+            if session.needsRuntimeRecovery { Text("接続の再試行が必要 · Settings").font(.caption2).lineLimit(1) }
+            else if session.audio.interruption.state == .recoveryFailed { Text("音声の再接続が必要 · Settings").font(.caption2).lineLimit(1) }
+            else if warningActive { Text(session.lastError ?? "音声中断 · 詳細はDiagnostics").font(.caption2).lineLimit(1) }
         }
-        .foregroundStyle(Color(red: 0.18, green: 0.12, blue: 0.03))
-        .tint(Color(red: 0.18, green: 0.12, blue: 0.03))
+        .foregroundStyle(blueLCD ? .white : Color(red: 0.18, green: 0.12, blue: 0.03))
+        .tint(blueLCD ? .white : Color(red: 0.18, green: 0.12, blue: 0.03))
         .padding(12)
         .frame(height: 218)
-        .background((darkConsole ? Color(red: 0.76, green: 0.55, blue: 0.24) : Color(red: 0.94, green: 0.75, blue: 0.40)).gradient, in: RoundedRectangle(cornerRadius: 6))
+        .clipped()
+        .background(LinearGradient(colors: blueLCD ? [Color(red: 0.07, green: 0.23, blue: 0.61), Color(red: 0.04, green: 0.14, blue: 0.37)] : [darkConsole ? Color(red: 0.76, green: 0.55, blue: 0.24) : Color(red: 0.94, green: 0.75, blue: 0.40), Color(red: 0.84, green: 0.61, blue: 0.27)], startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: 6))
         .padding(5)
         .background(darkConsole ? Color(white: 0.10) : Color(white: 0.69), in: RoundedRectangle(cornerRadius: 10))
     }
@@ -438,7 +462,7 @@ struct RootView: View {
         case .ready: "mic.fill"
         }
         return ZStack {
-            Circle().fill(ConsoleKeySurface.face(dark: darkConsole))
+            Circle().fill(ConsoleKeySurface.face(dark: darkKeys))
             Circle().stroke(fill.opacity(0.15), lineWidth: 17).blur(radius: 3).padding(9)
             Circle().stroke(fill.opacity(0.25), lineWidth: 11).blur(radius: 2).padding(9)
             Circle().stroke(fill.opacity(0.85), lineWidth: 5).padding(9)
@@ -449,7 +473,7 @@ struct RootView: View {
                 Text(consoleStatus)
                     .font(.title3.bold())
             }
-            .foregroundStyle(darkConsole ? Color(white: 0.90) : Color(white: 0.20))
+            .foregroundStyle(darkKeys ? Color(white: 0.90) : Color(white: 0.20))
         }
         .frame(width: diameter, height: diameter)
         .clipShape(Circle())
@@ -473,6 +497,13 @@ struct RootView: View {
         .allowsHitTesting(!rxOnly && session.canPressPTT && channelDigits == nil)
     }
 
+    private func mockLog() {}
+    private func mockAI() {}
+    private func mockFn() {}
+    private func mockMode() {}
+    private func mockMark() {}
+    private func mockHash() {}
+
     private func switchRelative(_ direction: Int, current: String) {
         guard let target = ChannelSwitchPolicy.adjacent(session.fixture?.channels ?? [], currentId: current, direction: direction) else { return }
         stageChannel(target)
@@ -490,7 +521,10 @@ struct RootView: View {
 
 private struct SettingsView: View {
     @State private var resetConfirmation = false
-    @AppStorage("consoleDarkMode") private var darkConsole = false
+    @AppStorage("consoleDarkMode") private var legacyDarkConsole = false
+    @AppStorage("consoleBodyColor") private var bodyColor = "legacy"
+    @AppStorage("consoleKeyColor") private var keyColor = "legacy"
+    @AppStorage("consoleLCDColor") private var lcdColor = "amber"
     @EnvironmentObject private var session: IntercomSessionController
     @Environment(\.dismiss) private var dismiss
 
@@ -498,12 +532,31 @@ private struct SettingsView: View {
         NavigationStack {
             List {
                 Section("外観") {
-                    Picker("本体モード", selection: $darkConsole) {
-                        Text("ライト · ホワイト").tag(false)
-                        Text("ダーク · ブラック").tag(true)
-                    }.pickerStyle(.segmented)
+                    Picker("本体色", selection: $bodyColor) {
+                        if bodyColor == "legacy" { Text(legacyDarkConsole ? "ブラック" : "ホワイト").tag("legacy") }
+                        Text("ホワイト").tag("white")
+                        Text("ブラック").tag("black")
+                        Text("バーガンディー").tag("burgundy")
+                        Text("ネイビー").tag("navy")
+                    }
+                    Picker("ボタン色", selection: $keyColor) {
+                        if keyColor == "legacy" { Text("本体色に合わせる（従来設定）").tag("legacy") }
+                        Text("ホワイト系").tag("white")
+                        Text("ブラック系").tag("black")
+                    }
+                    Picker("LCD", selection: $lcdColor) {
+                        Text("アンバー").tag("amber")
+                        Text("ディープブルー").tag("blue")
+                    }
                     Text(ConsoleVersion.label).font(.caption)
                     Text("メーターは音声の強さを表示します。端末の音量設定とは別です。「—」は計測なし。").font(.caption)
+                }
+                if session.needsRuntimeRecovery {
+                    Button("接続を再試行") { session.retryRuntimeRecovery() }
+                        .disabled(session.isRestoringRuntime || session.isLoading)
+                }
+                if session.audio.interruption.state == .recoveryFailed {
+                    Button("音声を再接続") { session.retryAudioRecovery() }
                 }
                 Section("ヘッドセットPTT") {
                     Toggle("Headset PTT Button", isOn: Binding(get: { session.pushToTalk.headsetPttEnabled }, set: { session.setHeadsetPttEnabled($0) }))
@@ -859,14 +912,67 @@ private enum ConsoleVersion {
     }
 }
 
+private enum CornerPosition { case topLeading, topTrailing, bottomLeading, bottomTrailing }
+
+private struct CornerKeyShape: Shape {
+    let corner: CornerPosition
+    func path(in rect: CGRect) -> Path {
+        let w = rect.width, h = rect.height, r: CGFloat = 10, cut = min(35, w * 0.48, h * 0.48)
+        let flipX = corner == .topTrailing || corner == .bottomTrailing
+        let flipY = corner == .bottomLeading || corner == .bottomTrailing
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + (flipX ? w - x : x), y: rect.minY + (flipY ? h - y : y)) }
+        var p = Path()
+        p.move(to: point(r, 0)); p.addLine(to: point(w-r, 0)); p.addQuadCurve(to: point(w, r), control: point(w, 0))
+        p.addLine(to: point(w, h-cut)); p.addQuadCurve(to: point(w-cut, h), control: point(w-cut, h-cut))
+        p.addLine(to: point(r, h)); p.addQuadCurve(to: point(0, h-r), control: point(0, h))
+        p.addLine(to: point(0, r)); p.addQuadCurve(to: point(r, 0), control: point(0, 0)); p.closeSubpath()
+        return p
+    }
+}
+
+private struct CornerMockButton: View {
+    let label: String
+    let corner: CornerPosition
+    let dark: Bool
+    let width: CGFloat
+    let height: CGFloat
+    let action: () -> Void
+    init(_ label: String, corner: CornerPosition, dark: Bool, width: CGFloat, height: CGFloat, action: @escaping () -> Void) {
+        self.label = label; self.corner = corner; self.dark = dark; self.width = width; self.height = height; self.action = action
+    }
+    var body: some View {
+        Button(action: action) { Text(label).font(.system(size: 14, weight: .bold, design: .rounded)).frame(width: width, height: height) }
+            .buttonStyle(CornerMockStyle(corner: corner, dark: dark))
+            .accessibilityIdentifier("mock.\(label.lowercased())")
+            .accessibilityLabel(label)
+    }
+}
+
+private struct CornerMockStyle: ButtonStyle {
+    let corner: CornerPosition
+    let dark: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = CornerKeyShape(corner: corner)
+        configuration.label.foregroundStyle(dark ? Color(white: 0.92) : Color(white: 0.18))
+            .background(ConsoleKeySurface.face(dark: dark), in: shape)
+            .overlay(shape.stroke(ConsoleKeySurface.rim, lineWidth: 1))
+            .contentShape(shape)
+            .shadow(color: .black.opacity(0.22), radius: 2, y: configuration.isPressed ? 0 : 3)
+            .offset(y: configuration.isPressed ? 2 : 0)
+    }
+}
+
 private struct ConsoleKeyStyle: ButtonStyle {
-    @Environment(\.colorScheme) private var scheme
+    @AppStorage("consoleDarkMode") private var legacyDarkConsole = false
+    @AppStorage("consoleBodyColor") private var bodyColor = "legacy"
+    @AppStorage("consoleKeyColor") private var keyColor = "legacy"
+    private var darkKeys: Bool { keyColor == "legacy" ? (bodyColor == "legacy" ? legacyDarkConsole : bodyColor != "white") : keyColor == "black" }
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .frame(minWidth: 44, minHeight: 44)
-            .foregroundStyle(scheme == .dark ? Color(white: 0.9) : Color(white: 0.2))
+            .foregroundStyle(darkKeys ? Color(white: 0.9) : Color(white: 0.2))
             .padding(.horizontal, 4)
-            .background(ConsoleKeySurface.face(dark: scheme == .dark), in: RoundedRectangle(cornerRadius: 7))
+            .background(ConsoleKeySurface.face(dark: darkKeys), in: RoundedRectangle(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(ConsoleKeySurface.rim, lineWidth: 1))
             .shadow(color: .black.opacity(0.22), radius: 2, y: configuration.isPressed ? 0 : 3)
             .offset(y: configuration.isPressed ? 2 : 0)
@@ -876,8 +982,8 @@ private struct ConsoleKeyStyle: ButtonStyle {
 private enum ConsoleKeySurface {
     static func face(dark: Bool) -> LinearGradient {
         LinearGradient(colors: dark
-            ? [Color(red: 0.45, green: 0.47, blue: 0.46).opacity(0.4), Color(white: 0.20).opacity(0.25), Color(white: 0.15).opacity(0.44)]
-            : [.white.opacity(0.5), Color(red: 0.80, green: 0.82, blue: 0.81).opacity(0.25), Color(white: 0.88).opacity(0.4)], startPoint: .top, endPoint: .bottom)
+            ? [Color(red: 0.28, green: 0.30, blue: 0.29).opacity(0.90), Color(white: 0.18).opacity(0.87), Color(white: 0.11).opacity(0.92)]
+            : [Color(red: 0.99, green: 0.99, blue: 0.96).opacity(0.90), Color(red: 0.83, green: 0.85, blue: 0.84).opacity(0.82), Color(white: 0.91).opacity(0.88)], startPoint: .top, endPoint: .bottom)
     }
     static var rim: LinearGradient {
         LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08), .black.opacity(0.22)], startPoint: .top, endPoint: .bottom)

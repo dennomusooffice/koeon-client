@@ -91,6 +91,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -176,6 +177,10 @@ class MainActivity : ComponentActivity() {
 }
 
 private val LocalConsoleDark = staticCompositionLocalOf { false }
+private val LocalKeyDark = staticCompositionLocalOf { false }
+private val LocalLcdBlue = staticCompositionLocalOf { false }
+private val ConsoleKeyInk: Color @Composable get() = if (LocalKeyDark.current) Color(0xFFF0F0ED) else Color(0xFF292D2B)
+private val ConsoleLcdInk: Color @Composable get() = if (LocalLcdBlue.current) Color(0xFFF7FAFF) else Color(0xFF382B10)
 private val KoeonBlack: Color @Composable get() = MaterialTheme.colorScheme.background
 private val KoeonPanel: Color @Composable get() = MaterialTheme.colorScheme.surfaceVariant
 private val KoeonLcd: Color @Composable get() = if (LocalConsoleDark.current) Color(0xFFC28D3D) else Color(0xFFF0C472)
@@ -188,23 +193,27 @@ private fun KoeonApp(manager: IntercomSessionManager) {
     val state by manager.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val preferences = remember { context.getSharedPreferences("console_appearance", android.content.Context.MODE_PRIVATE) }
-    var dark by remember { mutableStateOf(preferences.getBoolean("dark", false)) }
+    var bodyColor by remember { mutableStateOf(preferences.getString("body_color", null) ?: if (preferences.getBoolean("dark", false)) "black" else "white") }
+    var keyColor by remember { mutableStateOf(preferences.getString("key_color", null) ?: if (bodyColor == "white") "white" else "black") }
+    var lcdColor by remember { mutableStateOf(preferences.getString("lcd_color", "amber") ?: "amber") }
+    val dark = bodyColor != "white"
+    val body = when (bodyColor) { "burgundy" -> Color(0xFF522431); "navy" -> Color(0xFF172C46); "black" -> Color(0xFF1C1F1D); else -> Color(0xFFF4F4EF) }
     val colors = if (dark) darkColorScheme(
-        background = Color(0xFF1C1E1C), surface = Color(0xFF22271F), surfaceVariant = Color(0xFF30352D),
+        background = body, surface = body, surfaceVariant = body.copy(alpha = .8f),
         onBackground = Color(0xFFE2E4DF), onSurface = Color(0xFFE2E4DF), onSurfaceVariant = Color(0xFFE2E4DF),
         primary = Color(0xFF8CBDEC), onPrimary = Color(0xFF142B3F), error = Color(0xFFFF9B91),
     ) else lightColorScheme(
-        background = Color(0xFFF5F5F0), surface = Color(0xFFF8F9F4), surfaceVariant = Color(0xFFE5E8DF),
+        background = body, surface = body, surfaceVariant = Color(0xFFE5E8DF),
         onBackground = Color(0xFF343B39), onSurface = Color(0xFF343B39), onSurfaceVariant = Color(0xFF343B39),
         primary = Color(0xFF23699E), onPrimary = Color.White, error = Color(0xFFB32626),
     )
     MaterialTheme(colorScheme = colors) {
-        CompositionLocalProvider(LocalConsoleDark provides dark) {
+        CompositionLocalProvider(LocalConsoleDark provides dark, LocalKeyDark provides (keyColor == "black"), LocalLcdBlue provides (lcdColor == "blue")) {
             Surface(color = KoeonBlack, contentColor = MaterialTheme.colorScheme.onBackground, modifier = Modifier.fillMaxSize()) {
-                KoeonScreen(state, manager, dark) { value ->
-                    dark = value
-                    preferences.edit().putBoolean("dark", value).apply()
-                }
+                KoeonScreen(state, manager, bodyColor, keyColor, lcdColor,
+                    { bodyColor = it; preferences.edit().putString("body_color", it).apply() },
+                    { keyColor = it; preferences.edit().putString("key_color", it).apply() },
+                    { lcdColor = it; preferences.edit().putString("lcd_color", it).apply() })
             }
         }
     }
@@ -212,7 +221,7 @@ private fun KoeonApp(manager: IntercomSessionManager) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager, dark: Boolean, onDarkChange: (Boolean) -> Unit) {
+private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager, bodyColor: String, keyColor: String, lcdColor: String, onBodyChange: (String) -> Unit, onKeyChange: (String) -> Unit, onLcdChange: (String) -> Unit) {
     var overlay by remember { mutableStateOf<String?>(null) }
     var powerConfirm by remember { mutableStateOf(false) }
     var resetConfirm by remember { mutableStateOf(false) }
@@ -231,9 +240,11 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
         ConsoleOverlay(title, { overlay = null }) {
             if (title == "Settings") {
                 Text("外観", fontWeight = FontWeight.Bold)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (dark) "ダーク · ブラック" else "ライト · ホワイト", modifier = Modifier.weight(1f))
-                    Switch(checked = dark, onCheckedChange = onDarkChange, modifier = Modifier.semantics { contentDescription = "ダークモード" })
+                ConsoleAppearancePicker("本体色", bodyColor, listOf("white" to "ホワイト", "black" to "ブラック", "burgundy" to "バーガンディー", "navy" to "ネイビー"), onBodyChange)
+                ConsoleAppearancePicker("ボタン色", keyColor, listOf("white" to "ホワイト系", "black" to "ブラック系"), onKeyChange)
+                ConsoleAppearancePicker("LCD", lcdColor, listOf("amber" to "アンバー", "blue" to "ディープブルー"), onLcdChange)
+                if (state.diagnostics.audioAvailabilityState in setOf(AudioAvailabilityState.INTERRUPTED, AudioAvailabilityState.RECOVERY_FAILED)) {
+                    Button(onClick = manager::retryAudioRecovery) { Text("音声を再接続") }
                 }
                 Text("v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", fontSize = 12.sp, lineHeight = 15.sp)
                 Text("メーターは音声の強さを表示します。端末の音量設定とは別です。「—」は計測なし。", fontSize = 12.sp, lineHeight = 15.sp)
@@ -290,10 +301,10 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
                 Text("KOEON", fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp, maxLines = 1)
             }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface), onClick = { powerConfirm = true }, enabled = (state.join != null || state.channelSwitchSource != null) && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "POWER" }) { androidx.compose.material3.Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(26.dp)) }
+            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = ConsoleKeyInk), onClick = { powerConfirm = true }, enabled = (state.join != null || state.channelSwitchSource != null) && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "POWER" }) { androidx.compose.material3.Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(26.dp)) }
             Spacer(Modifier.weight(1f))
-            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface), onClick = { overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
-            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface), onClick = { overlay = "Diagnostics" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Diagnostics" }) { Text("DIAG", fontSize = 10.sp, lineHeight = 13.sp) }
+            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = ConsoleKeyInk), onClick = { overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
+            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = ConsoleKeyInk), onClick = { overlay = "Diagnostics" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Diagnostics" }) { Text("DIAG", fontSize = 10.sp, lineHeight = 13.sp) }
         }
         }
 
@@ -517,7 +528,8 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         if (digits != null && !reduceMotion) while (true) { kotlinx.coroutines.delay(500); cursorOn = !cursorOn }
     }
     ConsoleSectionDivider("INDICATOR", Color(0xFFE66D9E))
-    Card(colors = CardDefaults.cardColors(containerColor = KoeonLcd, contentColor = Color(0xFF382B10)), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().requiredHeight(202.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).border(5.dp, if (LocalConsoleDark.current) Color(0xFF10140E) else Color(0xFFAEB5A6), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
+    val lcdBrush = if (LocalLcdBlue.current) androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color(0xFF123A9C), Color(0xFF09245F))) else androidx.compose.ui.graphics.Brush.verticalGradient(listOf(KoeonLcd, KoeonLcd.copy(alpha = .88f)))
+    Card(colors = CardDefaults.cardColors(containerColor = Color.Transparent, contentColor = ConsoleLcdInk), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().requiredHeight(202.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).background(lcdBrush).border(5.dp, if (LocalConsoleDark.current) Color(0xFF10140E) else Color(0xFFAEB5A6), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
         Column(Modifier.fillMaxSize().padding(12.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(2.dp)), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (digits != null) {
                 Text("CHANNEL EDIT / 変更元 → 変更先", fontSize = 11.sp, lineHeight = 14.sp)
@@ -527,7 +539,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                     repeat(digitCount) { index ->
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(digits!!.getOrNull(index)?.toString() ?: "_", fontSize = 30.sp, lineHeight = 33.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
-                            Box(Modifier.width(20.dp).height(3.dp).background(if (pendingChannelId == null && index == digits!!.length && cursorOn) Color(0xFF382B10) else Color.Transparent))
+                            Box(Modifier.width(20.dp).height(3.dp).background(if (pendingChannelId == null && index == digits!!.length && cursorOn) ConsoleLcdInk else Color.Transparent))
                         }
                     }
                     Text(if (entryRejected) "未割当" else if (digits!!.length < digitCount && pendingChannelId == null) "入力中" else "確定待ち", fontSize = 14.sp, lineHeight = 17.sp)
@@ -546,11 +558,6 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                 Text(if (state.error != null) state.error!! else "AUDIO: ${state.diagnostics.audioRoute}", modifier = Modifier.weight(1f), fontSize = 9.sp, lineHeight = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
                 Text("v${BuildConfig.VERSION_NAME}", fontSize = 9.sp, lineHeight = 12.sp, maxLines = 1, softWrap = false)
             }
-        }
-    }
-    if (!audioReady) {
-        if (state.diagnostics.audioAvailabilityState in setOf(AudioAvailabilityState.INTERRUPTED, AudioAvailabilityState.RECOVERY_FAILED)) {
-            Button(onClick = manager::retryAudioRecovery) { Text("音声を再接続") }
         }
     }
     Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -589,7 +596,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp),
                     colors = androidx.compose.material3.ButtonDefaults.buttonColors(
                         containerColor = Color.Transparent, disabledContainerColor = Color.Transparent,
-                        contentColor = if (LocalConsoleDark.current) Color(0xFFE6E6E6) else Color(0xFF333333),
+                        contentColor = ConsoleKeyInk,
                         disabledContentColor = Color(0xFF888888)
                     ),
                     modifier = Modifier.weight(1f).height(44.dp).consoleKeyFace().channelLED(keyDigits.ones == number, keyDigits.tens == number, flashRed).semantics { stateDescription = if (keyDigits.ones == number && keyDigits.tens == number) "1の位・10の位" else if (keyDigits.ones == number) "1の位" else if (keyDigits.tens == number) "10の位" else "消灯" },
@@ -599,17 +606,29 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
             }
         }
     }
-    Row(Modifier.fillMaxWidth().height(48.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+        ConsoleMockKey("※", "mock.mark")
+        Spacer(Modifier.weight(1f))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ConsoleActionKey("2桁", channelEnabled, twoDigitActive) { resetRejection(); pendingChannelId = null; digitCount = 2; digits = "" }
         ConsoleActionKey("確定", channelEnabled && ChannelSwitchPolicy.canConfirm(digits, digitCount, pendingChannelId != null && candidate != null)) {
             if (candidate != null) { manager.switchChannel(candidate.id); resetRejection(); digits = null; pendingChannelId = null }
             else { entryRejected = true; rejectionSequence += 1; view.announceForAccessibility("未割り当てのCHです") }
         }
         ConsoleActionKey("取消", digits != null) { resetRejection(); digits = null; pendingChannelId = null }
+        }
+        Spacer(Modifier.weight(1f))
+        ConsoleMockKey("#", "mock.hash")
     }
     ConsoleSectionDivider("ACTION", if (LocalConsoleDark.current) Color(0xFF8B918D) else Color.Black)
     BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-    val diameter = minOf(maxHeight, maxWidth, 220.dp)
+    val diameter = minOf(maxHeight, maxWidth - 100.dp, 220.dp)
+    val mockWidth = ((maxWidth - diameter) / 2 - 6.dp).coerceIn(44.dp, 96.dp)
+    val mockHeight = minOf(90.dp, maxHeight / 2 - 4.dp)
+    ConsoleMockCorner("LOG", "mock.log", mockWidth, mockHeight, false, false, Modifier.align(Alignment.TopStart))
+    ConsoleMockCorner("AI", "mock.ai", mockWidth, mockHeight, true, false, Modifier.align(Alignment.TopEnd))
+    ConsoleMockCorner("MODE", "mock.mode", mockWidth, mockHeight, false, true, Modifier.align(Alignment.BottomStart))
+    ConsoleMockCorner("Fn", "mock.fn", mockWidth, mockHeight, true, true, Modifier.align(Alignment.BottomEnd))
     Box(
         modifier = Modifier
             .size(diameter)
@@ -665,8 +684,8 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("PTT", color = MaterialTheme.colorScheme.onSurface, fontSize = 42.sp, lineHeight = 45.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
-            Text(pttSemantic.name.replace('_', ' '), color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Text("PTT", color = ConsoleKeyInk, fontSize = 42.sp, lineHeight = 45.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
+            Text(pttSemantic.name.replace('_', ' '), color = ConsoleKeyInk, fontSize = 14.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         }
     }
 
@@ -995,6 +1014,19 @@ private fun ConsoleOverlay(title: String, close: () -> Unit, content: @Composabl
 }
 
 @Composable
+private fun ConsoleAppearancePicker(title: String, selected: String, choices: List<Pair<String, String>>, onSelect: (String) -> Unit) {
+    Text(title, fontWeight = FontWeight.Bold)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        choices.forEach { (id, label) ->
+            Button(onClick = { onSelect(id) }, modifier = Modifier.weight(1f).height(44.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = if (id == selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+            ) { Text(label, fontSize = if (choices.size == 4) 10.sp else 12.sp, maxLines = 1) }
+        }
+    }
+}
+
+@Composable
 private fun ConsoleSectionDivider(title: String, ruleColor: Color, modifier: Modifier = Modifier) {
     Row(modifier.fillMaxWidth().semantics { contentDescription = title }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(title, color = if (LocalConsoleDark.current) Color(0xFFD2D5D0) else Color(0xFF333631), fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 1.sp, fontWeight = FontWeight.SemiBold, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, maxLines = 1)
@@ -1083,7 +1115,7 @@ private fun ConsoleEmblem() {
 
 @Composable
 private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = false, onClick: () -> Unit) {
-    val dark = LocalConsoleDark.current
+    val dark = LocalKeyDark.current
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
     Button(
         onClick = onClick, enabled = enabled, shape = shape,
@@ -1098,10 +1130,45 @@ private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = f
 }
 
 @Composable
+private fun ConsoleMockKey(label: String, id: String) {
+    Button(onClick = {}, modifier = Modifier.width(52.dp).height(44.dp).consoleKeyFace().semantics { testTag = id; contentDescription = label },
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
+        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = ConsoleKeyInk)) {
+        Text(label, fontSize = 18.sp)
+    }
+}
+
+private fun cornerMockShape(flipX: Boolean, flipY: Boolean): androidx.compose.ui.graphics.Shape = androidx.compose.foundation.shape.GenericShape { size, _ ->
+    val w = size.width; val h = size.height; val r = 10f; val cut = minOf(35f, w * .48f, h * .48f)
+    fun p(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(if (flipX) w - x else x, if (flipY) h - y else y)
+    val a = p(r, 0f); moveTo(a.x, a.y)
+    val b = p(w-r, 0f); lineTo(b.x, b.y)
+    val c = p(w, 0f); val d = p(w, r); quadraticBezierTo(c.x, c.y, d.x, d.y)
+    val e = p(w, h-cut); lineTo(e.x, e.y)
+    val f = p(w-cut, h-cut); val g = p(w-cut, h); quadraticBezierTo(f.x, f.y, g.x, g.y)
+    val i = p(r, h); lineTo(i.x, i.y)
+    val j = p(0f, h); val k = p(0f, h-r); quadraticBezierTo(j.x, j.y, k.x, k.y)
+    val l = p(0f, r); lineTo(l.x, l.y)
+    val m = p(0f, 0f); quadraticBezierTo(m.x, m.y, a.x, a.y); close()
+}
+
+@Composable
+private fun ConsoleMockCorner(label: String, id: String, width: androidx.compose.ui.unit.Dp, height: androidx.compose.ui.unit.Dp,
+    flipX: Boolean, flipY: Boolean, modifier: Modifier = Modifier) {
+    val shape = remember(flipX, flipY) { cornerMockShape(flipX, flipY) }
+    Button(onClick = {}, modifier = modifier.size(width, height).consoleKeyFace(shape).semantics { testTag = id; contentDescription = label },
+        shape = shape, contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
+        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = ConsoleKeyInk)) {
+        Text(label, fontSize = 14.sp, maxLines = 1)
+    }
+}
+
+@Composable
 private fun Modifier.consoleKeyFace(shape: androidx.compose.ui.graphics.Shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)): Modifier {
     val face = androidx.compose.ui.graphics.Brush.verticalGradient(
-        if (LocalConsoleDark.current) listOf(Color(0x667D8981), Color(0x40303733), Color(0x70242A27))
-        else listOf(Color(0x80FFFFFF), Color(0x40CBD2CE), Color(0x66DEE3DF))
+        if (LocalKeyDark.current) listOf(Color(0xE64A4E4B), Color(0xDE2E3330), Color(0xEB1C211E))
+        else listOf(Color(0xE6FFFFFA), Color(0xD1D3D9D6), Color(0xE0E8EDE9))
     )
     val rim = androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.White.copy(alpha = .75f), Color.White.copy(alpha = .08f), Color.Black.copy(alpha = .22f)))
     return drawBehind {
