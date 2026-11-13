@@ -190,7 +190,7 @@ struct RootView: View {
 
     private var joinedView: some View {
         VStack(spacing: 8) {
-            ConsoleSectionDivider(title: "INDICATOR", color: Color(red: 0.90, green: 0.43, blue: 0.62))
+            ConsoleSectionDivider(title: "INDICATOR", color: Color(red: 0.90, green: 0.43, blue: 0.62), dark: darkConsole)
             statusCard
             statusLamps
             channelKeys
@@ -201,7 +201,7 @@ struct RootView: View {
             if session.audio.interruption.state == .recoveryFailed {
                 Button("音声を再接続") { session.retryAudioRecovery() }
             }
-            ConsoleSectionDivider(title: "ACTION", color: darkConsole ? Color(white: 0.55) : .black)
+            ConsoleSectionDivider(title: "ACTION", color: darkConsole ? Color(white: 0.55) : .black, dark: darkConsole)
             GeometryReader { geometry in
                 pttButton(diameter: min(220, geometry.size.height, geometry.size.width))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -222,7 +222,7 @@ struct RootView: View {
     private var channelKeys: some View {
         VStack(spacing: 5) {
             HStack(spacing: 6) {
-                ConsoleSectionDivider(title: "CHANNEL SELECT", color: Color(red: 0.39, green: 0.79, blue: 0.90))
+                ConsoleSectionDivider(title: "CHANNEL SELECT", color: Color(red: 0.39, green: 0.79, blue: 0.90), dark: darkConsole)
                 HStack(spacing: 4) {
                     Circle().fill(Color.green).frame(width: 6, height: 6)
                     Text("TENS")
@@ -887,9 +887,10 @@ private enum ConsoleKeySurface {
 private struct ConsoleSectionDivider: View {
     let title: String
     let color: Color
+    let dark: Bool
     var body: some View {
         HStack(spacing: 6) {
-            Text(title).font(.system(size: 11, weight: .semibold, design: .monospaced)).tracking(1).foregroundStyle(color).lineLimit(1)
+            Text(title).font(.system(size: 11, weight: .semibold, design: .monospaced)).tracking(1).foregroundStyle(dark ? Color(white: 0.84) : Color(white: 0.20)).lineLimit(1)
             Capsule().fill(LinearGradient(colors: [color, color.opacity(0.85), color.opacity(0.55)], startPoint: .leading, endPoint: .trailing))
                 .frame(height: 3)
                 .overlay(alignment: .top) { Capsule().fill(.white.opacity(0.22)).frame(height: 1) }
