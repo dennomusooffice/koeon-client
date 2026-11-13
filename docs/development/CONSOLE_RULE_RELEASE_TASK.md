@@ -5,3 +5,5 @@
 受入れ: 両OSビルド、parity/diff、固定SHAの署名候補、Android GitHub prerelease asset digest、iOS Apple VALID/内部2群・外部1群のアクセス確認。実機レイアウトと音声可聴再生は別の未完了受入れ。App Store/Play一般公開、mainマージ、端末操作は対象外。
 
 STOP: SHA/版/hash/配布状態/残件をIssue/PR/配布記録へ保存。候補失敗時は公開しない。Codex利用枠残量3%以下では新規テストを停止する。
+
+結果: ソース4cec07eからAndroid1.0.27(28) GitHub prerelease公開、iOS1.0(2026111301) Apple VALID・内部/外部IN_BETA_TESTING・既存3群のbuild関係確認。[配布記録](../RELEASE_20261113_CONSOLE_RULE.md)。今回版の実機画面は未確認。
