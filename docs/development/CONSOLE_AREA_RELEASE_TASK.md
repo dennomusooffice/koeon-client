@@ -5,3 +5,5 @@
 受入れ: 固定ソースのparity、Android/iOS署名候補・版・entitlement・APK digest、Apple VALIDと既存3テスター群のbuild関係を確認。実機の画面受入れと音声可聴再生は別結果として保留。App Store/Play一般公開、mainマージ、今回の実機操作は対象外。
 
 STOP: SHA/版/hash/配布状態/残件をIssue/PR/配布記録へ保存。候補検証失敗またはCodex利用枠残量3%以下では新しいテストを停止。
+
+結果: ソースd487fd0からAndroid1.0.26(27) GitHub prerelease公開、iOS1.0(2026111138) Apple VALID・内部/外部IN_BETA_TESTING・既存3群のbuild関係確認。[配布記録](../RELEASE_20261113_CONSOLE_AREAS.md)。配布版実機レイアウトは未確認。
