@@ -19,4 +19,6 @@
 
 配布済みiOS `2026111303`では、出力音量がLCD内のOSスライダーになり、外周/中心/確定で値を変更・決定できなかった。原因はLCDメニューの音量ページに通常の`MPVolumeView`を置き、メニュー確定処理を空にしていたこと。YES/NOは選択中の文字列全体を差し替えていたため、カーソル位置によってNOの表示位置が変わった。修正は両OSで保留値と10目盛のモノクロ表示、固定幅YES/NO部品を導入。Androidは既存のVOICE_CALLストリームを1回だけ設定する経路を追加。iOSはユーザーの確定操作でLCD内に配置した`MPVolumeView`のスライダーへ反映する。iOSのOS音量は[Appleの仕様](https://developer.apple.com/documentation/avfaudio/avaudiosession/outputvolume)上アプリが直接所有しないため、実機での反映確認が必須。
 
-修正版はAndroid `1.0.30 (31)`、iOS `1.0 (2026111304)`を予定。実機での目盛り変化、確定後の実音量、取消時の非反映、左右固定の確認は未実施。DIAG、通話音声の経路と認可条件は変更しない。
+修正版ソース`69cd858351d915e9810abadd32c5eaf6ad1874a3`からAndroid `1.0.30 (31)`、iOS `1.0 (2026111304)`を配信。Androidは[GitHub prerelease](https://github.com/dennomusooffice/koeon-client/releases/tag/android-v1.0.30-31)で公開し、署名APK SHA256 `4d361a0c16b3e32d3a952dd74542d2798cb04b1979488fe61cb32dc777161945`を照合。iOSはTestFlightへアップロードし、Apple処理`VALID`、内部/外部`IN_BETA_TESTING`、内部2/外部1グループすべてで当該ビルドの割り当てを確認。Android Kotlinビルド・223件の既存ユニットテスト・Lint、iOS Simulatorビルド・既存279件成功/1件スキップ、機能同等性契約に成功。実機での目盛り変化、確定後の実音量、取消時の非反映、左右固定の確認は未実施。DIAG、通話音声の経路と認可条件は変更しない。所有者指定のCodex利用枠残量1%に達したため追加テストは停止。
+
+iOSの反映処理は`MPVolumeView`内の`UISlider`へ利用者の確定操作から値変更イベントを送る。Appleはシステム音量の直接変更APIを公開しておらず、`AVAudioSession.outputVolume`は読取専用であるため、OS版・音声経路ごとの実音量への反映は未確認。実機で反映しない場合、設定完了扱いにせずOS所有の音量操作へ設計を戻す必要がある。
