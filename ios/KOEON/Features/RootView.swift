@@ -30,6 +30,11 @@ struct RootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showDiagnostics = false
     @State private var showSettings = false
+    @State private var lcdMode: LCDConsoleMode = .normal
+    @State private var lcdSettingIndex = 0
+    @State private var lcdChoiceIndex = 0
+    @State private var lcdMenuLevel = 0
+    @State private var lcdConfirmYes = false
     @State private var showQRScanner = false
     @State private var inviteInput = ""
     @State private var pttTouchEdgeGate = AppPttTouchEdgeGate()
@@ -116,6 +121,7 @@ struct RootView: View {
             if selectedBodyColor == "legacy" { selectedBodyColor = inheritedBody }
             if selectedKeyColor == "legacy" { selectedKeyColor = inheritedBody == "white" ? "white" : "black" }
         }
+        .onChange(of: session.isJoined) { _, joined in if !joined { lcdMode = .normal } }
         .tint(KOEONPalette.cyan)
         .preferredColorScheme(darkConsole ? .dark : .light)
     }
@@ -223,7 +229,8 @@ struct RootView: View {
                     CornerMockButton("AI", corner: .topTrailing, dark: darkKeys, width: keyWidth, height: keyHeight, action: mockAI).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     CornerMockButton("MODE", corner: .bottomLeading, dark: darkKeys, width: keyWidth, height: keyHeight, action: mockMode).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                     CornerMockButton("Fn", corner: .bottomTrailing, dark: darkKeys, width: keyWidth, height: keyHeight, action: mockFn).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    pttButton(diameter: diameter)
+                    if lcdMode == .normal { pttButton(diameter: diameter) }
+                    else { LCDWheelPad(diameter: diameter, dark: darkKeys, onStep: lcdStep, onSelect: lcdSelect) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -276,6 +283,7 @@ struct RootView: View {
                 Button("2桁") { resetChannelRejection(); pendingChannelID = nil; channelDigitCount = 2; channelDigits = "" }.disabled(!channelSelectionEnabled)
                     .overlay(ChannelKeyLED(blue: false, green: twoDigitActive))
                 Button("確定") {
+                    if lcdMode != .normal { lcdSelect(); return }
                     guard channelSelectionEnabled else { return }
                     if let target = candidateChannel {
                         Task { await session.switchChannel(to: target.id) }
@@ -285,8 +293,8 @@ struct RootView: View {
                         channelRejectionSequence += 1
                         UIAccessibility.post(notification: .announcement, argument: "未割り当てのCHです")
                     }
-                }.disabled(!ChannelSwitchPolicy.canConfirm(entry: channelDigits, count: channelDigitCount, named: pendingChannelID != nil && candidateChannel != nil) || !channelSelectionEnabled)
-                Button("取消") { cancelChannelEntry() }.disabled(channelDigits == nil)
+                }.disabled(lcdMode == .normal && (!ChannelSwitchPolicy.canConfirm(entry: channelDigits, count: channelDigitCount, named: pendingChannelID != nil && candidateChannel != nil) || !channelSelectionEnabled))
+                Button("取消") { if lcdMode != .normal { lcdCancel() } else { cancelChannelEntry() } }.disabled(lcdMode == .normal && channelDigits == nil)
                 }
                 Spacer(minLength: 4)
                 Button("#", action: mockHash).frame(width: 52).accessibilityIdentifier("mock.hash")
@@ -317,7 +325,7 @@ struct RootView: View {
         }
         .onChange(of: session.joinedSession?.channel.id) { _, _ in cancelChannelEntry() }
     }
-    private var channelSelectionEnabled: Bool { session.operationalState == .active && session.pttSnapshot.state == .idle && !session.hapticSnapshot.inputPressed }
+    private var channelSelectionEnabled: Bool { lcdMode == .normal && session.operationalState == .active && session.pttSnapshot.state == .idle && !session.hapticSnapshot.inputPressed }
     private func numberedChannel(_ number: Int) -> Channel? {
         ChannelSwitchPolicy.numbered(session.fixture?.channels ?? [], number: number)
     }
@@ -328,13 +336,13 @@ struct RootView: View {
                 Text("KOEON").font(.system(size: 10, weight: .bold)).tracking(2).lineLimit(1)
             }.frame(maxWidth: .infinity).padding(.horizontal, 108)
             HStack {
-            Button { showPowerConfirmation = true } label: {
+            Button { if session.isJoined { openPowerLCD() } else { showPowerConfirmation = true } } label: {
                 Image(systemName: "power").frame(width: 44, height: 44)
             }
             .accessibilityLabel("POWER")
             .disabled(!session.isPoweredOn && !session.isJoined)
             Spacer()
-            Button { showSettings = true } label: {
+            Button { if session.isJoined { openSettingsLCD() } else { showSettings = true } } label: {
                 VStack { Image(systemName: "slider.horizontal.3"); Text("SETTINGS").font(.system(size: 8)) }.frame(minWidth: 44, minHeight: 44)
             }.accessibilityLabel("Settings")
             Button { showDiagnostics = true } label: {
@@ -375,9 +383,96 @@ struct RootView: View {
     private func resetChannelRejection() { channelEntryRejected = false; channelRejectionSequence = 0; channelFlashRed = false }
     private func cancelChannelEntry() { resetChannelRejection(); channelDigits = nil; pendingChannelID = nil }
 
+    private func openSettingsLCD() {
+        guard session.pttSnapshot.state == .idle else { return }
+        cancelChannelEntry()
+        lcdMode = .settings; lcdMenuLevel = 0; lcdSettingIndex = 0
+    }
+    private func openPowerLCD() {
+        guard session.pttSnapshot.state == .idle else { return }
+        cancelChannelEntry()
+        lcdMode = .power; lcdConfirmYes = false
+    }
+    private var lcdSettings: [LCDSettingEntry] {
+        var entries: [LCDSettingEntry] = [
+            .init(title: "本体色", value: ["white": "ホワイト", "black": "ブラック", "burgundy": "バーガンディー", "navy": "ネイビー"][bodyColorID] ?? "ホワイト", choices: ["ホワイト", "ブラック", "バーガンディー", "ネイビー"], selected: ["white", "black", "burgundy", "navy"].firstIndex(of: bodyColorID) ?? 0, apply: { selectedBodyColor = ["white", "black", "burgundy", "navy"][$0] }),
+            .init(title: "ボタン色", value: darkKeys ? "ブラック系" : "ホワイト系", choices: ["ホワイト系", "ブラック系"], selected: darkKeys ? 1 : 0, apply: { selectedKeyColor = ["white", "black"][$0] }),
+            .init(title: "LCD", value: blueLCD ? "ディープブルー" : "アンバー", choices: ["アンバー", "ディープブルー"], selected: blueLCD ? 1 : 0, apply: { selectedLCDColor = ["amber", "blue"][$0] }),
+            .init(title: "ヘッドセットPTT", value: session.pushToTalk.headsetPttEnabled ? "ON" : "OFF", choices: ["OFF", "ON"], selected: session.pushToTalk.headsetPttEnabled ? 1 : 0, apply: { session.setHeadsetPttEnabled($0 == 1) }),
+            .init(title: "出力音量", value: String(format: "%.0f%%", session.audio.outputVolume * 100), action: { lcdMenuLevel = 3 }),
+            .init(title: "アクションボタンPTT", value: session.actionButtonPttEnabled ? "ON" : "OFF", choices: ["OFF", "ON"], selected: session.actionButtonPttEnabled ? 1 : 0, apply: { session.setActionButtonPttEnabled($0 == 1) }),
+            .init(title: "送信音声", value: session.selectedAudioPublishProfile.displayName, choices: AudioPublishProfile.allCases.map(\.displayName), selected: AudioPublishProfile.allCases.firstIndex(of: session.selectedAudioPublishProfile) ?? 0, apply: { session.setAudioPublishProfile(AudioPublishProfile.allCases[$0]) }),
+            .init(title: "マイクゲイン", value: session.inputGain.snapshot().mode.rawValue, choices: InputGainMode.allCases.map(\.rawValue), selected: InputGainMode.allCases.firstIndex(of: session.inputGain.snapshot().mode) ?? 0, apply: { session.setInputGainMode(InputGainMode.allCases[$0]) }),
+            .init(title: "手動ゲイン dB", value: String(format: "%.0f", session.inputGain.snapshot().manualGainDb), choices: (-6...24).map(String.init), selected: max(0, min(30, Int(session.inputGain.snapshot().manualGainDb.rounded()) + 6)), apply: { session.setManualInputGain(Float($0 - 6)) }),
+            .init(title: "ゲイン測定", value: "3秒間測定", action: { session.startInputGainCalibration() }),
+            .init(title: "ゲイン履歴消去", value: "YESで消去", action: { session.resetInputGainProfile() }, confirm: true),
+            .init(title: "端末ユーザー変更", value: "YESで変更", action: { if !session.isLoading && session.pttSnapshot.state == .idle { Task { await session.resetDeviceAssignment() }; lcdMode = .normal } }, confirm: true),
+            .init(title: "レベルメーター", value: "送受信音量の強さを表示")
+        ]
+        if session.needsRuntimeRecovery { entries.append(.init(title: "接続を再試行", value: "決定で再試行", action: { session.retryRuntimeRecovery() })) }
+        if session.audio.interruption.state == .recoveryFailed { entries.append(.init(title: "音声を再接続", value: "決定で再接続", action: { session.retryAudioRecovery() })) }
+        return entries
+    }
+    private func lcdStep(_ direction: Int) {
+        if lcdMode == .power || lcdMenuLevel == 2 { lcdConfirmYes = direction > 0; return }
+        if lcdMode != .settings { return }
+        let entries = lcdSettings
+        if lcdMenuLevel == 0 { lcdSettingIndex = (lcdSettingIndex + direction + entries.count) % entries.count }
+        else if !entries.isEmpty {
+            let count = entries[min(lcdSettingIndex, entries.count - 1)].choices.count
+            if count > 0 { lcdChoiceIndex = (lcdChoiceIndex + direction + count) % count }
+        }
+    }
+    private func lcdSelect() {
+        if lcdMode == .power {
+            if lcdConfirmYes { Task { await session.leave(powerOff: true) } }
+            lcdMode = .normal; return
+        }
+        guard lcdMode == .settings else { return }
+        let entries = lcdSettings
+        guard !entries.isEmpty else { return }
+        let item = entries[min(lcdSettingIndex, entries.count - 1)]
+        if lcdMenuLevel == 3 { return }
+        if lcdMenuLevel == 1 { if item.choices.indices.contains(lcdChoiceIndex) { item.apply?(lcdChoiceIndex) }; lcdMenuLevel = 0 }
+        else if lcdMenuLevel == 2 { if lcdConfirmYes { item.action?() }; lcdMenuLevel = 0 }
+        else if !item.choices.isEmpty { lcdChoiceIndex = item.selected; lcdMenuLevel = 1 }
+        else if item.confirm { lcdConfirmYes = false; lcdMenuLevel = 2 }
+        else { item.action?() }
+    }
+    private func lcdCancel() {
+        if lcdMode == .settings && lcdMenuLevel > 0 { lcdMenuLevel = 0 }
+        else { lcdMode = .normal }
+    }
+    @ViewBuilder private var lcdMenuContent: some View {
+        if lcdMode == .power {
+            Text("POWER / 電源を切る").font(.caption.monospaced().bold())
+            Text("送受信を終了します").font(.title3.bold()).lineLimit(1)
+            Text(lcdConfirmYes ? "NO    ▶ YES" : "▶ NO    YES").font(.title2.monospaced().bold())
+            Text("外周で選択 · 中央/確定で決定").font(.caption2)
+        } else if lcdMode == .settings {
+            let entries = lcdSettings
+            if !entries.isEmpty {
+                let item = entries[min(lcdSettingIndex, entries.count - 1)]
+                Text("SETTINGS  \(lcdSettingIndex + 1)/\(entries.count)").font(.caption.monospaced().bold())
+                Text(item.title).font(.title2.monospaced().bold()).lineLimit(1)
+                if lcdMenuLevel == 3 {
+                    SystemVolumeControl().frame(height: 34)
+                    Text("スライダーまたは端末の音量ボタン").font(.caption2).lineLimit(1)
+                } else if lcdMenuLevel == 1 { Text(item.choices.indices.contains(lcdChoiceIndex) ? "▶ \(item.choices[lcdChoiceIndex])" : item.value).font(.title3.bold()).lineLimit(1) }
+                else if lcdMenuLevel == 2 { Text(lcdConfirmYes ? "NO    ▶ YES" : "▶ NO    YES").font(.title2.monospaced().bold()) }
+                else { Text(item.value).font(.title3).lineLimit(1) }
+                Text(lcdMenuLevel == 3 ? "音量を調整 · 取消で戻る" : lcdMenuLevel == 0 ? "外周: 項目  中央/確定: 選択" : "外周: 値  中央/確定: 決定").font(.caption2).lineLimit(1)
+                Text("取消: \(lcdMenuLevel == 0 ? "終了" : "戻る")").font(.caption2)
+            }
+        }
+    }
+
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let digits = channelDigits {
+            if lcdMode != .normal {
+                lcdMenuContent
+                Spacer(minLength: 0)
+            } else if let digits = channelDigits {
                 Text("CHANNEL CHANGE / CH変更").font(.caption.monospaced().bold())
                 Text("FROM / 現在").font(.caption2)
                 Text(session.joinedSession?.channel.name ?? "—").font(.title2.monospaced().bold()).lineLimit(1)
@@ -521,6 +616,75 @@ struct RootView: View {
             Text(value).multilineTextAlignment(.trailing)
         }
         .font(.subheadline)
+    }
+}
+
+private enum LCDConsoleMode { case normal, settings, power }
+
+private struct LCDSettingEntry {
+    let title: String
+    let value: String
+    var choices: [String] = []
+    var selected = 0
+    var apply: ((Int) -> Void)? = nil
+    var action: (() -> Void)? = nil
+    var confirm = false
+}
+
+private struct LCDWheelPad: View {
+    let diameter: CGFloat
+    let dark: Bool
+    let onStep: (Int) -> Void
+    let onSelect: () -> Void
+    @State private var previousAngle: Double?
+    @State private var accumulated = 0.0
+    @State private var startedOnRim = false
+    var body: some View {
+        ZStack {
+            Circle().fill(ConsoleKeySurface.face(dark: dark))
+            Circle().stroke(Color.cyan.opacity(0.20), lineWidth: 17).blur(radius: 4).padding(9)
+            Circle().stroke(Color.cyan.opacity(0.85), lineWidth: 5).padding(9)
+            Circle().strokeBorder(ConsoleKeySurface.rim, lineWidth: 1)
+            VStack(spacing: 7) {
+                Text("SELECT").font(.system(size: 25, weight: .bold, design: .rounded))
+                Text("↺  TURN  ↻").font(.caption.monospaced())
+                Text("PRESS · 決定").font(.caption.bold())
+            }.foregroundStyle(dark ? Color(white: 0.92) : Color(white: 0.18))
+        }
+        .frame(width: diameter, height: diameter)
+        .contentShape(Circle())
+        .gesture(DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let center = diameter / 2
+                if previousAngle == nil {
+                    let distance = hypot(value.startLocation.x - center, value.startLocation.y - center)
+                    startedOnRim = distance >= diameter * 0.31
+                    previousAngle = atan2(Double(value.location.y - center), Double(value.location.x - center))
+                    return
+                }
+                guard startedOnRim, let previousAngle else { return }
+                let angle = atan2(Double(value.location.y - center), Double(value.location.x - center))
+                accumulated += atan2(sin(angle - previousAngle), cos(angle - previousAngle))
+                self.previousAngle = angle
+                while abs(accumulated) >= .pi / 6 {
+                    let direction = accumulated > 0 ? 1 : -1
+                    onStep(direction)
+                    accumulated -= Double(direction) * .pi / 6
+                }
+            }
+            .onEnded { value in
+                if !startedOnRim && hypot(value.translation.width, value.translation.height) < 18 { onSelect() }
+                previousAngle = nil; accumulated = 0; startedOnRim = false
+            })
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("lcd.wheel")
+        .accessibilityLabel("設定ホイール")
+        .accessibilityHint("外周を時計回りで次、反時計回りで前、中央を押して決定")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onSelect() }
+        .accessibilityAdjustableAction { direction in
+            switch direction { case .increment: onStep(1); case .decrement: onStep(-1); @unknown default: break }
+        }
     }
 }
 

@@ -92,6 +92,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTag
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -223,14 +226,12 @@ private fun KoeonApp(manager: IntercomSessionManager) {
 @Composable
 private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager, bodyColor: String, keyColor: String, lcdColor: String, onBodyChange: (String) -> Unit, onKeyChange: (String) -> Unit, onLcdChange: (String) -> Unit) {
     var overlay by remember { mutableStateOf<String?>(null) }
-    var powerConfirm by remember { mutableStateOf(false) }
+    var lcdMode by remember { mutableStateOf<String?>(null) }
+    var lcdEpoch by remember { mutableStateOf(0) }
     var resetConfirm by remember { mutableStateOf(false) }
-    if (powerConfirm) androidx.compose.material3.AlertDialog(
-        onDismissRequest = { powerConfirm = false }, title = { Text("接続を終了しますか？") },
-        text = { Text("送受信を終了します。利用登録は保持します。") },
-        confirmButton = { Button(onClick = { powerConfirm = false; manager.leaveAsync() }) { Text("POWER OFF") } },
-        dismissButton = { Button(onClick = { powerConfirm = false }) { Text("取消") } },
-    )
+    LaunchedEffect(state.join, state.channelSwitchSource) {
+        if (state.join == null && state.channelSwitchSource == null) lcdMode = null
+    }
     if (resetConfirm) androidx.compose.material3.AlertDialog(
         onDismissRequest = { resetConfirm = false }, title = { Text("この端末のユーザーを変更しますか？") },
         confirmButton = { Button(onClick = { resetConfirm = false; overlay = null; manager.resetDeviceAssignment() }) { Text("変更") } },
@@ -301,9 +302,9 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
                 Text("KOEON", fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp, maxLines = 1)
             }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = ConsoleKeyInk), onClick = { powerConfirm = true }, enabled = (state.join != null || state.channelSwitchSource != null) && !state.loading, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "POWER" }) { androidx.compose.material3.Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(26.dp)) }
+            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = ConsoleKeyInk), onClick = { lcdEpoch += 1; lcdMode = "power" }, enabled = (state.join != null || state.channelSwitchSource != null) && !state.loading && state.ptt.state == PttState.IDLE, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "POWER" }) { androidx.compose.material3.Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(26.dp)) }
             Spacer(Modifier.weight(1f))
-            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = ConsoleKeyInk), onClick = { overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
+            Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = ConsoleKeyInk), onClick = { if (state.join != null || state.channelSwitchSource != null) { lcdEpoch += 1; lcdMode = "settings" } else overlay = "Settings" }, enabled = !state.diagnostics.appTouchPressed && state.ptt.state == PttState.IDLE, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Settings" }) { Text("SET", fontSize = 10.sp, lineHeight = 13.sp) }
             Button(colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent, contentColor = ConsoleKeyInk), onClick = { overlay = "Diagnostics" }, enabled = !state.diagnostics.appTouchPressed, shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp), modifier = Modifier.size(48.dp).consoleKeyFace().semantics { contentDescription = "Diagnostics" }) { Text("DIAG", fontSize = 10.sp, lineHeight = 13.sp) }
         }
         }
@@ -406,7 +407,7 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
             ) { Text("この端末のユーザーを変更") }
             }
         } else {
-            SessionPanel(state, manager)
+            SessionPanel(state, manager, lcdMode, lcdEpoch, { lcdMode = it }, bodyColor, keyColor, lcdColor, onBodyChange, onKeyChange, onLcdChange)
         }
 
         state.error?.takeIf { state.join == null && state.channelSwitchSource == null }?.let { error ->
@@ -425,7 +426,7 @@ private fun KoeonScreen(state: IntercomUiState, manager: IntercomSessionManager,
 }
 
 @Composable
-private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSessionManager) {
+private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSessionManager, lcdMode: String?, lcdEpoch: Int, onLcdModeChange: (String?) -> Unit, bodyColor: String, keyColor: String, lcdColor: String, onBodyChange: (String) -> Unit, onKeyChange: (String) -> Unit, onLcdChange: (String) -> Unit) {
     val joined = state.join ?: state.channelSwitchSource ?: return
     val view = LocalView.current
     var inputPressed by remember(joined.sessionId) { mutableStateOf(false) }
@@ -470,7 +471,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     var pendingChannelId by remember(joined.channel.id) { mutableStateOf<String?>(null) }
     var channelListOpen by remember { mutableStateOf(false) }
     val channels = state.fixture?.channels.orEmpty()
-    val channelEnabled = (state.operationalState == OperationalState.ACTIVE || (state.channelSwitchSource != null && state.operationalState == OperationalState.ERROR)) && !state.loading && state.ptt.state == PttState.IDLE && !inputPressed
+    val channelEnabled = lcdMode == null && (state.operationalState == OperationalState.ACTIVE || (state.channelSwitchSource != null && state.operationalState == OperationalState.ERROR)) && !state.loading && state.ptt.state == PttState.IDLE && !inputPressed
     val candidate = pendingChannelId?.let { id -> channels.firstOrNull { it.id == id } }
         ?: digits?.takeIf { it.length == digitCount }?.toIntOrNull()?.let { ChannelSwitchPolicy.numbered(channels, it) }
     fun stageChannel(id: String) {
@@ -479,6 +480,9 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         pendingChannelId = id
         digits = ChannelSwitchPolicy.number(channel.channelNumber)?.toString().orEmpty()
         digitCount = maxOf(1, digits!!.length)
+    }
+    LaunchedEffect(lcdMode, lcdEpoch) {
+        if (lcdMode != null) { resetRejection(); digits = null; pendingChannelId = null }
     }
     LaunchedEffect(digits, pendingChannelId, joined.channel.id, rejectionSequence) {
         if (digits != null) { kotlinx.coroutines.delay(5000); resetRejection(); digits = null; pendingChannelId = null }
@@ -510,6 +514,61 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         PttSemanticState.RECOVERING -> Color(0xFFFFB020)
         PttSemanticState.OFFLINE, PttSemanticState.RX_ONLY -> Color.Gray.copy(alpha = .4f)
     }
+    var settingIndex by remember(lcdMode, lcdEpoch) { mutableStateOf(0) }
+    var menuLevel by remember(lcdMode, lcdEpoch) { mutableStateOf(0) }
+    var choiceIndex by remember(lcdMode, lcdEpoch) { mutableStateOf(0) }
+    var confirmYes by remember(lcdMode, lcdEpoch) { mutableStateOf(false) }
+    var showBackgroundConsent by remember { mutableStateOf(false) }
+    val menuContext = LocalContext.current
+    val menuEntries = buildList {
+        add(LCDMenuEntry("本体色", bodyColor, listOf("ホワイト", "ブラック", "バーガンディー", "ネイビー"), listOf("white", "black", "burgundy", "navy").indexOf(bodyColor).coerceAtLeast(0), onChoice = { onBodyChange(listOf("white", "black", "burgundy", "navy")[it]) }))
+        add(LCDMenuEntry("ボタン色", if (keyColor == "black") "ブラック系" else "ホワイト系", listOf("ホワイト系", "ブラック系"), if (keyColor == "black") 1 else 0, onChoice = { onKeyChange(listOf("white", "black")[it]) }))
+        add(LCDMenuEntry("LCD", if (lcdColor == "blue") "ディープブルー" else "アンバー", listOf("アンバー", "ディープブルー"), if (lcdColor == "blue") 1 else 0, onChoice = { onLcdChange(listOf("amber", "blue")[it]) }))
+        add(LCDMenuEntry("ヘッドセットPTT", if (state.diagnostics.headsetPttEnabled) "ON" else "OFF", listOf("OFF", "ON"), if (state.diagnostics.headsetPttEnabled) 1 else 0, onChoice = { manager.setHeadsetPttEnabled(it == 1) }))
+        add(LCDMenuEntry("ヘッドセット動作", if (state.diagnostics.headsetPttEnabled) state.diagnostics.headsetPttMode.name else "先にPTTをON", if (state.diagnostics.headsetPttEnabled) listOf("TOGGLE", "MOMENTARY") else emptyList(), if (state.diagnostics.headsetPttMode == HeadsetPttMode.TOGGLE) 0 else 1, onChoice = { manager.setHeadsetPttMode(if (it == 0) HeadsetPttMode.TOGGLE else HeadsetPttMode.MOMENTARY) }))
+        add(LCDMenuEntry("送信音声", state.diagnostics.audioBitratePreset.name, AudioBitratePreset.entries.map { it.name }, AudioBitratePreset.entries.indexOf(state.diagnostics.audioBitratePreset), onChoice = { manager.setAudioBitratePreset(AudioBitratePreset.entries[it]) }))
+        add(LCDMenuEntry("音量ボタンPTT", state.diagnostics.hardwareVolumePttMode.name, listOf("OFF", "TOGGLE"), if (state.diagnostics.hardwareVolumePttMode == HardwareVolumePttMode.OFF) 0 else 1, onChoice = { manager.setHardwareVolumePttMode(if (it == 0) HardwareVolumePttMode.OFF else HardwareVolumePttMode.TOGGLE) }))
+        add(LCDMenuEntry("背景音量PTT", if (state.diagnostics.backgroundVolumePttEnabled) "ON" else "OFF", listOf("OFF", "ON"), if (state.diagnostics.backgroundVolumePttEnabled) 1 else 0, onChoice = { if (it == 1) showBackgroundConsent = true else manager.setBackgroundVolumePttEnabled(false) }))
+        if (state.diagnostics.backgroundVolumePttEnabled) add(LCDMenuEntry("背景PTTのOS設定", "決定でOS設定へ", action = { menuContext.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }))
+        add(LCDMenuEntry("受信音量", "${state.diagnostics.outputVolume}/${state.diagnostics.outputVolumeMax}", listOf("− 1段階", "+ 1段階"), 0, onChoice = { manager.adjustOutputVolume(if (it == 0) -1 else 1) }))
+        add(LCDMenuEntry("マイクゲイン", state.diagnostics.inputGain.mode.name, InputGainMode.entries.map { it.name }, InputGainMode.entries.indexOf(state.diagnostics.inputGain.mode), onChoice = { manager.setInputGainMode(InputGainMode.entries[it]) }))
+        add(LCDMenuEntry("手動ゲイン dB", "${state.diagnostics.inputGain.manualGainDb}", (-6..24).map { it.toString() }, (state.diagnostics.inputGain.manualGainDb.toInt() + 6).coerceIn(0, 30), onChoice = { manager.setManualInputGain((it - 6).toFloat()) }))
+        add(LCDMenuEntry("ゲイン測定", "3秒間測定", action = manager::startInputCalibration))
+        add(LCDMenuEntry("ゲイン履歴消去", "YESで消去", action = manager::resetInputGainProfile, confirm = true))
+        if (BuildConfig.DEBUG) {
+            val profileEnabled = state.joined && state.connectionState == IntercomConnectionState.CONNECTED && state.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY && state.ptt.state == PttState.IDLE
+            add(LCDMenuEntry("録音プロファイル", if (profileEnabled) state.diagnostics.audioCaptureProfile.profileLabel() else "READY/IDLE時のみ", if (profileEnabled) AudioCaptureProfile.entries.map { it.profileLabel() } else emptyList(), AudioCaptureProfile.entries.indexOf(state.diagnostics.audioCaptureProfile), onChoice = { manager.setAudioCaptureProfile(AudioCaptureProfile.entries[it]) }))
+        }
+        add(LCDMenuEntry("端末ユーザー変更", "YESで変更", action = { if (!state.loading && state.ptt.state == PttState.IDLE) { manager.resetDeviceAssignment(); onLcdModeChange(null) } }, confirm = true))
+        if (state.diagnostics.audioAvailabilityState in setOf(AudioAvailabilityState.INTERRUPTED, AudioAvailabilityState.RECOVERY_FAILED)) add(LCDMenuEntry("音声を再接続", "決定で再接続", action = manager::retryAudioRecovery))
+        add(LCDMenuEntry("レベルメーター", "音声の強さを表示"))
+    }
+    fun menuStep(direction: Int) {
+        if (lcdMode == "power" || menuLevel == 2) { confirmYes = direction > 0; return }
+        if (lcdMode != "settings") return
+        if (menuLevel == 0) settingIndex = (settingIndex + direction + menuEntries.size) % menuEntries.size
+        else { val count = menuEntries[settingIndex.coerceAtMost(menuEntries.lastIndex)].choices.size; if (count > 0) choiceIndex = (choiceIndex + direction + count) % count }
+    }
+    fun menuSelect() {
+        if (lcdMode == "power") { if (confirmYes) manager.leaveAsync(); onLcdModeChange(null); return }
+        if (lcdMode != "settings") return
+        val item = menuEntries[settingIndex.coerceAtMost(menuEntries.lastIndex)]
+        when (menuLevel) {
+            1 -> { if (choiceIndex in item.choices.indices) item.onChoice?.invoke(choiceIndex); menuLevel = 0 }
+            2 -> { if (confirmYes) item.action?.invoke(); menuLevel = 0 }
+            else -> if (item.choices.isNotEmpty()) { choiceIndex = item.selected.coerceIn(0, item.choices.lastIndex); menuLevel = 1 }
+                    else if (item.confirm) { confirmYes = false; menuLevel = 2 }
+                    else item.action?.invoke()
+        }
+    }
+    fun menuCancel() { if (lcdMode == "settings" && menuLevel > 0) menuLevel = 0 else onLcdModeChange(null) }
+    if (showBackgroundConsent) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { showBackgroundConsent = false },
+        title = { Text("背景の音量ボタンで送信") },
+        text = { Text("Accessibilityサービスで音量ボタンの押下・解放を検出します。参加中は約0.6秒以上の長押しで送信開始・停止を切り替えます。短押しは解放時に音量を1段階調整します。画面内容は取得せず、音量以外のキーを記録・送信しません。背景設定とOSサービスをOFFにすると無効になります。ロック中も誤って押すと送信する場合があります。") },
+        confirmButton = { Button(onClick = { manager.setBackgroundVolumePttEnabled(true); showBackgroundConsent = false }) { Text("同意して有効化") } },
+        dismissButton = { Button(onClick = { showBackgroundConsent = false }) { Text("キャンセル") } },
+    )
     var membersOpen by remember { mutableStateOf(false) }
     if (membersOpen) ConsoleOverlay("参加メンバー", { membersOpen = false }) {
         state.participants.forEach { Text(it, fontSize = 22.sp, lineHeight = 25.sp) }
@@ -531,7 +590,19 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     val lcdBrush = if (LocalLcdBlue.current) androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color(0xFF123A9C), Color(0xFF09245F))) else androidx.compose.ui.graphics.Brush.verticalGradient(listOf(KoeonLcd, KoeonLcd.copy(alpha = .88f)))
     Card(colors = CardDefaults.cardColors(containerColor = Color.Transparent, contentColor = ConsoleLcdInk), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().requiredHeight(202.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).background(lcdBrush).border(5.dp, if (LocalConsoleDark.current) Color(0xFF10140E) else Color(0xFFAEB5A6), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
         Column(Modifier.fillMaxSize().padding(12.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(2.dp)), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            if (digits != null) {
+            if (lcdMode == "power") {
+                Text("POWER / 電源を切る", fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold)
+                Text("送受信を終了します", fontSize = 22.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold)
+                Text(if (confirmYes) "NO    ▶ YES" else "▶ NO    YES", fontSize = 24.sp, lineHeight = 30.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                Text("外周で選択 · 中央/確定で決定", fontSize = 12.sp, lineHeight = 16.sp)
+            } else if (lcdMode == "settings") {
+                val item = menuEntries[settingIndex.coerceAtMost(menuEntries.lastIndex)]
+                Text("SETTINGS  ${settingIndex + 1}/${menuEntries.size}", fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold)
+                Text(item.title, fontSize = 22.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(when (menuLevel) { 1 -> item.choices.getOrNull(choiceIndex)?.let { "▶ $it" } ?: item.value; 2 -> if (confirmYes) "NO    ▶ YES" else "▶ NO    YES"; else -> item.value }, fontSize = 20.sp, lineHeight = 25.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (menuLevel == 0) "外周: 項目  中央/確定: 選択" else "外周: 値  中央/確定: 決定", fontSize = 11.sp, lineHeight = 14.sp)
+                Text("取消: ${if (menuLevel == 0) "終了" else "戻る"}", fontSize = 11.sp, lineHeight = 14.sp)
+            } else if (digits != null) {
                 Text("CHANNEL EDIT / 変更元 → 変更先", fontSize = 11.sp, lineHeight = 14.sp)
                 Text("FROM  ${joined.channel.name}", fontSize = 20.sp, lineHeight = 23.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -611,11 +682,12 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         Spacer(Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ConsoleActionKey("2桁", channelEnabled, twoDigitActive) { resetRejection(); pendingChannelId = null; digitCount = 2; digits = "" }
-        ConsoleActionKey("確定", channelEnabled && ChannelSwitchPolicy.canConfirm(digits, digitCount, pendingChannelId != null && candidate != null)) {
-            if (candidate != null) { manager.switchChannel(candidate.id); resetRejection(); digits = null; pendingChannelId = null }
+        ConsoleActionKey("確定", lcdMode != null || (channelEnabled && ChannelSwitchPolicy.canConfirm(digits, digitCount, pendingChannelId != null && candidate != null))) {
+            if (lcdMode != null) menuSelect()
+            else if (candidate != null) { manager.switchChannel(candidate.id); resetRejection(); digits = null; pendingChannelId = null }
             else { entryRejected = true; rejectionSequence += 1; view.announceForAccessibility("未割り当てのCHです") }
         }
-        ConsoleActionKey("取消", digits != null) { resetRejection(); digits = null; pendingChannelId = null }
+        ConsoleActionKey("取消", lcdMode != null || digits != null) { if (lcdMode != null) menuCancel() else { resetRejection(); digits = null; pendingChannelId = null } }
         }
         Spacer(Modifier.weight(1f))
         ConsoleMockKey("#", "mock.hash")
@@ -629,6 +701,8 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
     ConsoleMockCorner("AI", "mock.ai", mockWidth, mockHeight, true, false, Modifier.align(Alignment.TopEnd))
     ConsoleMockCorner("MODE", "mock.mode", mockWidth, mockHeight, false, true, Modifier.align(Alignment.BottomStart))
     ConsoleMockCorner("Fn", "mock.fn", mockWidth, mockHeight, true, true, Modifier.align(Alignment.BottomEnd))
+    if (lcdMode != null) ConsoleWheelPad(diameter, ::menuStep, ::menuSelect)
+    else
     Box(
         modifier = Modifier
             .size(diameter)
@@ -689,6 +763,72 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
         }
     }
 
+    }
+}
+
+private data class LCDMenuEntry(
+    val title: String,
+    val value: String,
+    val choices: List<String> = emptyList(),
+    val selected: Int = 0,
+    val onChoice: ((Int) -> Unit)? = null,
+    val action: (() -> Unit)? = null,
+    val confirm: Boolean = false,
+)
+
+@Composable
+private fun ConsoleWheelPad(diameter: androidx.compose.ui.unit.Dp, onStep: (Int) -> Unit, onSelect: () -> Unit) {
+    val currentStep by rememberUpdatedState(onStep)
+    val currentSelect by rememberUpdatedState(onSelect)
+    Box(
+        Modifier.size(diameter).consoleKeyFace(CircleShape).pttLED(Color(0xFF54CBE5))
+            .semantics {
+                testTag = "lcd.wheel"
+                contentDescription = "設定ホイール。外周を時計回りで次、反時計回りで前。中央で決定"
+                onClick("決定") { currentSelect(); true }
+                customActions = listOf(
+                    CustomAccessibilityAction("次の項目") { currentStep(1); true },
+                    CustomAccessibilityAction("前の項目") { currentStep(-1); true },
+                )
+            }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+                    val rim = (down.position - center).getDistance() >= minOf(size.width, size.height) * .31f
+                    var previous = kotlin.math.atan2(down.position.y - center.y, down.position.x - center.x)
+                    var accumulated = 0f
+                    var moved = false
+                    down.consume()
+                    while (true) {
+                        val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) {
+                            if (!rim && !moved) currentSelect()
+                            change.consume(); break
+                        }
+                        if ((change.position - down.position).getDistance() > 18.dp.toPx()) moved = true
+                        if (rim) {
+                            val angle = kotlin.math.atan2(change.position.y - center.y, change.position.x - center.x)
+                            accumulated += kotlin.math.atan2(kotlin.math.sin(angle - previous), kotlin.math.cos(angle - previous))
+                            previous = angle
+                            val threshold = (Math.PI / 6).toFloat()
+                            while (kotlin.math.abs(accumulated) >= threshold) {
+                                val direction = if (accumulated > 0) 1 else -1
+                                currentStep(direction)
+                                accumulated -= direction * threshold
+                            }
+                        }
+                        change.consume()
+                    }
+                }
+            }, contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("SELECT", color = ConsoleKeyInk, fontSize = 27.sp, lineHeight = 31.sp, fontWeight = FontWeight.Bold)
+            Text("↺  TURN  ↻", color = ConsoleKeyInk, fontSize = 13.sp, lineHeight = 16.sp)
+            Text("PRESS · 決定", color = ConsoleKeyInk, fontSize = 12.sp, lineHeight = 15.sp)
+        }
     }
 }
 
