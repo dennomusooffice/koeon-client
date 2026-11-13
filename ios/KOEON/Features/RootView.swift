@@ -111,6 +111,11 @@ struct RootView: View {
                 if session.operationalState == .active { await session.refreshChannelChoices() }
             }
         }
+        .onAppear {
+            let inheritedBody = bodyColorID
+            if selectedBodyColor == "legacy" { selectedBodyColor = inheritedBody }
+            if selectedKeyColor == "legacy" { selectedKeyColor = inheritedBody == "white" ? "white" : "black" }
+        }
         .tint(KOEONPalette.cyan)
         .preferredColorScheme(darkConsole ? .dark : .light)
     }
@@ -533,14 +538,12 @@ private struct SettingsView: View {
             List {
                 Section("外観") {
                     Picker("本体色", selection: $bodyColor) {
-                        if bodyColor == "legacy" { Text(legacyDarkConsole ? "ブラック" : "ホワイト").tag("legacy") }
                         Text("ホワイト").tag("white")
                         Text("ブラック").tag("black")
                         Text("バーガンディー").tag("burgundy")
                         Text("ネイビー").tag("navy")
                     }
                     Picker("ボタン色", selection: $keyColor) {
-                        if keyColor == "legacy" { Text("本体色に合わせる（従来設定）").tag("legacy") }
                         Text("ホワイト系").tag("white")
                         Text("ブラック系").tag("black")
                     }

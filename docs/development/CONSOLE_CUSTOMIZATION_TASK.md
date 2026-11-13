@@ -6,4 +6,4 @@
 
 受入れ: 両OSの16通りの保存/復元、ライト/暗色可読性、6キー無副作用と押下、PTT/CH非干渉、縦画面の非スクロール、Android/iOSビルドと適切な自動/Simulator確認。期限内に実機操作許可がなければ実機確認は所有者に残す。合成音声の既存未合格は別追跡。実装後にTestFlight内部/外部とAndroid GitHub prereleaseへ新ビルド配布を明示承認済み。App Store/Play一般公開、mainマージ、サーバー変更は対象外。
 
-STOP: SHA/ビルド/hash/試験/未検証をIssue/PRと配布記録へ残す。Codex利用枠残量3%以下で新規テストを停止する。
+STOP: SHA/ビルド/hash/試験/未検証をIssue/PRと配布記録へ残す。所有者の追加指定によりCodex利用枠残量1%以下で新規テストを停止する。
