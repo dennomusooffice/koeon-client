@@ -383,12 +383,9 @@ struct ApplePttTokenLifecycle: Equatable, Sendable {
         inFlight = nil
         submitted = nil
         guard var token else { return }
-        if let owner = token.ownerChannelUUID, owner != channelUUID {
-            // Apple tokens are scoped to one active channel. Never submit a
-            // token observed for channel A after joining channel B.
-            self.token = nil
-            return
-        }
+        // Apple supplies the ephemeral token for this manager, not one token
+        // per channel. Retain it only in RAM and bind it to the requested join;
+        // claimRegistration still requires didJoin and a current backend session.
         token.ownerChannelUUID = channelUUID
         token.ownerJoinGeneration = currentJoinGeneration
         self.token = token
@@ -938,8 +935,8 @@ final class ApplePushToTalkController: NSObject, ObservableObject, PushToTalkCha
         channelUUID = nil
         channelId = nil
         canPublish = false
-        // The lifecycle gate keeps a same-UUID token in memory only. A future
-        // join to a different UUID discards it before registration.
+        // Keep this manager's ephemeral token in memory only. Registration
+        // remains disabled until a completed join and a new backend binding.
         backendSessionId = nil
         tokenRegistrationState = "Not registered"
         audioSessionIsActive = false

@@ -1481,18 +1481,19 @@ final class ApplePttTokenLifecycleTests: XCTestCase {
         XCTAssertNil(lifecycle.claimRegistration(backendSessionId: "session-next"))
     }
 
-    func testT3DifferentChannelNeverSubmitsPreviousChannelToken() throws {
+    func testT3ChannelSwitchRebindsManagerTokenOnlyAfterNewJoin() throws {
         var lifecycle = joinedLifecycle(channelId: "1ch", channelUUID: channelA, token: 0x01)
         lifecycle.didLeave(channelUUID: channelA)
         lifecycle.beginJoin(channelId: "2ch", channelUUID: channelB)
-        lifecycle.didJoin(channelUUID: channelB)
-
         XCTAssertNil(lifecycle.claimRegistration(backendSessionId: "session-b"))
-        lifecycle.receivedToken(Data([0x02]), activeChannelUUID: channelB)
+        lifecycle.didJoin(channelUUID: channelB)
         let registration = try XCTUnwrap(lifecycle.claimRegistration(backendSessionId: "session-b"))
         XCTAssertEqual(registration.channelUUID, channelB)
         XCTAssertEqual(registration.channelId, "2ch")
-        XCTAssertEqual(registration.token, "02")
+        XCTAssertEqual(registration.backendSessionId, "session-b")
+        XCTAssertEqual(registration.token, "01")
+        lifecycle.finishRegistration(registration, succeeded: true)
+        XCTAssertNil(lifecycle.claimRegistration(backendSessionId: "session-b"))
     }
 
     func testT4TokenBeforeDidJoinRegistersAfterJoinExactlyOnce() throws {
@@ -1549,17 +1550,19 @@ final class ApplePttTokenLifecycleTests: XCTestCase {
         XCTAssertEqual(next.backendSessionId, "session-new")
     }
 
-    func testT9ChannelSwitchLeavesAUnregisteredAndRequiresBToken() throws {
+    func testT9OldRegistrationCompletionCannotSuppressNewChannelRegistration() throws {
         var lifecycle = joinedLifecycle(channelId: "1ch", channelUUID: channelA, token: 0x01)
+        let old = try XCTUnwrap(lifecycle.claimRegistration(backendSessionId: "session-a"))
         lifecycle.didLeave(channelUUID: channelA)
         lifecycle.beginJoin(channelId: "2ch", channelUUID: channelB)
         lifecycle.didJoin(channelUUID: channelB)
-        XCTAssertNil(lifecycle.claimRegistration(backendSessionId: "session-b"))
-
-        lifecycle.receivedToken(Data([0x02]), activeChannelUUID: channelB)
+        lifecycle.finishRegistration(old, succeeded: true)
         let next = try XCTUnwrap(lifecycle.claimRegistration(backendSessionId: "session-b"))
         XCTAssertEqual(next.channelUUID, channelB)
-        XCTAssertNotEqual(next.token, "01")
+        lifecycle.receivedToken(Data([0x02]), activeChannelUUID: channelB)
+        lifecycle.finishRegistration(next, succeeded: true)
+        let rotated = try XCTUnwrap(lifecycle.claimRegistration(backendSessionId: "session-b"))
+        XCTAssertEqual(rotated.token, "02")
     }
 
     func testRestorationReseedsRegardlessOfTokenCallbackOrdering() throws {
