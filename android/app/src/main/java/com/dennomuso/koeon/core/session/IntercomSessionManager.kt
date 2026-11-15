@@ -1325,6 +1325,15 @@ class IntercomSessionManager(
                     floorSpeaker = floor.owner?.name
                     floorSpeakerExpiresAt = floor.leaseExpiresAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
                     room.reconcileRxFloor(floor)
+                    pttController?.reconcileAvailableFloor(floor) {
+                        val current = _state.value
+                        current.join?.sessionId == join.sessionId &&
+                            current.operationalState == OperationalState.ACTIVE &&
+                            current.connectionState == IntercomConnectionState.CONNECTED &&
+                            current.diagnostics.audioAvailabilityState == AudioAvailabilityState.READY &&
+                            current.join?.canPublish == true
+                    }
+
                     _state.update {
                         it.copy(
                             currentSpeaker = resolvedSpeaker(),

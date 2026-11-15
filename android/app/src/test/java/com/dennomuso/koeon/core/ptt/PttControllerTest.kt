@@ -23,6 +23,54 @@ import com.dennomuso.koeon.core.session.onLiveKitPttSnapshot
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PttControllerTest {
+    @Test fun `free floor recovers settled error only after mute and valid context`() = runTest {
+        for (outcome in listOf("available", "released")) {
+            val h = Harness(testScheduler, acquireFailure = true)
+            h.controller.pressDown(true)
+            assertEquals(PttState.ERROR, h.controller.current().state)
+            h.controller.reconcileAvailableFloor(FloorResponse("busy")) { true }
+            assertEquals(PttState.ERROR, h.controller.current().state)
+            h.controller.reconcileAvailableFloor(FloorResponse(outcome)) { false }
+            assertEquals(PttState.ERROR, h.controller.current().state)
+            h.controller.reconcileAvailableFloor(FloorResponse(outcome)) { true }
+            assertEquals(PttState.IDLE, h.controller.current().state)
+            assertTrue(h.events.contains("mic-off"))
+            assertFalse(h.events.contains("mic-on"))
+        }
+    }
+    @Test fun `free floor cannot clear error when mute fails or active transmission`() = runTest {
+        val failed = Harness(testScheduler, acquireFailure = true, microphoneOffSucceeds = false)
+        failed.controller.pressDown(true)
+        failed.controller.reconcileAvailableFloor(FloorResponse("available")) { true }
+        assertEquals(PttState.ERROR, failed.controller.current().state)
+        val active = Harness(testScheduler)
+        active.controller.pressDown(true)
+        active.controller.reconcileAvailableFloor(FloorResponse("released")) { true }
+        assertEquals(PttState.TRANSMITTING, active.controller.current().state)
+        active.controller.stopForSafety("test cleanup")
+    }
+    @Test fun `recovery rechecks session after mute and bounds stalled mute`() = runTest {
+        val h = Harness(testScheduler, acquireFailure = true, microphoneOffDelayMs = 100)
+        h.controller.pressDown(true)
+        var current = true
+        val recovery = launch { h.controller.reconcileAvailableFloor(FloorResponse("available")) { current } }
+        runCurrent(); current = false; advanceTimeBy(100); runCurrent(); recovery.join()
+        assertEquals(PttState.ERROR, h.controller.current().state)
+        val stalled = Harness(testScheduler, acquireFailure = true, microphoneOffDelayMs = 10_000)
+        stalled.controller.pressDown(true)
+        val start = testScheduler.currentTime
+        stalled.controller.reconcileAvailableFloor(FloorResponse("available")) { true }
+        assertEquals(1_000, testScheduler.currentTime - start)
+        assertEquals(PttState.ERROR, stalled.controller.current().state)
+    }
+    @Test fun `released floor clears settled local busy without starting microphone`() = runTest {
+        val h = Harness(testScheduler, acquire = FloorResponse("busy"))
+        h.controller.pressDown(true)
+        h.controller.reconcileAvailableFloor(FloorResponse("released")) { true }
+        assertEquals(PttState.IDLE, h.controller.current().state)
+        assertFalse(h.microphoneEnabled)
+    }
+
     @Test fun `stalled END cannot retain Floor after microphone mute`() = runTest {
         val harness = Harness(testScheduler, endDelayMs = 20_000)
         harness.controller.pressDown(true)
@@ -314,6 +362,7 @@ class PttControllerTest {
         cueDelayMs: Long = 0,
         private val endDelayMs: Long = 0,
         private val microphoneOffSucceeds: Boolean = true,
+        private val microphoneOffDelayMs: Long = 0,
         private val acquireFailure: Boolean = false,
         externalEvents: MutableList<String>? = null,
         onSnapshot: (PttSnapshot) -> Unit = {},
@@ -347,6 +396,7 @@ class PttControllerTest {
         }
         private val microphone = object : MicrophoneGateway {
             override suspend fun setEnabled(enabled: Boolean): Boolean {
+                if (!enabled) delay(microphoneOffDelayMs)
                 if (enabled || microphoneOffSucceeds) microphoneEnabled = enabled
                 if (!enabled) micOffAt = scheduler.currentTime
                 events += if (enabled) "mic-on" else "mic-off"

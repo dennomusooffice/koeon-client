@@ -159,6 +159,26 @@ class PttController(
         update(PttSnapshot(state = if (canTransmit) PttState.IDLE else PttState.RX_ONLY))
     }
 
+    /** Retry settled cleanup only from current authoritative free Floor. Never starts TX. */
+    suspend fun reconcileAvailableFloor(floor: FloorResponse, contextValid: () -> Boolean) {
+        if (floor.outcome !in setOf("available", "released") || !contextValid()) return
+        if (!transitionMutex.tryLock()) return
+        try {
+            if (held || snapshot.leaseId != null || snapshot.state !in setOf(PttState.ERROR, PttState.BUSY)) return
+            val expectedGeneration = generation
+            val muted = withTimeoutOrNull(1_000) {
+                try { microphone.setEnabled(false) }
+                catch (error: CancellationException) { throw error }
+                catch (_: Exception) { false }
+            } == true
+            if (muted && contextValid() && generation == expectedGeneration && !held && snapshot.leaseId == null) {
+                reset()
+            }
+        } finally {
+            transitionMutex.unlock()
+        }
+    }
+
     suspend fun pressDown(canTransmit: Boolean) {
         if (!canTransmit) {
             setRxOnly()
