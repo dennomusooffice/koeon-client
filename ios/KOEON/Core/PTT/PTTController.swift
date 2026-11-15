@@ -418,7 +418,7 @@ actor PTTController {
             snapshot.txTerminalCleanupComplete = true
             snapshot.txErrorRecoverable = true
             clearLease(nextState: .error)
-        } else if status.outcome == .available, snapshot.state == .busy {
+        } else if (status.outcome == .available || status.outcome == .released), snapshot.state == .busy {
             clearLease(nextState: .idle)
         }
     }

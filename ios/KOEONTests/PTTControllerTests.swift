@@ -614,6 +614,27 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertLessThan(values.firstIndex(of: "mic:off")!, values.firstIndex(of: "control:end")!)
     }
 
+    func testSettledRecoveryRequiresFreeFloorAndAppleRelease() {
+        for outcome in [FloorOutcome.available, .released] {
+            XCTAssertTrue(shouldRetrySettledPttRecovery(floorOutcome: outcome, connected: true,
+                audioReady: true, gateState: .idle, appleReleaseCompleted: false))
+            XCTAssertTrue(shouldRetrySettledPttRecovery(floorOutcome: outcome, connected: true,
+                audioReady: true, gateState: .rearming, appleReleaseCompleted: true))
+            XCTAssertFalse(shouldRetrySettledPttRecovery(floorOutcome: outcome, connected: true,
+                audioReady: true, gateState: .rearming, appleReleaseCompleted: false))
+            for gate in [PttRequestGateState.beginRequested, .transmitting, .endRequested] {
+                XCTAssertFalse(shouldRetrySettledPttRecovery(floorOutcome: outcome, connected: true,
+                    audioReady: true, gateState: gate, appleReleaseCompleted: true))
+            }
+            XCTAssertFalse(shouldRetrySettledPttRecovery(floorOutcome: outcome, connected: false,
+                audioReady: true, gateState: .idle, appleReleaseCompleted: true))
+            XCTAssertFalse(shouldRetrySettledPttRecovery(floorOutcome: outcome, connected: true,
+                audioReady: false, gateState: .idle, appleReleaseCompleted: true))
+        }
+        XCTAssertFalse(shouldRetrySettledPttRecovery(floorOutcome: .busy, connected: true,
+            audioReady: true, gateState: .idle, appleReleaseCompleted: true))
+    }
+
     func testReconnectRechecksMicrophoneOffAfterDisconnectedCleanupFailure() async {
         let events = EventLog()
         let microphone = await MicrophoneMock(events: events, failOff: true)

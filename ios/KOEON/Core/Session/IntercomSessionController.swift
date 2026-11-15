@@ -205,6 +205,14 @@ func foregroundRuntimeRecoveryAction(
     }
 }
 
+func shouldRetrySettledPttRecovery(
+    floorOutcome: FloorOutcome, connected: Bool, audioReady: Bool,
+    gateState: PttRequestGateState, appleReleaseCompleted: Bool
+) -> Bool {
+    (floorOutcome == .available || floorOutcome == .released) && connected && audioReady &&
+        (gateState == .idle || (gateState == .rearming && appleReleaseCompleted))
+}
+
 func shouldIgnoreLateStopFailure(
     operation: PttTransmitOperation,
     gateState: PttRequestGateState,
@@ -2990,6 +2998,19 @@ final class IntercomSessionController: ObservableObject {
         rx?.reconcileFloor(floor)
         await controller?.reconcileOwnFloor(floor)
         guard !Task.isCancelled, floorStatusContext == context else { return }
+        // Reconnect callbacks can arrive before asynchronous safety cleanup finishes.
+        // Retry only after an authoritative free Floor and Apple's settled release.
+        if shouldRetrySettledPttRecovery(floorOutcome: floor.outcome,
+            connected: room.connectionState == .connected, audioReady: audio.interruption.state == .ready,
+            gateState: pttRequestGate.state, appleReleaseCompleted: releaseAppleCompleted),
+           await controller?.currentSnapshot().state == .error {
+            await controller?.resetAfterReconnect()
+            guard !Task.isCancelled, floorStatusContext == context else { return }
+            if pttRequestGate.state == .rearming, await controller?.cleanupIsConfirmed() == true {
+                releaseFloorCompleted = true
+                tryFinishPttRelease(generation: releaseGeneration)
+            }
+        }
         if floor.outcome == .available || floor.outcome == .released, rxSnapshot.state == .idle {
             remoteReceive?.reset()
             resetRxConsistency()
