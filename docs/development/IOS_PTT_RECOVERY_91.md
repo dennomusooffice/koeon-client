@@ -15,3 +15,7 @@ Acceptance / STOP CONDITION: safe recovery checks, full iOS tests, sanitized Git
 Validation: arm64 iOS Simulator suite 281 cases, 280 passed / 1 dedicated SFU test skipped / 0 failures. Added checks for free/released Floor, Apple release pending, active Apple transmission, disconnected transport, unavailable audio and legitimate busy Floor. Existing mute-failure and retained-lease recovery tests pass. An initial x86_64 build failed to resolve LiveKit; standard arm64 retry passed.
 
 Implementation and simulator verification complete for this candidate. Not distributed, not device-verified, not merged. Next: verify the collected failing device state with the candidate, including interruption/reconnect timing and remote Floor transitions. Preserve field enrollment and evidence. No private journal or audio is committed.
+
+## Android follow-up
+
+Android ERROR does not independently disable PTT eligibility. A separate BUSY edge case was reproduced: released Floor retaining the old lease ID did not enter drain. Added regression failed before the fix (1/14 receiver tests) and passed after treating released and available alike. Full Android unit tests and lint pass. Version 1.0.31(32) is the release candidate. Real-device equivalence is not yet verified.

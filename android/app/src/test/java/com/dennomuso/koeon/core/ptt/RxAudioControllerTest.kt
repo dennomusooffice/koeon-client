@@ -167,6 +167,19 @@ class RxAudioControllerTest {
     }
 
     @Test
+    fun `released floor clears busy even when response retains lease id`() = runTest {
+        val harness = Harness(testScheduler)
+        harness.controller.handleControl(harness.event("start", 1), "session-a")
+        runCurrent()
+        harness.controller.handleRemoteAudioActivity("session-a", false)
+        harness.controller.reconcileFloor(FloorResponse("released", leaseId = "lease-a"))
+        assertEquals(RxState.RX_DRAINING, harness.controller.current().state)
+        advanceTimeBy(RX_DRAIN_MIN_MS)
+        runCurrent()
+        assertEquals(RxState.RX_IDLE, harness.controller.current().state)
+    }
+
+    @Test
     fun `different lease convergence cannot clear preempting speaker`() = runTest {
         val harness = Harness(testScheduler)
         harness.controller.handleControl(harness.event("start", 1), "session-a")

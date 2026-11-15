@@ -124,9 +124,10 @@ class RxAudioController(
         val sessionId = snapshot.sessionId ?: return
         val leaseId = snapshot.leaseId ?: return
         if (snapshot.state == RxState.RX_IDLE || snapshot.state == RxState.RX_DRAINING) return
-        if (floor.outcome != "available" && floor.leaseId == leaseId) return
+        val released = floor.outcome == "available" || floor.outcome == "released"
+        if (!released && floor.leaseId == leaseId) return
         beginDrain(
-            reason = if (floor.outcome == "available") "floor_available" else "floor_lease_changed",
+            reason = if (released) "floor_available" else "floor_lease_changed",
             sessionId = sessionId,
             leaseId = leaseId,
         )
