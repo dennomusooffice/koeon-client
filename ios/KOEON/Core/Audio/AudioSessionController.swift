@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import CallKit
 import Foundation
 import LiveKit
 
@@ -316,6 +317,17 @@ struct AudioInterruptionStateMachine: Sendable {
     mutating func reset() { snapshot = AudioInterruptionSnapshot() }
 }
 
+struct StaleInterruptionRecoveryGate {
+    private var availableSince: Date?
+    mutating func evaluate(interrupted: Bool, contextAllowsRecovery: Bool, systemAvailable: Bool, now: Date) -> Bool {
+        guard interrupted, contextAllowsRecovery, systemAvailable else { availableSince = nil; return false }
+        guard let since = availableSince else { availableSince = now; return false }
+        guard now.timeIntervalSince(since) >= 2 else { return false }
+        availableSince = nil
+        return true
+    }
+}
+
 @MainActor
 final class AudioSessionController: ObservableObject {
     @Published private(set) var route: AudioRouteKind = .unknown
@@ -340,6 +352,26 @@ final class AudioSessionController: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var outputVolumeObservation: NSKeyValueObservation?
     private var interruptionState = AudioInterruptionStateMachine()
+    private let callObserver = CXCallObserver()
+    private var staleInterruptionGate = StaleInterruptionRecoveryGate()
+    @Published private(set) var interruptionRawReason: UInt?
+    @Published private(set) var interruptionRecoveryTrigger = "NONE"
+
+    var systemAvailableForInterruptionRecovery: Bool {
+        !callObserver.calls.contains(where: { !$0.hasEnded }) &&
+            !audioSession.isOtherAudioPlaying && !audioSession.secondaryAudioShouldBeSilencedHint &&
+            mediaServicesState != "lost" && !(audioSession.availableInputs ?? []).isEmpty
+    }
+
+    func reconcileStaleInterruption(contextAllowsRecovery: Bool) {
+        if staleInterruptionGate.evaluate(interrupted: interruption.state == .interrupted,
+            contextAllowsRecovery: contextAllowsRecovery,
+            systemAvailable: systemAvailableForInterruptionRecovery, now: Date()) {
+            interruptionRecoveryTrigger = "SETTLED_FOREGROUND_PROBE"
+            onInterruptionEnded?(interruption.generation)
+        }
+    }
+
 
     var diagnosticCategory: String { audioSession.category.rawValue }
     var diagnosticMode: String { audioSession.mode.rawValue }
@@ -471,6 +503,7 @@ final class AudioSessionController: ObservableObject {
 
     @discardableResult
     func markInterrupted(_ reason: String) -> Int {
+        staleInterruptionGate = StaleInterruptionRecoveryGate()
         let generation = interruptionState.interrupt(reason: reason, at: Date())
         interruption = interruptionState.snapshot
         audioSessionState = "Interrupted"
@@ -550,8 +583,11 @@ final class AudioSessionController: ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
+            interruptionRawReason = (notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? NSNumber)?.uintValue
+            interruptionRecoveryTrigger = "NONE"
             markInterrupted("iOS audio session interruption began.")
         case .ended:
+            interruptionRecoveryTrigger = "OS_ENDED"
             audioSessionState = "Interruption ended / LiveKit managed"
             updateRoute()
             if interruption.state != .ready { onInterruptionEnded?(interruption.generation) }

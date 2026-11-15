@@ -2391,6 +2391,11 @@ final class IntercomSessionController: ObservableObject {
                         )
                     }
                     guard !Task.isCancelled, self.runtimeLiveness.generation == runtime else { return }
+                    if self.audio.interruptionRecoveryTrigger == "SETTLED_FOREGROUND_PROBE",
+                       (self.appLifecycleState != "active" || !self.audio.systemAvailableForInterruptionRecovery) {
+                        self.audio.markInterrupted("System audio became unavailable during recovery.")
+                        return
+                    }
                     self.resetPttRequestGate()
                     if self.audio.completeRecovery(generation: generation) {
                         await self.finishRecoveredPTTState()
@@ -2998,6 +3003,13 @@ final class IntercomSessionController: ObservableObject {
         rx?.reconcileFloor(floor)
         await controller?.reconcileOwnFloor(floor)
         guard !Task.isCancelled, floorStatusContext == context else { return }
+        let cleanupConfirmed = await controller?.isSettledForAudioRecovery() == true
+        guard !Task.isCancelled, floorStatusContext == context else { return }
+        let settledAudioRecovery = (floor.outcome == .available || floor.outcome == .released) &&
+            appLifecycleState == "active" && room.connectionState == .connected &&
+            (pttRequestGate.state == .idle || (pttRequestGate.state == .rearming && releaseAppleCompleted)) &&
+            cleanupConfirmed
+        audio.reconcileStaleInterruption(contextAllowsRecovery: settledAudioRecovery)
         // Reconnect callbacks can arrive before asynchronous safety cleanup finishes.
         // Retry only after an authoritative free Floor and Apple's settled release.
         if shouldRetrySettledPttRecovery(floorOutcome: floor.outcome,
@@ -3439,6 +3451,10 @@ final class IntercomSessionController: ObservableObject {
             "audio": [
                 "route": audio.route.rawValue,
                 "availability": audio.interruption.state.rawValue,
+                "interruptionReasonCode": number(audio.interruptionRawReason.map { Int($0) }),
+                "interruptionStartedAt": timestamp(audio.interruption.interruptionStartedAt),
+                "interruptionEndedAt": timestamp(audio.interruption.interruptionEndedAt),
+                "interruptionRecoveryTrigger": audio.interruptionRecoveryTrigger,
                 "sessionCategory": audio.diagnosticCategory,
                 "sessionMode": audio.diagnosticMode,
                 "sessionSampleRate": audio.diagnosticSampleRate,

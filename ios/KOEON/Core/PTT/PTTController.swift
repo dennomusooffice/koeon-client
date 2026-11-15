@@ -395,6 +395,13 @@ actor PTTController {
         publish()
     }
 
+    // Only permits rearming the inactive Apple-managed session, never TX.
+    // A failed mute can require audio preparation before resetAfterReconnect retries it.
+    func isSettledForAudioRecovery() -> Bool {
+        ownedLeaseId == nil && terminalTask == nil && !acquisitionInFlight && !isPressed &&
+            (snapshot.state == .error || snapshot.state == .idle || snapshot.state == .rxOnly)
+    }
+
     func cleanupIsConfirmed() -> Bool {
         ownedLeaseId == nil && terminalTask == nil && !acquisitionInFlight && !isPressed &&
             (snapshot.txTerminalCleanupComplete || snapshot.state == .idle || snapshot.state == .rxOnly)

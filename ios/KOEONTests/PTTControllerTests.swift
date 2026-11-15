@@ -659,6 +659,19 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertEqual(values.filter { $0 == "release" }.count, 1)
     }
 
+    func testAudioRearmEligibilityNeverAllowsHeldOrOwnedTransmission() async {
+        let events = EventLog()
+        let controller = makeController(floor: FloorMock(events: events), events: events)
+        let idle = await controller.isSettledForAudioRecovery()
+        XCTAssertTrue(idle)
+        await controller.pttDown()
+        let active = await controller.isSettledForAudioRecovery()
+        XCTAssertFalse(active)
+        await controller.stopForSafety(reason: "test")
+        let settled = await controller.isSettledForAudioRecovery()
+        XCTAssertTrue(settled)
+    }
+
     func testAudioInterruptionUsesSameImmediateSafetyPath() async {
         let events = EventLog()
         let floor = FloorMock(events: events)
@@ -1605,4 +1618,25 @@ private final class SuspendedStartCue: PttCuePlaying {
     func playStart() async throws { await withCheckedContinuation { continuation = $0 } }
     func playEnd() async throws {}
     func resume() { continuation?.resume(); continuation = nil }
+}
+
+final class StaleInterruptionRecoveryGateTests: XCTestCase {
+    func testRequiresContinuousAvailabilityAndDoesNotRetryReadyState() {
+        var gate = StaleInterruptionRecoveryGate()
+        let start = Date(timeIntervalSince1970: 100)
+        XCTAssertFalse(gate.evaluate(interrupted: true, contextAllowsRecovery: true, systemAvailable: true, now: start))
+        XCTAssertFalse(gate.evaluate(interrupted: true, contextAllowsRecovery: true, systemAvailable: true, now: start.addingTimeInterval(1.9)))
+        XCTAssertTrue(gate.evaluate(interrupted: true, contextAllowsRecovery: true, systemAvailable: true, now: start.addingTimeInterval(2)))
+        XCTAssertFalse(gate.evaluate(interrupted: false, contextAllowsRecovery: true, systemAvailable: true, now: start.addingTimeInterval(10)))
+    }
+    func testCallOrInvalidContextResetsStabilityWindow() {
+        for blockedBySystem in [true, false] {
+            var gate = StaleInterruptionRecoveryGate()
+            let start = Date(timeIntervalSince1970: 100)
+            XCTAssertFalse(gate.evaluate(interrupted: true, contextAllowsRecovery: true, systemAvailable: true, now: start))
+            XCTAssertFalse(gate.evaluate(interrupted: true, contextAllowsRecovery: blockedBySystem, systemAvailable: !blockedBySystem, now: start.addingTimeInterval(3)))
+            XCTAssertFalse(gate.evaluate(interrupted: true, contextAllowsRecovery: true, systemAvailable: true, now: start.addingTimeInterval(4)))
+            XCTAssertTrue(gate.evaluate(interrupted: true, contextAllowsRecovery: true, systemAvailable: true, now: start.addingTimeInterval(6)))
+        }
+    }
 }
