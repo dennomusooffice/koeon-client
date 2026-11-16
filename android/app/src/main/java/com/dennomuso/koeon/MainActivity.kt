@@ -675,6 +675,7 @@ private fun ColumnScope.SessionPanel(state: IntercomUiState, manager: IntercomSe
                         if (digits != null && digitCount == 2) { if (digits!!.length < 2) digits += number.toString() }
                         else { digitCount = 1; digits = number.toString() }
                     },
+                    interactionSource = rememberConsoleKeyInteractions(channelEnabled),
                     enabled = channelEnabled,
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp),
@@ -802,6 +803,7 @@ private fun ConsoleYesNoSelector(yes: Boolean) {
 
 @Composable
 private fun ConsoleWheelPad(diameter: androidx.compose.ui.unit.Dp, onStep: (Int) -> Unit, onSelect: () -> Unit) {
+    val wheelView = LocalView.current
     val currentStep by rememberUpdatedState(onStep)
     val currentSelect by rememberUpdatedState(onSelect)
     Box(
@@ -828,7 +830,7 @@ private fun ConsoleWheelPad(diameter: androidx.compose.ui.unit.Dp, onStep: (Int)
                         val event = awaitPointerEvent(pass = PointerEventPass.Initial)
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         if (!change.pressed) {
-                            if (!rim && !moved) currentSelect()
+                            if (!rim && !moved) { wheelView.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY); currentSelect() }
                             change.consume(); break
                         }
                         if ((change.position - down.position).getDistance() > 18.dp.toPx()) moved = true
@@ -839,6 +841,7 @@ private fun ConsoleWheelPad(diameter: androidx.compose.ui.unit.Dp, onStep: (Int)
                             val threshold = (Math.PI / 6).toFloat()
                             while (kotlin.math.abs(accumulated) >= threshold) {
                                 val direction = if (accumulated > 0) 1 else -1
+                                wheelView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
                                 currentStep(direction)
                                 accumulated -= direction * threshold
                             }
@@ -1282,7 +1285,7 @@ private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = f
     val dark = LocalKeyDark.current
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
     Button(
-        onClick = onClick, enabled = enabled, shape = shape,
+        onClick = onClick, interactionSource = rememberConsoleKeyInteractions(enabled), enabled = enabled, shape = shape,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp),
         colors = androidx.compose.material3.ButtonDefaults.buttonColors(
             containerColor = Color.Transparent, disabledContainerColor = Color.Transparent,
@@ -1295,7 +1298,7 @@ private fun ConsoleActionKey(label: String, enabled: Boolean, green: Boolean = f
 
 @Composable
 private fun ConsoleMockKey(label: String, id: String) {
-    Button(onClick = {}, modifier = Modifier.width(52.dp).height(44.dp).consoleKeyFace().semantics { testTag = id; contentDescription = label },
+    Button(onClick = {}, interactionSource = rememberConsoleKeyInteractions(true), modifier = Modifier.width(52.dp).height(44.dp).consoleKeyFace().semantics { testTag = id; contentDescription = label },
         shape = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
         colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = ConsoleKeyInk)) {
@@ -1321,7 +1324,7 @@ private fun cornerMockShape(flipX: Boolean, flipY: Boolean): androidx.compose.ui
 private fun ConsoleMockCorner(label: String, id: String, width: androidx.compose.ui.unit.Dp, height: androidx.compose.ui.unit.Dp,
     flipX: Boolean, flipY: Boolean, modifier: Modifier = Modifier) {
     val shape = remember(flipX, flipY) { cornerMockShape(flipX, flipY) }
-    Button(onClick = {}, modifier = modifier.size(width, height).consoleKeyFace(shape).semantics { testTag = id; contentDescription = label },
+    Button(onClick = {}, interactionSource = rememberConsoleKeyInteractions(true), modifier = modifier.size(width, height).consoleKeyFace(shape).semantics { testTag = id; contentDescription = label },
         shape = shape, contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
         colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = ConsoleKeyInk)) {
         Text(label, fontSize = 14.sp, maxLines = 1)
@@ -1347,4 +1350,19 @@ private fun Modifier.consoleKeyFace(shape: androidx.compose.ui.graphics.Shape = 
         drawOutline(shape.createOutline(size, layoutDirection, this), rim,
             style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
     }
+}
+
+@Composable
+private fun rememberConsoleKeyInteractions(enabled: Boolean): androidx.compose.foundation.interaction.MutableInteractionSource {
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val view = LocalView.current
+    val active by rememberUpdatedState(enabled)
+    LaunchedEffect(source, view) {
+        source.interactions.collect { interaction ->
+            if (active && interaction is androidx.compose.foundation.interaction.PressInteraction.Press) {
+                view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+            }
+        }
+    }
+    return source
 }

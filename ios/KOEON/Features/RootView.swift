@@ -711,12 +711,13 @@ private struct LCDWheelPad: View {
                 self.previousAngle = angle
                 while abs(accumulated) >= .pi / 6 {
                     let direction = accumulated > 0 ? 1 : -1
+                    UISelectionFeedbackGenerator().selectionChanged()
                     onStep(direction)
                     accumulated -= Double(direction) * .pi / 6
                 }
             }
             .onEnded { value in
-                if !startedOnRim && hypot(value.translation.width, value.translation.height) < 18 { onSelect() }
+                if !startedOnRim && hypot(value.translation.width, value.translation.height) < 18 { UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.7); onSelect() }
                 previousAngle = nil; accumulated = 0; startedOnRim = false
             })
         .accessibilityElement(children: .ignore)
@@ -1169,6 +1170,7 @@ private struct CornerMockStyle: ButtonStyle {
             .contentShape(shape)
             .shadow(color: .black.opacity(0.22), radius: 2, y: configuration.isPressed ? 0 : 3)
             .offset(y: configuration.isPressed ? 2 : 0)
+            .sensoryFeedback(.impact(flexibility: .rigid, intensity: 0.7), trigger: configuration.isPressed) { _, pressed in pressed }
     }
 }
 
@@ -1186,6 +1188,7 @@ private struct ConsoleKeyStyle: ButtonStyle {
             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(ConsoleKeySurface.rim, lineWidth: 1))
             .shadow(color: .black.opacity(0.22), radius: 2, y: configuration.isPressed ? 0 : 3)
             .offset(y: configuration.isPressed ? 2 : 0)
+            .sensoryFeedback(.impact(flexibility: .rigid, intensity: 0.7), trigger: configuration.isPressed) { _, pressed in pressed }
     }
 }
 
